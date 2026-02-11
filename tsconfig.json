@@ -1,4 +1,7 @@
 {
   "files": [],
-  "references": [{ "path": "packages/typescript-sdk" }]
+  "references": [
+    { "path": "packages/typescript-sdk" },
+    { "path": "packages/starcite-cli" }
+  ]
 }
