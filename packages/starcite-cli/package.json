@@ -16,7 +16,8 @@
     "compile": "bun run --cwd ../typescript-sdk build && bun build --compile src/index.ts --outfile dist/starcite",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "bun run clean && bun run build"
+    "prepublishOnly": "bun run clean && bun run build",
+    "publish:dry": "bun publish --dry-run --access public"
   },
   "dependencies": {
     "@starcite/sdk": "workspace:^0.1.0",

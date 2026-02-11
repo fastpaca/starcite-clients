@@ -21,7 +21,6 @@ Planned:
 
 - Node.js 22+
 - Bun 1.3+
-- pnpm 10+
 - A running Starcite API (default: `http://localhost:4000`)
 
 You can run Starcite locally from the server repo:
@@ -34,15 +33,15 @@ docker compose up -d
 ## Install
 
 ```bash
-pnpm install
+bun install
 ```
 
 ## Build, Lint, Test
 
 ```bash
-pnpm build
-pnpm lint
-pnpm test
+bun run build
+bun run lint
+bun run test
 ```
 
 ## Quick Local CLI Flow

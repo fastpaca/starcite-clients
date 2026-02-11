@@ -21,7 +21,8 @@
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "pnpm clean && pnpm build"
+    "prepublishOnly": "bun run clean && bun run build",
+    "publish:dry": "bun publish --dry-run --access public"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

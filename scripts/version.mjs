@@ -69,7 +69,7 @@ function main() {
   writeRootPackage(rootPackage);
 
   execSync("node scripts/sync-versions.mjs", { stdio: "inherit" });
-  execSync("pnpm install", { stdio: "inherit" });
+  execSync("bun install", { stdio: "inherit" });
 
   console.log(`Version bumped: ${currentVersion} -> ${nextVersion}`);
 }

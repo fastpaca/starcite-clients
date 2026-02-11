@@ -15,11 +15,11 @@ const run = (command) => {
 };
 
 run("git diff --quiet");
-run(`pnpm version:${bumpType}`);
-run("pnpm lint");
-run("pnpm typecheck");
-run("pnpm test");
-run("pnpm build");
+run(`bun run version:${bumpType}`);
+run("bun run lint");
+run("bun run typecheck");
+run("bun run test");
+run("bun run build");
 run("git add .");
 run('git commit -m "release: bump versions"');
 console.log("Release commit prepared. Create/tag/publish manually as needed.");
