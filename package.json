@@ -5,11 +5,23 @@
   "description": "Starcite client monorepo",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
+    "clean": "pnpm -r --if-present clean",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "ultracite check .",
     "format": "ultracite fix .",
     "typecheck": "pnpm -r typecheck",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "version:sync": "node scripts/sync-versions.mjs",
+    "version:patch": "node scripts/version.mjs patch",
+    "version:minor": "node scripts/version.mjs minor",
+    "version:major": "node scripts/version.mjs major",
+    "version:set": "node scripts/version.mjs set",
+    "release:patch": "node scripts/release.mjs patch",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major",
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm check",
+    "publish:dry": "pnpm -r publish --access public --dry-run",
     "starcite": "pnpm --filter starcite dev"
   },
   "devDependencies": {
