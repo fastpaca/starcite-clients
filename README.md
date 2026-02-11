@@ -56,6 +56,7 @@ bun run starcite:compile
 ## Versioning and Release
 
 Lockstep versioning (same model as `pi-mono`): root and all publishable workspace packages share one version.
+Pre-1.0 policy: this repo blocks crossing to `>=1.0.0` by default.
 
 Version-only commands:
 
@@ -65,6 +66,11 @@ bun run version:minor
 bun run version:major
 bun run version:set -- 0.2.0
 ```
+
+Notes:
+
+- Use `patch`/`minor` while you want to stay pre-1.0.0.
+- `major` (or `version:set` to `>=1.0.0`) is blocked unless you explicitly set `STARCITE_ALLOW_MAJOR=1`.
 
 Create a release commit and tag (runs version bump + lint/typecheck/test/build):
 
