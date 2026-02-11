@@ -22,7 +22,8 @@
     "release:major": "node scripts/release.mjs major",
     "prepublishOnly": "pnpm clean && pnpm build && pnpm check",
     "publish:dry": "pnpm -r publish --access public --dry-run",
-    "starcite": "pnpm --filter starcite dev"
+    "starcite": "bun run --cwd packages/starcite-cli dev",
+    "starcite:compile": "bun run --cwd packages/starcite-cli compile"
   },
   "devDependencies": {
     "ultracite": "^7.1.5"

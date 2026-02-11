@@ -12,10 +12,11 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsup",
-    "dev": "tsx src/index.ts",
+    "dev": "bun run src/index.ts",
+    "compile": "bun run --cwd ../typescript-sdk build && bun build --compile src/index.ts --outfile dist/starcite",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "pnpm clean && pnpm build"
+    "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
     "@starcite/sdk": "workspace:^0.1.0",
@@ -24,7 +25,6 @@
   "devDependencies": {
     "@types/node": "^22.15.30",
     "tsup": "^8.5.0",
-    "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "vitest": "^2.1.9"
   }

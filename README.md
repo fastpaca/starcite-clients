@@ -20,6 +20,7 @@ Planned:
 ## Prerequisites
 
 - Node.js 22+
+- Bun 1.3+
 - pnpm 10+
 - A running Starcite API (default: `http://localhost:4000`)
 
@@ -46,15 +47,24 @@ pnpm test
 
 ## Quick Local CLI Flow
 
-Use the CLI package directly during development:
+Use the CLI package directly via Bun:
 
 ```bash
-pnpm starcite create --title "Draft contract"
-pnpm starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-pnpm starcite tail ses_demo --agent researcher --limit 1
+bun run starcite create --title "Draft contract"
+bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
+bun run starcite tail ses_demo --agent researcher --limit 1
 ```
 
 Set `STARCITE_BASE_URL` if your API is not at `http://localhost:4000`.
+
+## Compile CLI Binary
+
+Build a standalone `starcite` binary using Bun:
+
+```bash
+bun run starcite:compile
+./packages/starcite-cli/dist/starcite --help
+```
 
 ## TypeScript SDK Example
 
