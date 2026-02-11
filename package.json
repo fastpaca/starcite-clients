@@ -17,6 +17,7 @@
     "version:minor": "node scripts/version.mjs minor",
     "version:major": "node scripts/version.mjs major",
     "version:set": "node scripts/version.mjs set",
+    "release:verify-tag": "node scripts/verify-release-tag.mjs",
     "release:patch": "node scripts/release.mjs patch",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",

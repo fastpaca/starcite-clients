@@ -55,7 +55,9 @@ bun run starcite:compile
 
 ## Versioning and Release
 
-Version commands (sync root and package versions):
+Lockstep versioning (same model as `pi-mono`): root and all publishable workspace packages share one version.
+
+Version-only commands:
 
 ```bash
 bun run version:patch
@@ -64,13 +66,35 @@ bun run version:major
 bun run version:set -- 0.2.0
 ```
 
-Prepare release commit (runs lint/typecheck/test/build):
+Create a release commit and tag (runs version bump + lint/typecheck/test/build):
 
 ```bash
 bun run release:patch
 ```
 
-Dry-run package publish:
+That command creates:
+
+- a commit: `release: vX.Y.Z`
+- a git tag: `vX.Y.Z`
+
+Then push and publish via GitHub Release:
+
+```bash
+git push origin main
+git push origin vX.Y.Z
+```
+
+1. Create a GitHub Release for that tag (`vX.Y.Z`).
+2. Workflow `.github/workflows/publish-npm.yml` triggers on `release.published`.
+3. CI verifies tag/version alignment, runs `bun run check` + `bun run build`, then publishes:
+   - `@starcite/sdk`
+   - `starcite`
+
+Required secret:
+
+- `NPM_TOKEN` in GitHub repo secrets (`Settings -> Secrets and variables -> Actions`)
+
+Optional dry run before tagging:
 
 ```bash
 bun run publish:dry
