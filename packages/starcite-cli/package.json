@@ -2,6 +2,23 @@
   "name": "starcite",
   "version": "0.1.0",
   "description": "CLI for Starcite",
+  "license": "Apache-2.0",
+  "homepage": "https://starcite.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fastpaca/starcite-clients.git",
+    "directory": "packages/starcite-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/fastpaca/starcite-clients/issues"
+  },
+  "keywords": [
+    "starcite",
+    "ai",
+    "sessions",
+    "event-log",
+    "cli"
+  ],
   "type": "module",
   "bin": {
     "starcite": "./dist/index.js"

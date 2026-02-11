@@ -1,83 +1,77 @@
 # Starcite Clients Monorepo
 
-This repository contains Starcite client implementations.
+Client SDKs and tooling for [Starcite](https://starcite.ai).
 
-Current packages:
+This repo is structured so TypeScript packages work today and Python (plus other languages) can be added without changing release/version workflows.
 
-- `@starcite/sdk` (TypeScript SDK)
-- `starcite` (TypeScript CLI)
+## Packages
 
-Planned:
+- `@starcite/sdk` (`packages/typescript-sdk`): TypeScript SDK
+- `starcite` (`packages/starcite-cli`): CLI
+- `packages/python-sdk`: Python SDK scaffold (not published yet)
 
-- Python SDK (scaffolded at `packages/python-sdk`)
+Package-level READMEs are the canonical docs for npm users:
 
-## Structure
-
-- `packages/typescript-sdk` TypeScript SDK
-- `packages/starcite-cli` TypeScript CLI package
-- `packages/python-sdk` Python SDK placeholder for upcoming work
+- `packages/typescript-sdk/README.md`
+- `packages/starcite-cli/README.md`
 
 ## Prerequisites
 
 - Node.js 22+
 - Bun 1.3+
-- A running Starcite API (default: `http://localhost:4000`)
+- Starcite API running at `http://localhost:4000` (or set `STARCITE_BASE_URL`)
 
-You can run Starcite locally from the server repo:
+Run Starcite locally:
 
 ```bash
 cd ~/git/fastpaca/starcite
 docker compose up -d
 ```
 
-## Install
+## Workspace Commands
 
 ```bash
 bun install
-```
-
-## Build, Lint, Test
-
-```bash
 bun run build
 bun run lint
+bun run typecheck
 bun run test
 ```
 
-## Quick Local CLI Flow
-
-Use the CLI package directly via Bun:
+## Local CLI Flow
 
 ```bash
-bun run starcite create --title "Draft contract"
+bun run starcite create --id ses_demo --title "Draft contract"
 bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-bun run starcite tail ses_demo --agent researcher --limit 1
+bun run starcite tail ses_demo --cursor 0 --limit 1
 ```
 
-Set `STARCITE_BASE_URL` if your API is not at `http://localhost:4000`.
-
 ## Compile CLI Binary
-
-Build a standalone `starcite` binary using Bun:
 
 ```bash
 bun run starcite:compile
 ./packages/starcite-cli/dist/starcite --help
 ```
 
-## TypeScript SDK Example
+## Versioning and Release
 
-```ts
-import { starcite } from "@starcite/sdk";
+Version commands (sync root and package versions):
 
-const session = await starcite.create({ title: "Draft contract" });
+```bash
+bun run version:patch
+bun run version:minor
+bun run version:major
+bun run version:set -- 0.2.0
+```
 
-await session.append({
-  agent: "researcher",
-  text: "Found 8 relevant cases..."
-});
+Prepare release commit (runs lint/typecheck/test/build):
 
-for await (const event of session.tail({ agent: "researcher" })) {
-  console.log(event.text);
-}
+```bash
+bun run release:patch
+```
+
+Dry-run package publish:
+
+```bash
+bun run publish:dry
 ```
