@@ -31,10 +31,11 @@
     "build": "tsup",
     "dev": "bun run src/index.ts",
     "compile": "bun run --cwd ../typescript-sdk build && bun build --compile src/index.ts --outfile dist/starcite",
-    "test": "vitest run",
+    "test": "vitest run && bun run test:dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "bun run clean && bun run build",
-    "publish:dry": "bun publish --dry-run --access public"
+    "publish:dry": "bun publish --dry-run --access public",
+    "test:dist": "bun run clean && bun run build && node dist/index.js --help > /dev/null"
   },
   "dependencies": {
     "@starcite/sdk": "workspace:^0.1.0",
