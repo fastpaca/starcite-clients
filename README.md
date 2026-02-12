@@ -72,7 +72,43 @@ Notes:
 - Use `patch`/`minor` while you want to stay pre-1.0.0.
 - `major` (or `version:set` to `>=1.0.0`) is blocked unless you explicitly set `STARCITE_ALLOW_MAJOR=1`.
 
-Create a release commit and tag (runs version bump + lint/typecheck/test/build):
+### Semantic Release (Recommended)
+
+Workflow: `.github/workflows/semantic-release.yml`
+
+Trigger:
+
+- `push` to `main`
+- manual `workflow_dispatch` (with optional bump override)
+
+Bump rules from commits since latest tag:
+
+- `feat(...)` -> `minor`
+- `fix(...)` or `chore(...)` -> `patch`
+- anything else -> no release
+
+Local preview:
+
+```bash
+bun run release:auto:dry
+```
+
+Local release cut using the same analyzer:
+
+```bash
+bun run release:auto
+```
+
+When a release is cut, CI will:
+
+1. create release commit + tag (`release: vX.Y.Z`)
+2. push `main` and `vX.Y.Z`
+3. publish `@starcite/sdk` and `starcite` with Bun
+4. create GitHub Release `vX.Y.Z`
+
+### Manual Release Flow
+
+Create a release commit and tag manually (runs version bump + lint/typecheck/test/build):
 
 ```bash
 bun run release:patch
@@ -83,7 +119,7 @@ That command creates:
 - a commit: `release: vX.Y.Z`
 - a git tag: `vX.Y.Z`
 
-Then push and publish via GitHub Release:
+Then push and publish via GitHub Release workflow:
 
 ```bash
 git push origin main
