@@ -17,54 +17,19 @@ interface GlobalOptions {
   json: boolean;
 }
 
-export interface CliLogger {
+interface LoggerLike {
   info(message: string): void;
   error(message: string): void;
 }
 
-interface CliRuntime {
+interface CliDependencies {
   createClient?: (baseUrl: string) => StarciteClient;
-  logger?: CliLogger;
+  logger?: LoggerLike;
 }
 
-const defaultLogger: CliLogger = createConsola();
+const defaultLogger: LoggerLike = createConsola();
 
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
-const jsonTextSchema = z.string().transform<unknown>((value, ctx) => {
-  try {
-    return JSON.parse(value) as string | Record<string, unknown> | unknown[];
-  } catch {
-    ctx.addIssue({
-      code: "custom",
-      message: "invalidJson",
-    });
-
-    return z.NEVER;
-  }
-});
-
-function parseAndValidateJson<T>(
-  value: string,
-  schema: z.ZodType<T>,
-  optionName: string,
-  invalidShapeMessage: string
-) {
-  const result = jsonTextSchema.pipe(schema).safeParse(value);
-
-  if (!result.success) {
-    const invalidJson = result.error.issues.some(
-      (issue) => issue.message === "invalidJson"
-    );
-
-    throw new InvalidArgumentError(
-      invalidJson
-        ? `${optionName} must be valid JSON`
-        : `${optionName} must be ${invalidShapeMessage}`
-    );
-  }
-
-  return result.data;
-}
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
   const parsed = nonNegativeIntegerSchema.safeParse(value);
@@ -78,22 +43,37 @@ function parseNonNegativeInteger(value: string, optionName: string): number {
   return parsed.data;
 }
 
+function parseJsonOption<T>(
+  value: string,
+  schema: z.ZodType<T>,
+  optionName: string,
+  invalidShapeMessage: string
+): T {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new InvalidArgumentError(`${optionName} must be valid JSON`);
+  }
+
+  const result = schema.safeParse(parsed);
+
+  if (!result.success) {
+    throw new InvalidArgumentError(
+      `${optionName} must be ${invalidShapeMessage}`
+    );
+  }
+
+  return result.data;
+}
+
 function parseJsonObject(value: string, optionName: string): JsonObject {
-  return parseAndValidateJson(
-    value,
-    JsonObjectSchema,
-    optionName,
-    "a JSON object"
-  );
+  return parseJsonOption(value, JsonObjectSchema, optionName, "a JSON object");
 }
 
 function parseEventRefs(value: string): EventRefs {
-  return parseAndValidateJson(
-    value,
-    EventRefsSchema,
-    "--refs",
-    "a JSON object"
-  );
+  return parseJsonOption(value, EventRefsSchema, "--refs", "a JSON object");
 }
 
 function getGlobalOptions(command: Command): GlobalOptions {
@@ -110,11 +90,11 @@ function formatTailEvent(event: SessionEvent): string {
   return `[${actorLabel}] ${JSON.stringify(event.payload)}`;
 }
 
-export function buildProgram(runtime: CliRuntime = {}): Command {
+export function buildProgram(deps: CliDependencies = {}): Command {
   const createClient =
-    runtime.createClient ??
+    deps.createClient ??
     ((baseUrl: string) => createStarciteClient({ baseUrl }));
-  const logger = runtime.logger ?? defaultLogger;
+  const logger = deps.logger ?? defaultLogger;
 
   const program = new Command();
 
@@ -348,28 +328,28 @@ function appendRaw(
 
 export async function run(
   argv = process.argv,
-  runtime: CliRuntime = {}
+  deps: CliDependencies = {}
 ): Promise<void> {
-  const program = buildProgram(runtime);
+  const program = buildProgram(deps);
 
   try {
     await program.parseAsync(argv);
   } catch (error) {
     if (error instanceof StarciteApiError) {
-      const logger = runtime.logger ?? defaultLogger;
+      const logger = deps.logger ?? defaultLogger;
       logger.error(`${error.code} (${error.status}): ${error.message}`);
       process.exitCode = 1;
       return;
     }
 
     if (error instanceof Error) {
-      const logger = runtime.logger ?? defaultLogger;
+      const logger = deps.logger ?? defaultLogger;
       logger.error(error.message);
       process.exitCode = 1;
       return;
     }
 
-    const logger = runtime.logger ?? defaultLogger;
+    const logger = deps.logger ?? defaultLogger;
     logger.error("Unknown error");
     process.exitCode = 1;
   }
