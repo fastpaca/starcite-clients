@@ -1,15 +1,15 @@
 # Starcite Clients Monorepo
 
-Client SDKs and tooling for [Starcite](https://starcite.ai).
+Client SDKs and CLI tooling for [Starcite](https://starcite.ai).
 
-This repo is structured so TypeScript packages work today and additional language SDKs can be added over time without changing release/version workflows.
+This workspace ships in lockstep with shared versioning and release automation.
 
-## Packages
+## What to read first
 
 - `@starcite/sdk` (`packages/typescript-sdk`): TypeScript SDK
-- `starcite` (`packages/starcite-cli`): CLI
+- `starcite` (`packages/starcite-cli`): Terminal client for sessions and events
 
-Package-level READMEs are the canonical docs for npm users:
+Package READMEs are the canonical docs for their respective tools:
 
 - `packages/typescript-sdk/README.md`
 - `packages/starcite-cli/README.md`
@@ -18,31 +18,37 @@ Package-level READMEs are the canonical docs for npm users:
 
 - Node.js 22+
 - Bun 1.3+
-- Starcite API running at `http://localhost:4000` (or set `STARCITE_BASE_URL`)
+- Running Starcite API (default: `http://localhost:4000` or set `STARCITE_BASE_URL`)
 
-Run Starcite locally:
+## Quick Start
 
-```bash
-cd ~/git/fastpaca/starcite
-docker compose up -d
-```
-
-## Workspace Commands
+1. Install dependencies in this monorepo
 
 ```bash
 bun install
-bun run build
-bun run lint
-bun run typecheck
-bun run test
 ```
 
-## Local CLI Flow
+2. Point the clients at your API (optional if `http://localhost:4000` is your target):
+
+```bash
+export STARCITE_BASE_URL=https://api.your-domain.example
+```
+
+3. Run an end-to-end flow
 
 ```bash
 bun run starcite create --id ses_demo --title "Draft contract"
 bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 bun run starcite tail ses_demo --cursor 0 --limit 1
+```
+
+## Workspace Commands (Dev)
+
+```bash
+bun run build
+bun run lint
+bun run typecheck
+bun run test
 ```
 
 ## Compile CLI Binary
@@ -54,10 +60,9 @@ bun run starcite:compile
 
 ## Versioning and Release
 
-Lockstep versioning (same model as `pi-mono`): root and all publishable workspace packages share one version.
-Pre-1.0 policy: this repo blocks crossing to `>=1.0.0` by default.
+This repo uses a shared pre-1.0 policy and lockstep versioning for publishable packages.
 
-Version-only commands:
+Use these commands for version updates:
 
 ```bash
 bun run version:patch
@@ -66,77 +71,29 @@ bun run version:major
 bun run version:set -- 0.2.0
 ```
 
-Notes:
-
-- Use `patch`/`minor` while you want to stay pre-1.0.0.
-- `major` (or `version:set` to `>=1.0.0`) is blocked unless you explicitly set `STARCITE_ALLOW_MAJOR=1`.
-
-### Semantic Release (Recommended)
-
-Workflow: `.github/workflows/semantic-release.yml`
-
-Trigger:
-
-- `push` to `main`
-- manual `workflow_dispatch` (with optional bump override)
-
-Bump rules from commits since latest tag:
-
-- `feat(...)` -> `minor`
-- `fix(...)` or `chore(...)` -> `patch`
-- anything else -> no release
-
-Local preview:
-
-```bash
-bun run release:auto:dry
-```
-
-Local release cut using the same analyzer:
-
-```bash
-bun run release:auto
-```
-
-When a release is cut, CI will:
-
-1. create release commit + tag (`release: vX.Y.Z`)
-2. push `main` and `vX.Y.Z`
-3. publish `@starcite/sdk` and `starcite` with Bun
-4. create GitHub Release `vX.Y.Z`
+Use `major` only for intentional major-version shifts. Setting `version:set` to `>=1.0.0` without `STARCITE_ALLOW_MAJOR=1` is blocked.
 
 ### Manual Release Flow
 
-Create a release commit and tag manually (runs version bump + lint/typecheck/test/build):
+1. Bump versions and create release commit + tag
 
 ```bash
 bun run release:patch
+bun run release:minor
+bun run release:major
 ```
 
-That command creates:
-
-- a commit: `release: vX.Y.Z`
-- a git tag: `vX.Y.Z`
-
-Then push and publish via GitHub Release workflow:
+2. Push commits and tag
 
 ```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-1. Create a GitHub Release for that tag (`vX.Y.Z`).
-2. Workflow `.github/workflows/publish-npm.yml` triggers on `release.published`.
-3. CI verifies tag/version alignment, runs `bun run check` + `bun run build`, then publishes:
-   - `@starcite/sdk`
-   - `starcite`
+3. Publish using GitHub Releases (required by your repo automation)
 
-Required secret:
+- Create release `vX.Y.Z` in GitHub
+- Workflow `.github/workflows/publish-npm.yml` publishes on `release.published`
+- CI verifies versions and publishes packages to npm
 
-- `NPM_TOKEN` in GitHub repo secrets (`Settings -> Secrets and variables -> Actions`)
-
-Optional dry run before tagging:
-
-```bash
-bun run publish:dry
-```
+Required secret: `NPM_TOKEN` (`Settings -> Secrets and variables -> Actions`).

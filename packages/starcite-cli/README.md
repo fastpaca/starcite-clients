@@ -4,6 +4,10 @@ CLI for [Starcite](https://starcite.ai).
 
 Use it to create sessions, append events, and tail event streams from your terminal.
 
+- Install once for local workflow: `npm install -g starcite`
+- Run once with npm: `npx starcite`
+- Run once with Bun: `bunx starcite`
+
 ## Install
 
 ```bash
@@ -16,23 +20,32 @@ Or run without installing globally:
 npx starcite --help
 ```
 
+Or with Bun:
+
+```bash
+bunx starcite --help
+```
+
 ## Requirements
 
 - A running Starcite API (default: `http://localhost:4000`)
-- If needed, set `STARCITE_BASE_URL`
+- If needed, set `STARCITE_BASE_URL` before running any command
+
+For temporary usage, use `npx starcite` or `bunx starcite` instead of installing globally.
 
 ## Quick Start
 
 ```bash
 starcite create --id ses_demo --title "Draft contract"
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-starcite tail ses_demo --cursor 0
+starcite tail ses_demo --cursor 0 --limit 1
 ```
 
 ## Global Options
 
 - `-u, --base-url <url>`: Starcite API base URL (defaults to `STARCITE_BASE_URL` or `http://localhost:4000`)
 - `--json`: machine-readable JSON output
+- `-h, --help`: show help text
 
 ## Commands
 
@@ -71,15 +84,26 @@ Replay and follow events over WebSocket.
 
 ```bash
 starcite tail ses_demo --cursor 0
-starcite tail ses_demo --agent drafter --limit 5
+starcite tail ses_demo --agent drafter --limit 5 --json
 ```
 
 Press `Ctrl+C` to stop.
 
-## Local Server with Docker
+### Useful patterns
+
+Export the event feed to a local file:
 
 ```bash
-cd ~/git/fastpaca/starcite
+starcite tail ses_demo --cursor 0 --json --limit 1 > tail.json
+```
+
+## Local Server with Docker
+
+If you want to follow examples end-to-end locally:
+
+```bash
+git clone https://github.com/fastpaca/starcite.git
+cd starcite
 docker compose up -d
 ```
 

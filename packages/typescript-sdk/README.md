@@ -1,10 +1,10 @@
 # @starcite/sdk
 
-TypeScript SDK for [Starcite](https://starcite.ai), built around the core flow:
+TypeScript SDK for [Starcite](https://starcite.ai), optimized for this flow:
 
-1. Create a session
-2. Append ordered events
-3. Tail from a cursor over WebSocket
+1. create a session
+2. append ordered events
+3. tail from a cursor over WebSocket
 
 ## Install
 
@@ -14,10 +14,10 @@ npm install @starcite/sdk
 
 ## Requirements
 
-- Node.js 22+, Bun, or a modern browser/runtime with `fetch` and `WebSocket`
-- A running Starcite API (default: `http://localhost:4000`)
+- Node.js 22+, Bun, or any modern runtime with `fetch` and `WebSocket`
+- Starcite API reachable at `http://localhost:4000` (or set `STARCITE_BASE_URL`)
 
-The SDK normalizes your base URL to include `/v1`.
+The SDK normalizes the base URL to `/v1` automatically.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ The SDK normalizes your base URL to include `/v1`.
 import { createStarciteClient } from "@starcite/sdk";
 
 const client = createStarciteClient({
-  baseUrl: "http://localhost:4000",
+  baseUrl: process.env.STARCITE_BASE_URL ?? "http://localhost:4000",
 });
 
 const session = await client.create({
@@ -40,11 +40,15 @@ await session.append({
 });
 
 for await (const event of session.tail({ cursor: 0 })) {
-  console.log(event.seq, event.agent, event.text);
+  const actor = event.agent ?? event.actor;
+  const text =
+    event.text ?? (typeof event.payload.text === "string" ? event.payload.text : "");
+
+  console.log(`[${actor}] ${text}`);
 }
 ```
 
-## Base URL and Auth Headers
+## Base URL and Headers
 
 ```ts
 import { createStarciteClient } from "@starcite/sdk";
@@ -57,7 +61,7 @@ const client = createStarciteClient({
 });
 ```
 
-## High-Level and Raw Append Modes
+## Append Modes
 
 High-level append:
 
@@ -68,7 +72,7 @@ await client.session("ses_demo").append({
 });
 ```
 
-Raw append (full protocol fields):
+Raw append:
 
 ```ts
 await client.session("ses_demo").appendRaw({
@@ -83,18 +87,21 @@ await client.session("ses_demo").appendRaw({
 ## Tail Options
 
 ```ts
-const abort = new AbortController();
+const session = client.session("ses_demo");
+const controller = new AbortController();
 
-for await (const event of client.session("ses_demo").tail({
+setTimeout(() => controller.abort(), 5000);
+
+for await (const event of session.tail({
   cursor: 0,
   agent: "drafter",
-  signal: abort.signal,
+  signal: controller.signal,
 })) {
   console.log(event);
 }
 ```
 
-`tail()` replays `seq > cursor` and then streams live events on the same socket.
+`tail()` replays `seq > cursor` and then streams live events on the same connection.
 
 ## Error Handling
 
