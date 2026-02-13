@@ -120,6 +120,9 @@ class AsyncQueue<T> {
   }
 }
 
+/**
+ * Normalizes a Starcite base URL to the `/v1` API root used by this SDK.
+ */
 export function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(TRAILING_SLASHES_REGEX, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
@@ -210,8 +213,13 @@ function toSessionEvent(event: TailEvent): SessionEvent {
   };
 }
 
+/**
+ * Session-scoped helper for append and tail operations.
+ */
 export class StarciteSession {
+  /** Session identifier. */
   readonly id: string;
+  /** Optional session record captured at creation time. */
   readonly record?: SessionRecord;
 
   private readonly client: StarciteClient;
@@ -222,6 +230,11 @@ export class StarciteSession {
     this.record = record;
   }
 
+  /**
+   * Appends a high-level agent event to this session.
+   *
+   * Automatically prefixes `agent` as `agent:<name>` when needed.
+   */
   append(input: SessionAppendInput): Promise<AppendEventResponse> {
     const parsed = SessionAppendInputSchema.parse(input);
     const actor = parsed.agent.startsWith("agent:")
@@ -240,20 +253,33 @@ export class StarciteSession {
     });
   }
 
+  /**
+   * Appends a raw event payload as-is.
+   */
   appendRaw(input: AppendEventRequest): Promise<AppendEventResponse> {
     return this.client.appendEvent(this.id, input);
   }
 
+  /**
+   * Streams transformed session events with SDK convenience fields (`agent`, `text`).
+   */
   tail(options: SessionTailOptions = {}): AsyncIterable<SessionEvent> {
     return this.client.tailEvents(this.id, options);
   }
 
+  /**
+   * Streams raw tail events returned by the API.
+   */
   tailRaw(options: SessionTailOptions = {}): AsyncIterable<TailEvent> {
     return this.client.tailRawEvents(this.id, options);
   }
 }
 
+/**
+ * Starcite API client for HTTP and WebSocket session operations.
+ */
 export class StarciteClient {
+  /** Normalized API base URL ending with `/v1`. */
   readonly baseUrl: string;
 
   private readonly websocketBaseUrl: string;
@@ -261,6 +287,9 @@ export class StarciteClient {
   private readonly headers: Headers;
   private readonly websocketFactory: (url: string) => StarciteWebSocket;
 
+  /**
+   * Creates a new client instance.
+   */
   constructor(options: StarciteClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.websocketBaseUrl = toWebSocketBaseUrl(this.baseUrl);
@@ -269,15 +298,24 @@ export class StarciteClient {
     this.websocketFactory = options.websocketFactory ?? defaultWebSocketFactory;
   }
 
+  /**
+   * Returns a session helper bound to an existing session id.
+   */
   session(sessionId: string, record?: SessionRecord): StarciteSession {
     return new StarciteSession(this, sessionId, record);
   }
 
+  /**
+   * Creates a new session and returns a bound `StarciteSession` helper.
+   */
   async create(input: CreateSessionInput = {}): Promise<StarciteSession> {
     const record = await this.createSession(input);
     return this.session(record.id, record);
   }
 
+  /**
+   * Creates a new session and returns the raw session record.
+   */
   createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
     const payload = CreateSessionInputSchema.parse(input);
 
@@ -291,6 +329,9 @@ export class StarciteClient {
     );
   }
 
+  /**
+   * Appends a raw event payload to a specific session.
+   */
   appendEvent(
     sessionId: string,
     input: AppendEventRequest
@@ -307,6 +348,9 @@ export class StarciteClient {
     );
   }
 
+  /**
+   * Opens a WebSocket tail stream and yields raw events.
+   */
   async *tailRawEvents(
     sessionId: string,
     options: SessionTailOptions = {}
@@ -390,6 +434,9 @@ export class StarciteClient {
     }
   }
 
+  /**
+   * Opens a WebSocket tail stream and yields transformed session events.
+   */
   async *tailEvents(
     sessionId: string,
     options: SessionTailOptions = {}

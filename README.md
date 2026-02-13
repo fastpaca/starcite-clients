@@ -2,13 +2,12 @@
 
 Client SDKs and tooling for [Starcite](https://starcite.ai).
 
-This repo is structured so TypeScript packages work today and Python (plus other languages) can be added without changing release/version workflows.
+This repo is structured so TypeScript packages work today and additional language SDKs can be added over time without changing release/version workflows.
 
 ## Packages
 
 - `@starcite/sdk` (`packages/typescript-sdk`): TypeScript SDK
 - `starcite` (`packages/starcite-cli`): CLI
-- `packages/python-sdk`: Python SDK scaffold (not published yet)
 
 Package-level READMEs are the canonical docs for npm users:
 

@@ -1,5 +1,8 @@
 import type { StarciteErrorPayload } from "./types";
 
+/**
+ * Base error type for SDK-level failures.
+ */
 export class StarciteError extends Error {
   constructor(message: string) {
     super(message);
@@ -7,9 +10,15 @@ export class StarciteError extends Error {
   }
 }
 
+/**
+ * Thrown when the Starcite API responds with a non-2xx status code.
+ */
 export class StarciteApiError extends StarciteError {
+  /** HTTP status code returned by the API. */
   readonly status: number;
+  /** Stable API error code (or synthesized `http_<status>` fallback). */
   readonly code: string;
+  /** Parsed API error payload when available. */
   readonly payload: StarciteErrorPayload | null;
 
   constructor(
@@ -26,6 +35,9 @@ export class StarciteApiError extends StarciteError {
   }
 }
 
+/**
+ * Thrown when the SDK cannot reach Starcite or receives invalid transport payloads.
+ */
 export class StarciteConnectionError extends StarciteError {
   constructor(message: string) {
     super(message);

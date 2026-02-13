@@ -37,10 +37,16 @@ export {
   TailEventSchema,
 } from "./types";
 
+/**
+ * Creates a new {@link StarciteClient} instance.
+ */
 export function createStarciteClient(
   options: StarciteClientOptions = {}
 ): StarciteClient {
   return new StarciteClient(options);
 }
 
+/**
+ * Default singleton client using environment/default configuration.
+ */
 export const starcite = createStarciteClient();
