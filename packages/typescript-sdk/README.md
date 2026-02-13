@@ -1,10 +1,25 @@
 # @starcite/sdk
 
-TypeScript SDK for [Starcite](https://starcite.ai), optimized for this flow:
+TypeScript SDK for [Starcite](https://starcite.ai), built for multi-agent systems.
+
+Built for teams where multiple producers need shared, ordered context.
+
+`@starcite/sdk` helps you:
+
+- listen and monitor what multiple agents are doing,
+- keep frontend state consistent with a single ordered event source,
+- replay history and continue sessions reliably.
+
+Typical flow:
 
 1. create a session
 2. append ordered events
 3. tail from a cursor over WebSocket
+
+For multi-agent systems:
+
+- a) listen and monitor all producers in real time,
+- b) keep frontend consistency by reading from the same ordered stream.
 
 ## Install
 
@@ -37,6 +52,11 @@ const session = await client.create({
 await session.append({
   agent: "researcher",
   text: "Found 8 relevant cases.",
+});
+
+await session.append({
+  agent: "drafter",
+  text: "Drafted clause 4.2 with references.",
 });
 
 for await (const event of session.tail({ cursor: 0 })) {

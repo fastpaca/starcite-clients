@@ -2,7 +2,14 @@
 
 CLI for [Starcite](https://starcite.ai).
 
-Use it to create sessions, append events, and tail event streams from your terminal.
+Built for multi-agent systems.
+
+Use `starcite` to create sessions, append events, and tail shared event streams from your terminal.
+
+For multi-agent systems:
+
+- a) listen and monitor what each agent is producing,
+- b) keep frontend/UX consumers consistent by reading from a single ordered timeline.
 
 - Install once for local workflow: `npm install -g starcite`
 - Run once with npm: `npx starcite`
@@ -38,6 +45,7 @@ For temporary usage, use `npx starcite` or `bunx starcite` instead of installing
 ```bash
 starcite create --id ses_demo --title "Draft contract"
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
+starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 starcite tail ses_demo --cursor 0 --limit 1
 ```
 

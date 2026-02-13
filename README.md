@@ -1,48 +1,57 @@
-# Starcite Clients Monorepo
+# Starcite Clients
 
-Client SDKs and CLI tooling for [Starcite](https://starcite.ai).
+Built for multi-agent systems.
 
-This workspace ships in lockstep with shared versioning and release automation.
+`@starcite/sdk` and `starcite` give multiple producers a shared, append-only session feed you can trust for:
 
-## What to read first
+- live monitoring of each agent’s work,
+- consistent ordering and replay for frontend/UX stability,
+- auditable session history you can stream and inspect.
 
-- `@starcite/sdk` (`packages/typescript-sdk`): TypeScript SDK
-- `starcite` (`packages/starcite-cli`): Terminal client for sessions and events
+- `@starcite/sdk` (`packages/typescript-sdk`) for app-level integration in TypeScript.
+- `starcite` (`packages/starcite-cli`) for terminal-driven workflows and quick experiments.
 
-Package READMEs are the canonical docs for their respective tools:
+## Why this exists
 
-- `packages/typescript-sdk/README.md`
-- `packages/starcite-cli/README.md`
+Modern AI products often have many agents producing events at the same time. Starcite gives you:
 
-## Prerequisites
+- a single stream that captures everything in order,
+- a simple way to **a) listen/monitor** what every agent is doing,
+- UI/UX **b) consistency guarantees** so frontend views stay in sync with the same ordered event stream.
 
-- Node.js 22+
-- Bun 1.3+
-- Running Starcite API (default: `http://localhost:4000` or set `STARCITE_BASE_URL`)
+## Pick your path
 
-## Quick Start
+- Start with the TypeScript SDK if you are building an app: `packages/typescript-sdk/README.md`
+- Start with the CLI if you are scripting or testing from terminal: `packages/starcite-cli/README.md`
 
-1. Install dependencies in this monorepo
+## Get started in minutes
+
+1. Install dependencies
 
 ```bash
 bun install
 ```
 
-2. Point the clients at your API (optional if `http://localhost:4000` is your target):
+2. Set your API endpoint (or rely on the default)
 
 ```bash
-export STARCITE_BASE_URL=https://api.your-domain.example
+# local default
+export STARCITE_BASE_URL=http://localhost:4000
+
+# remote example
+# export STARCITE_BASE_URL=https://api.your-domain.example
 ```
 
-3. Run an end-to-end flow
+3. Run a tiny end-to-end flow
 
 ```bash
 bun run starcite create --id ses_demo --title "Draft contract"
 bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
+bun run starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 bun run starcite tail ses_demo --cursor 0 --limit 1
 ```
 
-## Workspace Commands (Dev)
+## Development commands (if you work in this repo)
 
 ```bash
 bun run build
@@ -51,31 +60,18 @@ bun run typecheck
 bun run test
 ```
 
-## Compile CLI Binary
+Build a standalone CLI binary when needed:
 
 ```bash
 bun run starcite:compile
 ./packages/starcite-cli/dist/starcite --help
 ```
 
-## Versioning and Release
+## Release process (intentional + manual)
 
-This repo uses a shared pre-1.0 policy and lockstep versioning for publishable packages.
+This repo intentionally uses manual releases.
 
-Use these commands for version updates:
-
-```bash
-bun run version:patch
-bun run version:minor
-bun run version:major
-bun run version:set -- 0.2.0
-```
-
-Use `major` only for intentional major-version shifts. Setting `version:set` to `>=1.0.0` without `STARCITE_ALLOW_MAJOR=1` is blocked.
-
-### Manual Release Flow
-
-1. Bump versions and create release commit + tag
+1. Choose a bump and create the release commit + tag:
 
 ```bash
 bun run release:patch
@@ -83,17 +79,18 @@ bun run release:minor
 bun run release:major
 ```
 
-2. Push commits and tag
+2. Push the release commit and tag:
 
 ```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-3. Publish using GitHub Releases (required by your repo automation)
+3. Publish through GitHub Releases:
 
-- Create release `vX.Y.Z` in GitHub
-- Workflow `.github/workflows/publish-npm.yml` publishes on `release.published`
-- CI verifies versions and publishes packages to npm
+- Create GitHub release `vX.Y.Z`.
+- `publish-npm.yml` publishes `@starcite/sdk` and `starcite` when `release.published` runs.
 
-Required secret: `NPM_TOKEN` (`Settings -> Secrets and variables -> Actions`).
+Required secret:
+
+- `NPM_TOKEN` (`Settings -> Secrets and variables -> Actions`)
