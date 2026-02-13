@@ -51,11 +51,15 @@ const session = await client.create({
 
 await session.append({
   agent: "researcher",
+  producerId: "producer:researcher",
+  producerSeq: 1,
   text: "Found 8 relevant cases.",
 });
 
 await session.append({
   agent: "drafter",
+  producerId: "producer:drafter",
+  producerSeq: 1,
   text: "Drafted clause 4.2 with references.",
 });
 
@@ -83,11 +87,18 @@ const client = createStarciteClient({
 
 ## Append Modes
 
+Every append requires producer identity fields:
+
+- `producerId`: stable producer identifier (for example `producer:drafter`)
+- `producerSeq`: per-producer positive sequence number (1, 2, 3, ...)
+
 High-level append:
 
 ```ts
 await client.session("ses_demo").append({
   agent: "drafter",
+  producerId: "producer:drafter",
+  producerSeq: 1,
   text: "Reviewing clause 4.2...",
 });
 ```
@@ -98,6 +109,8 @@ Raw append:
 await client.session("ses_demo").appendRaw({
   type: "content",
   actor: "agent:drafter",
+  producer_id: "producer:drafter",
+  producer_seq: 3,
   payload: { text: "Reviewing clause 4.2..." },
   idempotency_key: "req-123",
   expected_seq: 3,

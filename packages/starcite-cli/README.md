@@ -51,9 +51,17 @@ starcite tail ses_demo --cursor 0 --limit 1
 
 ## Global Options
 
-- `-u, --base-url <url>`: Starcite API base URL (defaults to `STARCITE_BASE_URL` or `http://localhost:4000`)
+- `-u, --base-url <url>`: Starcite API base URL (highest precedence)
+- `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
 - `-h, --help`: show help text
+
+Base URL resolution order:
+
+1. `--base-url`
+2. `STARCITE_BASE_URL`
+3. `~/.starcite/config.json` or `~/.starcite/config.toml`
+4. `http://localhost:4000`
 
 ## Commands
 
@@ -68,6 +76,12 @@ starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":
 ### `append <sessionId>`
 
 Append an event.
+`--producer-id` and `--producer-seq` are optional.
+If omitted, CLI rehydrates from `~/.starcite`:
+
+- producer id: config (`producerId`/`producer_id`) or generated identity
+- producer seq: persisted `nextSeq` per `(baseUrl, sessionId, producerId)` context
+- first sequence for a new context starts at `1`
 
 High-level mode (`--agent` + `--text`):
 
@@ -80,11 +94,23 @@ Raw mode (`--actor` + `--payload`):
 ```bash
 starcite append ses_demo \
   --actor agent:drafter \
+  --producer-id producer:drafter \
+  --producer-seq 3 \
   --type content \
   --payload '{"text":"Reviewing clause 4.2..."}' \
   --idempotency-key req-123 \
   --expected-seq 3
 ```
+
+## Config and State Files
+
+By default the CLI uses `~/.starcite`:
+
+- `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`)
+- `identity.json`: generated stable default producer id (`cli:<hostname>:<uuid>`)
+- `state.json`: persisted `nextSeqByContext` dictionary
+
+Use `--config-dir <path>` to override the directory for testing or isolated runs.
 
 ### `tail <sessionId>`
 

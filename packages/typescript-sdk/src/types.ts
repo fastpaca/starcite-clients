@@ -40,6 +40,8 @@ export const AppendEventRequestSchema = z.object({
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
+  producer_id: z.string().min(1),
+  producer_seq: z.number().int().positive(),
   source: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
   refs: ArbitraryObjectSchema.optional(),
@@ -74,6 +76,8 @@ export const TailEventSchema = z.object({
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
+  producer_id: z.string().min(1),
+  producer_seq: z.number().int().positive(),
   source: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
   refs: ArbitraryObjectSchema.optional(),
@@ -102,11 +106,14 @@ export type SessionEvent = z.infer<typeof SessionEventInternalSchema>;
 /**
  * High-level `session.append()` input.
  *
- * You must provide either `text` or `payload`.
+ * You must provide producer identity (`producerId`, `producerSeq`) and either
+ * `text` or `payload`.
  */
 export const SessionAppendInputSchema = z
   .object({
     agent: z.string().trim().min(1),
+    producerId: z.string().trim().min(1),
+    producerSeq: z.number().int().positive(),
     text: z.string().optional(),
     payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),

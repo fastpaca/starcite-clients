@@ -245,6 +245,8 @@ export class StarciteSession {
       type: parsed.type ?? "content",
       payload: parsed.payload ?? { text: parsed.text },
       actor,
+      producer_id: parsed.producerId,
+      producer_seq: parsed.producerSeq,
       source: parsed.source ?? "agent",
       metadata: parsed.metadata,
       refs: parsed.refs,

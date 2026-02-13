@@ -1,5 +1,6 @@
 import {
   createStarciteClient,
+  normalizeBaseUrl,
   type SessionEvent,
   StarciteApiError,
   type StarciteClient,
@@ -7,10 +8,23 @@ import {
 import { Command, InvalidArgumentError } from "commander";
 import { createConsola } from "consola";
 import { z } from "zod";
+import {
+  buildSeqContextKey,
+  resolveConfigDir,
+  type StarciteCliConfig,
+  StarciteCliStore,
+} from "./store";
 
 interface GlobalOptions {
+  baseUrl?: string;
+  configDir?: string;
+  json: boolean;
+}
+
+interface ResolvedGlobalOptions {
   baseUrl: string;
   json: boolean;
+  store: StarciteCliStore;
 }
 
 interface LoggerLike {
@@ -28,6 +42,7 @@ type CliJsonObject = Record<string, unknown>;
 const defaultLogger: LoggerLike = createConsola();
 
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
+const positiveIntegerSchema = z.coerce.number().int().positive();
 const jsonObjectSchema = z.record(z.unknown());
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
@@ -37,6 +52,16 @@ function parseNonNegativeInteger(value: string, optionName: string): number {
     throw new InvalidArgumentError(
       `${optionName} must be a non-negative integer`
     );
+  }
+
+  return parsed.data;
+}
+
+function parsePositiveInteger(value: string, optionName: string): number {
+  const parsed = positiveIntegerSchema.safeParse(value);
+
+  if (!parsed.success) {
+    throw new InvalidArgumentError(`${optionName} must be a positive integer`);
   }
 
   return parsed.data;
@@ -79,6 +104,38 @@ function getGlobalOptions(command: Command): GlobalOptions {
   return command.optsWithGlobals() as GlobalOptions;
 }
 
+function trimString(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveBaseUrl(
+  config: StarciteCliConfig,
+  options: GlobalOptions
+): string {
+  return (
+    trimString(options.baseUrl) ??
+    trimString(process.env.STARCITE_BASE_URL) ??
+    trimString(config.baseUrl) ??
+    "http://localhost:4000"
+  );
+}
+
+async function resolveGlobalOptions(
+  command: Command
+): Promise<ResolvedGlobalOptions> {
+  const options = getGlobalOptions(command);
+  const configDir = resolveConfigDir(options.configDir);
+  const store = new StarciteCliStore(configDir);
+  const config = await store.readConfig();
+
+  return {
+    baseUrl: resolveBaseUrl(config, options),
+    json: options.json,
+    store,
+  };
+}
+
 function formatTailEvent(event: SessionEvent): string {
   const actorLabel = event.agent ?? event.actor;
 
@@ -101,10 +158,10 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .name("starcite")
     .description("Starcite CLI")
     .showHelpAfterError()
+    .option("-u, --base-url <url>", "Starcite API base URL")
     .option(
-      "-u, --base-url <url>",
-      "Starcite API base URL",
-      process.env.STARCITE_BASE_URL ?? "http://localhost:4000"
+      "--config-dir <path>",
+      "Starcite CLI config directory (default: ~/.starcite)"
     )
     .option("--json", "Output JSON");
 
@@ -119,7 +176,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       title?: string;
       metadata?: string;
     }) {
-      const { baseUrl, json } = getGlobalOptions(this);
+      const { baseUrl, json } = await resolveGlobalOptions(this);
       const client = createClient(baseUrl);
       const metadata = options.metadata
         ? parseJsonObject(options.metadata, "--metadata")
@@ -148,6 +205,15 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--text <text>", "Text content (high-level mode)")
     .option("--type <type>", "Event type", "content")
     .option("--source <source>", "Event source")
+    .option(
+      "--producer-id <id>",
+      "Producer identity (auto-generated if omitted)"
+    )
+    .option(
+      "--producer-seq <seq>",
+      "Producer sequence (defaults to persisted state, starting at 1)",
+      (value) => parsePositiveInteger(value, "--producer-seq")
+    )
     .option("--actor <actor>", "Raw actor field (raw mode)")
     .option("--payload <json>", "Raw payload JSON object (raw mode)")
     .option("--metadata <json>", "Event metadata JSON object")
@@ -163,6 +229,8 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         text?: string;
         type: string;
         source?: string;
+        producerId?: string;
+        producerSeq?: number;
         actor?: string;
         payload?: string;
         metadata?: string;
@@ -171,7 +239,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         expectedSeq?: number;
       }
     ) {
-      const { baseUrl, json } = getGlobalOptions(this);
+      const { baseUrl, json, store } = await resolveGlobalOptions(this);
       const client = createClient(baseUrl);
       const session = client.session(sessionId);
 
@@ -191,9 +259,30 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         );
       }
 
-      const response = highLevelMode
-        ? await appendHighLevel(session, options, metadata, refs)
-        : await appendRaw(session, options, metadata, refs);
+      const producerId = await store.resolveProducerId(options.producerId);
+      const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+      const contextKey = buildSeqContextKey(
+        normalizedBaseUrl,
+        sessionId,
+        producerId
+      );
+
+      const response = await store.withStateLock(async () => {
+        const producerSeq =
+          options.producerSeq ?? (await store.readNextSeq(contextKey));
+        const appendOptions = {
+          ...options,
+          producerId,
+          producerSeq,
+        };
+
+        const appendResponse = highLevelMode
+          ? await appendHighLevel(session, appendOptions, metadata, refs)
+          : await appendRaw(session, appendOptions, metadata, refs);
+
+        await store.bumpNextSeq(contextKey, producerSeq);
+        return appendResponse;
+      });
 
       if (json) {
         logger.info(JSON.stringify(response, null, 2));
@@ -223,7 +312,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         limit?: number;
       }
     ) {
-      const { baseUrl, json } = getGlobalOptions(this);
+      const { baseUrl, json } = await resolveGlobalOptions(this);
       const client = createClient(baseUrl);
       const session = client.session(sessionId);
 
@@ -270,6 +359,8 @@ function appendHighLevel(
     text?: string;
     type: string;
     source?: string;
+    producerId: string;
+    producerSeq: number;
     idempotencyKey?: string;
     expectedSeq?: number;
   },
@@ -281,9 +372,10 @@ function appendHighLevel(
       "--agent and --text are required for high-level append mode"
     );
   }
-
   return session.append({
     agent: options.agent,
+    producerId: options.producerId,
+    producerSeq: options.producerSeq,
     text: options.text,
     type: options.type,
     source: options.source,
@@ -301,6 +393,8 @@ function appendRaw(
     payload?: string;
     type: string;
     source?: string;
+    producerId: string;
+    producerSeq: number;
     idempotencyKey?: string;
     expectedSeq?: number;
   },
@@ -312,11 +406,12 @@ function appendRaw(
       "Raw append mode requires --actor and --payload, or use --agent and --text"
     );
   }
-
   return session.appendRaw({
     type: options.type,
     payload: parseJsonObject(options.payload, "--payload"),
     actor: options.actor,
+    producer_id: options.producerId,
+    producer_seq: options.producerSeq,
     source: options.source,
     metadata,
     refs,

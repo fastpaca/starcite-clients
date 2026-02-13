@@ -85,6 +85,8 @@ describe("StarciteClient", () => {
 
     await session.append({
       agent: "researcher",
+      producerId: "producer:researcher",
+      producerSeq: 1,
       text: "Found 8 relevant cases...",
     });
 
@@ -108,6 +110,8 @@ describe("StarciteClient", () => {
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
         actor: "agent:researcher",
+        producer_id: "producer:researcher",
+        producer_seq: 1,
         source: "agent",
       })
     );
@@ -138,6 +142,8 @@ describe("StarciteClient", () => {
         type: "content",
         payload: { text: "ignore me" },
         actor: "agent:researcher",
+        producer_id: "producer:researcher",
+        producer_seq: 10,
       }),
     });
 
@@ -147,6 +153,8 @@ describe("StarciteClient", () => {
         type: "content",
         payload: { text: "Drafting clause 4.2..." },
         actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 11,
       }),
     });
 
