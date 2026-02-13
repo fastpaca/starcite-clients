@@ -35,7 +35,7 @@ bunx starcite --help
 
 ## Requirements
 
-- A running Starcite API (default: `http://localhost:4000`)
+- A running Starcite API (default: `http://localhost:45187`)
 - If needed, set `STARCITE_BASE_URL` before running any command
 
 For temporary usage, use `npx starcite` or `bunx starcite` instead of installing globally.
@@ -43,10 +43,26 @@ For temporary usage, use `npx starcite` or `bunx starcite` instead of installing
 ## Quick Start
 
 ```bash
+starcite up
 starcite create --id ses_demo --title "Draft contract"
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 starcite tail ses_demo --cursor 0 --limit 1
+```
+
+## Remote Setup (No Local Docker)
+
+```bash
+starcite init
+starcite config set endpoint https://cust-a.starcite.io
+starcite auth login
+```
+
+Non-interactive alternative:
+
+```bash
+starcite config set endpoint https://cust-a.starcite.io
+starcite config set api-key <YOUR_KEY>
 ```
 
 ## Global Options
@@ -61,7 +77,13 @@ Base URL resolution order:
 1. `--base-url`
 2. `STARCITE_BASE_URL`
 3. `~/.starcite/config.json` or `~/.starcite/config.toml`
-4. `http://localhost:4000`
+4. `http://localhost:45187`
+
+API key resolution order:
+
+1. `STARCITE_API_KEY`
+2. `~/.starcite/credentials.json`
+3. `apiKey` in `~/.starcite/config.json` or `~/.starcite/config.toml`
 
 ## Commands
 
@@ -72,6 +94,83 @@ Create a session.
 ```bash
 starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":"acme"}'
 ```
+
+### `init`
+
+Initialize config for remote usage.
+
+Behavior:
+
+- writes endpoint to `~/.starcite/config.json`
+- optionally stores API key
+- supports interactive prompts when flags are omitted
+
+Useful flags:
+
+- `--endpoint <url>`: endpoint to store
+- `--api-key <key>`: API key to save
+- `-y, --yes`: skip prompts and use provided values only
+
+### `config`
+
+Manage local configuration.
+
+```bash
+starcite config set endpoint https://cust-a.starcite.io
+starcite config set producer-id producer:my-agent
+starcite config show
+```
+
+Key aliases accepted by `config set`:
+
+- endpoint: `endpoint`, `base-url`, `base_url`
+- producer id: `producer-id`, `producer_id`
+- API key: `api-key`, `api_key`
+
+### `auth`
+
+Manage API key auth.
+
+```bash
+starcite auth login
+starcite auth status
+starcite auth logout
+```
+
+`auth login` supports `--api-key <key>` for non-interactive flows.
+
+### `up`
+
+Start local Starcite containers through an interactive wizard (Docker required).
+
+Wizard flow:
+
+- checks Docker / Docker Compose availability
+- asks for confirmation before creating containers
+- asks for API port (default from your configured base URL, fallback `45187`)
+- writes compose files to `~/.starcite/runtime` (or `--config-dir`)
+- runs `docker compose up -d`
+
+Useful flags:
+
+- `-y, --yes`: skip prompts and use defaults
+- `--port <port>`: set API port
+- `--db-port <port>`: set Postgres port (default `5433`)
+- `--image <image>`: override Starcite Docker image
+
+### `down`
+
+Stop local Starcite containers.
+
+By default this command is destructive:
+
+- runs `docker compose down --remove-orphans -v`
+- removes container volumes (`-v`) to fully reset local state
+
+Useful flags:
+
+- `-y, --yes`: skip confirmation prompt
+- `--no-volumes`: keep Postgres volume data
 
 ### `append <sessionId>`
 
@@ -106,7 +205,8 @@ starcite append ses_demo \
 
 By default the CLI uses `~/.starcite`:
 
-- `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`)
+- `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`, `apiKey`)
+- `credentials.json`: saved API key (`apiKey`)
 - `identity.json`: generated stable default producer id (`cli:<hostname>:<uuid>`)
 - `state.json`: persisted `nextSeqByContext` dictionary
 
@@ -141,7 +241,11 @@ cd starcite
 docker compose up -d
 ```
 
-Then run CLI commands against `http://localhost:4000`.
+Then point the CLI to the upstream compose port:
+
+```bash
+export STARCITE_BASE_URL=http://localhost:4000
+```
 
 ## Build Standalone Binary (Repo Dev)
 

@@ -36,7 +36,7 @@ bun install
 
 ```bash
 # local default
-export STARCITE_BASE_URL=http://localhost:4000
+export STARCITE_BASE_URL=http://localhost:45187
 
 # remote example
 # export STARCITE_BASE_URL=https://api.your-domain.example
@@ -45,10 +45,12 @@ export STARCITE_BASE_URL=http://localhost:4000
 3. Run a tiny end-to-end flow
 
 ```bash
+bun run starcite up
 bun run starcite create --id ses_demo --title "Draft contract"
 bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 bun run starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 bun run starcite tail ses_demo --cursor 0 --limit 1
+bun run starcite down --yes
 ```
 
 ## Development commands (if you work in this repo)

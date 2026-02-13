@@ -14,6 +14,16 @@ import {
   type StarciteCliConfig,
   StarciteCliStore,
 } from "./store";
+import {
+  type CommandRunner,
+  createDefaultPrompt,
+  DEFAULT_API_PORT,
+  defaultCommandRunner,
+  type PromptAdapter,
+  parsePortOption,
+  runDownWizard,
+  runUpWizard,
+} from "./up";
 
 interface GlobalOptions {
   baseUrl?: string;
@@ -23,18 +33,21 @@ interface GlobalOptions {
 
 interface ResolvedGlobalOptions {
   baseUrl: string;
+  apiKey?: string;
   json: boolean;
   store: StarciteCliStore;
 }
 
-interface LoggerLike {
+export interface LoggerLike {
   info(message: string): void;
   error(message: string): void;
 }
 
 interface CliDependencies {
-  createClient?: (baseUrl: string) => StarciteClient;
+  createClient?: (baseUrl: string, apiKey?: string) => StarciteClient;
   logger?: LoggerLike;
+  prompt?: PromptAdapter;
+  runCommand?: CommandRunner;
 }
 
 type CliJsonObject = Record<string, unknown>;
@@ -44,6 +57,9 @@ const defaultLogger: LoggerLike = createConsola();
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
 const positiveIntegerSchema = z.coerce.number().int().positive();
 const jsonObjectSchema = z.record(z.unknown());
+const TRAILING_SLASHES_REGEX = /\/+$/;
+
+type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
   const parsed = nonNegativeIntegerSchema.safeParse(value);
@@ -65,6 +81,52 @@ function parsePositiveInteger(value: string, optionName: string): number {
   }
 
   return parsed.data;
+}
+
+function parsePort(value: string, optionName: string): number {
+  return parsePortOption(value, optionName);
+}
+
+function parseEndpoint(value: string, optionName: string): string {
+  const endpoint = trimString(value);
+  if (!endpoint) {
+    throw new InvalidArgumentError(`${optionName} cannot be empty`);
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new InvalidArgumentError(`${optionName} must be a valid URL`);
+  }
+
+  if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
+    throw new InvalidArgumentError(
+      `${optionName} must use http:// or https://`
+    );
+  }
+
+  return endpoint.replace(TRAILING_SLASHES_REGEX, "");
+}
+
+function parseConfigSetKey(value: string): ConfigSetKey {
+  const normalized = value.trim().toLowerCase();
+
+  if (["endpoint", "base-url", "base_url"].includes(normalized)) {
+    return "endpoint";
+  }
+
+  if (["producer-id", "producer_id"].includes(normalized)) {
+    return "producer-id";
+  }
+
+  if (["api-key", "api_key"].includes(normalized)) {
+    return "api-key";
+  }
+
+  throw new InvalidArgumentError(
+    "config key must be one of: endpoint, producer-id, api-key"
+  );
 }
 
 function parseJsonOption<T>(
@@ -113,11 +175,12 @@ function resolveBaseUrl(
   config: StarciteCliConfig,
   options: GlobalOptions
 ): string {
+  const defaultBaseUrl = `http://localhost:${DEFAULT_API_PORT}`;
   return (
     trimString(options.baseUrl) ??
     trimString(process.env.STARCITE_BASE_URL) ??
     trimString(config.baseUrl) ??
-    "http://localhost:4000"
+    defaultBaseUrl
   );
 }
 
@@ -128,12 +191,38 @@ async function resolveGlobalOptions(
   const configDir = resolveConfigDir(options.configDir);
   const store = new StarciteCliStore(configDir);
   const config = await store.readConfig();
+  const apiKey = await store.readApiKey();
 
   return {
     baseUrl: resolveBaseUrl(config, options),
+    apiKey,
     json: options.json,
     store,
   };
+}
+
+async function promptForEndpoint(
+  prompt: PromptAdapter,
+  defaultEndpoint: string
+): Promise<string> {
+  while (true) {
+    const answer = await prompt.input("Starcite endpoint URL", defaultEndpoint);
+
+    try {
+      return parseEndpoint(answer, "endpoint");
+    } catch {
+      // keep asking until valid
+    }
+  }
+}
+
+async function promptForApiKey(prompt: PromptAdapter): Promise<string> {
+  const message = "Paste your Starcite API key";
+  const answer = prompt.password
+    ? await prompt.password(message)
+    : await prompt.input(message, "");
+
+  return trimString(answer) ?? "";
 }
 
 function formatTailEvent(event: SessionEvent): string {
@@ -149,8 +238,14 @@ function formatTailEvent(event: SessionEvent): string {
 export function buildProgram(deps: CliDependencies = {}): Command {
   const createClient =
     deps.createClient ??
-    ((baseUrl: string) => createStarciteClient({ baseUrl }));
+    ((baseUrl: string, apiKey?: string) =>
+      createStarciteClient({
+        baseUrl,
+        headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+      }));
   const logger = deps.logger ?? defaultLogger;
+  const prompt = deps.prompt ?? createDefaultPrompt();
+  const runCommand = deps.runCommand ?? defaultCommandRunner;
 
   const program = new Command();
 
@@ -166,6 +261,236 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--json", "Output JSON");
 
   program
+    .command("init")
+    .description("Initialize Starcite CLI config for a remote instance")
+    .option("--endpoint <url>", "Starcite endpoint URL")
+    .option("--api-key <key>", "API key to store")
+    .option("-y, --yes", "Skip prompts and only use provided options")
+    .action(async function initAction(options: {
+      endpoint?: string;
+      apiKey?: string;
+      yes?: boolean;
+    }) {
+      const { baseUrl, json, store } = await resolveGlobalOptions(this);
+
+      const defaultEndpoint = parseEndpoint(baseUrl, "endpoint");
+      let endpoint = defaultEndpoint;
+
+      if (options.endpoint) {
+        endpoint = parseEndpoint(options.endpoint, "--endpoint");
+      } else if (!options.yes) {
+        endpoint = await promptForEndpoint(prompt, defaultEndpoint);
+      }
+
+      await store.updateConfig({ baseUrl: endpoint });
+
+      let apiKey = trimString(options.apiKey);
+
+      if (!(apiKey || options.yes)) {
+        apiKey = await promptForApiKey(prompt);
+      }
+
+      if (apiKey) {
+        await store.saveApiKey(apiKey);
+        await store.updateConfig({ apiKey: undefined });
+      }
+
+      if (json) {
+        logger.info(
+          JSON.stringify(
+            {
+              configDir: store.directory,
+              endpoint,
+              apiKeySaved: Boolean(apiKey),
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      logger.info(`Initialized Starcite CLI in ${store.directory}`);
+      logger.info(`Endpoint set to ${endpoint}`);
+      if (apiKey) {
+        logger.info("API key saved. You can now run create/append/tail.");
+      } else {
+        logger.info("API key not set. Run `starcite auth login` when ready.");
+      }
+    });
+
+  program
+    .command("config")
+    .description("Manage CLI configuration")
+    .addCommand(
+      new Command("set")
+        .description("Set a configuration value")
+        .argument("<key>", "endpoint | producer-id | api-key")
+        .argument("<value>", "value to store")
+        .action(async function configSetAction(key: string, value: string) {
+          const { store } = await resolveGlobalOptions(this);
+          const parsedKey = parseConfigSetKey(key);
+
+          if (parsedKey === "endpoint") {
+            const endpoint = parseEndpoint(value, "endpoint");
+            await store.updateConfig({ baseUrl: endpoint });
+            logger.info(`Endpoint set to ${endpoint}`);
+            return;
+          }
+
+          if (parsedKey === "producer-id") {
+            const producerId = trimString(value);
+            if (!producerId) {
+              throw new InvalidArgumentError("producer-id cannot be empty");
+            }
+
+            await store.updateConfig({ producerId });
+            logger.info(`Producer ID set to ${producerId}`);
+            return;
+          }
+
+          await store.saveApiKey(value);
+          await store.updateConfig({ apiKey: undefined });
+          logger.info("API key saved.");
+        })
+    )
+    .addCommand(
+      new Command("show")
+        .description("Show current configuration")
+        .action(async function configShowAction() {
+          const { baseUrl, store } = await resolveGlobalOptions(this);
+          const config = await store.readConfig();
+          const apiKey = await store.readApiKey();
+          const fromEnv = trimString(process.env.STARCITE_API_KEY);
+          let apiKeySource = "unset";
+
+          if (fromEnv) {
+            apiKeySource = "env";
+          } else if (apiKey) {
+            apiKeySource = "stored";
+          }
+
+          logger.info(
+            JSON.stringify(
+              {
+                endpoint: config.baseUrl ?? baseUrl,
+                producerId: config.producerId ?? null,
+                apiKey: apiKey ? "***" : null,
+                apiKeySource,
+                configDir: store.directory,
+              },
+              null,
+              2
+            )
+          );
+        })
+    );
+
+  program
+    .command("auth")
+    .description("Manage API key authentication")
+    .addCommand(
+      new Command("login")
+        .description("Save an API key for authenticated requests")
+        .option("--api-key <key>", "API key to store")
+        .action(async function authLoginAction(options: { apiKey?: string }) {
+          const { store } = await resolveGlobalOptions(this);
+          let apiKey = trimString(options.apiKey);
+
+          if (!apiKey) {
+            apiKey = await promptForApiKey(prompt);
+          }
+
+          if (!apiKey) {
+            throw new Error("API key cannot be empty");
+          }
+
+          await store.saveApiKey(apiKey);
+          await store.updateConfig({ apiKey: undefined });
+          logger.info("API key saved.");
+        })
+    )
+    .addCommand(
+      new Command("logout")
+        .description("Remove the saved API key")
+        .action(async function authLogoutAction() {
+          const { store } = await resolveGlobalOptions(this);
+          await store.clearApiKey();
+          logger.info("Saved API key removed.");
+        })
+    )
+    .addCommand(
+      new Command("status")
+        .description("Show authentication status")
+        .action(async function authStatusAction() {
+          const { store } = await resolveGlobalOptions(this);
+          const apiKey = await store.readApiKey();
+          const fromEnv = trimString(process.env.STARCITE_API_KEY);
+
+          if (fromEnv) {
+            logger.info("Authenticated via STARCITE_API_KEY.");
+            return;
+          }
+
+          if (apiKey) {
+            logger.info("Authenticated via saved API key.");
+            return;
+          }
+
+          logger.info("No API key configured. Run `starcite auth login`.");
+        })
+    );
+
+  program
+    .command("up")
+    .description("Start local Starcite services with Docker")
+    .option("-y, --yes", "Skip confirmation prompts and use defaults")
+    .option("--port <port>", "Starcite API port", (value) =>
+      parsePort(value, "--port")
+    )
+    .option("--db-port <port>", "Postgres port", (value) =>
+      parsePort(value, "--db-port")
+    )
+    .option("--image <image>", "Override Starcite image")
+    .action(async function upAction(options: {
+      yes?: boolean;
+      port?: number;
+      dbPort?: number;
+      image?: string;
+    }) {
+      const { baseUrl, store } = await resolveGlobalOptions(this);
+
+      await runUpWizard({
+        baseUrl,
+        logger,
+        options,
+        prompt,
+        runCommand,
+        store,
+      });
+    });
+
+  program
+    .command("down")
+    .description("Stop and remove local Starcite services")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("--no-volumes", "Keep Postgres volume data")
+    .action(async function downAction(options: {
+      yes?: boolean;
+      volumes?: boolean;
+    }) {
+      const { store } = await resolveGlobalOptions(this);
+
+      await runDownWizard({
+        logger,
+        options,
+        prompt,
+        runCommand,
+        store,
+      });
+    });
+
+  program
     .command("create")
     .description("Create a session")
     .option("--id <id>", "Session ID")
@@ -176,8 +501,10 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       title?: string;
       metadata?: string;
     }) {
-      const { baseUrl, json } = await resolveGlobalOptions(this);
-      const client = createClient(baseUrl);
+      const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
+      const client = apiKey
+        ? createClient(baseUrl, apiKey)
+        : createClient(baseUrl);
       const metadata = options.metadata
         ? parseJsonObject(options.metadata, "--metadata")
         : undefined;
@@ -239,8 +566,10 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         expectedSeq?: number;
       }
     ) {
-      const { baseUrl, json, store } = await resolveGlobalOptions(this);
-      const client = createClient(baseUrl);
+      const { baseUrl, apiKey, json, store } = await resolveGlobalOptions(this);
+      const client = apiKey
+        ? createClient(baseUrl, apiKey)
+        : createClient(baseUrl);
       const session = client.session(sessionId);
 
       const metadata = options.metadata
@@ -312,8 +641,10 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         limit?: number;
       }
     ) {
-      const { baseUrl, json } = await resolveGlobalOptions(this);
-      const client = createClient(baseUrl);
+      const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
+      const client = apiKey
+        ? createClient(baseUrl, apiKey)
+        : createClient(baseUrl);
       const session = client.session(sessionId);
 
       const abortController = new AbortController();

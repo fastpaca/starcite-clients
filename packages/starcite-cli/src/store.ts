@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import Conf from "conf";
@@ -11,6 +11,7 @@ import { z } from "zod";
 const DEFAULT_CONFIG_DIRECTORY_NAME = ".starcite";
 const CONFIG_JSON_FILENAME = "config.json";
 const CONFIG_TOML_FILENAME = "config.toml";
+const CREDENTIALS_FILENAME = "credentials";
 const IDENTITY_FILENAME = "identity";
 const STATE_FILENAME = "state";
 const STATE_LOCK_FILENAME = ".state.lock";
@@ -22,6 +23,8 @@ const ConfigFileSchema = z
     base_url: z.string().optional(),
     producerId: z.string().optional(),
     producer_id: z.string().optional(),
+    apiKey: z.string().optional(),
+    api_key: z.string().optional(),
   })
   .passthrough();
 
@@ -36,12 +39,18 @@ const StateFileSchema = z.object({
   nextSeqByContext: z.record(z.number().int().positive()).default({}),
 });
 
+const CredentialsFileSchema = z.object({
+  apiKey: z.string().trim().min(1).optional(),
+});
+
 type IdentityFile = z.infer<typeof IdentityFileSchema>;
 type StateFile = z.infer<typeof StateFileSchema>;
+type CredentialsFile = z.infer<typeof CredentialsFileSchema>;
 
 export interface StarciteCliConfig {
   baseUrl?: string;
   producerId?: string;
+  apiKey?: string;
 }
 
 function trimString(value?: string): string | undefined {
@@ -59,6 +68,7 @@ function normalizeConfig(input: unknown): StarciteCliConfig {
   return {
     baseUrl: trimString(parsed.data.baseUrl ?? parsed.data.base_url),
     producerId: trimString(parsed.data.producerId ?? parsed.data.producer_id),
+    apiKey: trimString(parsed.data.apiKey ?? parsed.data.api_key),
   };
 }
 
@@ -101,6 +111,7 @@ export class StarciteCliStore {
     },
   });
   private readonly identityStore: Conf<IdentityFile>;
+  private readonly credentialsStore: Conf<CredentialsFile>;
   private readonly stateStore: Conf<StateFile>;
 
   constructor(directory: string) {
@@ -111,6 +122,13 @@ export class StarciteCliStore {
       clearInvalidConfig: true,
       configName: IDENTITY_FILENAME,
       fileExtension: "json",
+    });
+    this.credentialsStore = new Conf<CredentialsFile>({
+      cwd: directory,
+      clearInvalidConfig: true,
+      configName: CREDENTIALS_FILENAME,
+      fileExtension: "json",
+      defaults: {},
     });
     this.stateStore = new Conf<StateFile>({
       cwd: directory,
@@ -130,6 +148,78 @@ export class StarciteCliStore {
     }
 
     return normalizeConfig(result.config);
+  }
+
+  async writeConfig(config: StarciteCliConfig): Promise<void> {
+    await this.ensureConfigDirectory();
+
+    const normalized = normalizeConfig(config);
+    const serialized: StarciteCliConfig = {};
+
+    if (normalized.baseUrl) {
+      serialized.baseUrl = normalized.baseUrl;
+    }
+
+    if (normalized.producerId) {
+      serialized.producerId = normalized.producerId;
+    }
+
+    if (normalized.apiKey) {
+      serialized.apiKey = normalized.apiKey;
+    }
+
+    await writeFile(
+      join(this.directory, CONFIG_JSON_FILENAME),
+      `${JSON.stringify(serialized, null, 2)}\n`,
+      "utf8"
+    );
+  }
+
+  async updateConfig(
+    patch: Partial<StarciteCliConfig>
+  ): Promise<StarciteCliConfig> {
+    const current = await this.readConfig();
+    const merged = normalizeConfig({
+      ...current,
+      ...patch,
+    });
+
+    await this.writeConfig(merged);
+    return merged;
+  }
+
+  async readApiKey(): Promise<string | undefined> {
+    const fromEnv = trimString(process.env.STARCITE_API_KEY);
+    if (fromEnv) {
+      return fromEnv;
+    }
+
+    const parsed = CredentialsFileSchema.safeParse(this.credentialsStore.store);
+    const fromCredentials = parsed.success
+      ? trimString(parsed.data.apiKey)
+      : undefined;
+    if (fromCredentials) {
+      return fromCredentials;
+    }
+
+    const config = await this.readConfig();
+    return trimString(config.apiKey);
+  }
+
+  async saveApiKey(apiKey: string): Promise<void> {
+    await this.ensureConfigDirectory();
+
+    const normalized = trimString(apiKey);
+    if (!normalized) {
+      throw new Error("API key cannot be empty");
+    }
+
+    this.credentialsStore.set("apiKey", normalized);
+  }
+
+  async clearApiKey(): Promise<void> {
+    await this.ensureConfigDirectory();
+    this.credentialsStore.delete("apiKey");
   }
 
   async resolveProducerId(explicitProducerId?: string): Promise<string> {
