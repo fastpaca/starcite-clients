@@ -35,7 +35,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "bun run clean && bun run build",
     "publish:dry": "bun publish --dry-run --access public",
-    "test:dist": "bun run --cwd ../typescript-sdk build && bun run clean && bun run build && node dist/index.js --help > /dev/null"
+    "test:dist": "bun run --cwd ../typescript-sdk build && bun run clean && bun run build && node dist/index.js --help > /dev/null",
+    "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
+    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md"
   },
   "dependencies": {
     "@starcite/sdk": "workspace:^0.1.0",
