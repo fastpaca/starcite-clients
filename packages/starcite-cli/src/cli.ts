@@ -9,6 +9,8 @@ import {
   type StarciteClient,
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
+import { createConsola } from "consola";
+import { z } from "zod";
 
 interface GlobalOptions {
   baseUrl: string;
@@ -25,61 +27,73 @@ interface CliRuntime {
   logger?: CliLogger;
 }
 
-const defaultLogger: CliLogger = {
-  info(message: string): void {
-    console.log(message);
-  },
-  error(message: string): void {
-    console.error(message);
-  },
-};
+const defaultLogger: CliLogger = createConsola();
+
+const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
+const jsonTextSchema = z.string().transform<unknown>((value, ctx) => {
+  try {
+    return JSON.parse(value) as string | Record<string, unknown> | unknown[];
+  } catch {
+    ctx.addIssue({
+      code: "custom",
+      message: "invalidJson",
+    });
+
+    return z.NEVER;
+  }
+});
+
+function parseAndValidateJson<T>(
+  value: string,
+  schema: z.ZodType<T>,
+  optionName: string,
+  invalidShapeMessage: string
+) {
+  const result = jsonTextSchema.pipe(schema).safeParse(value);
+
+  if (!result.success) {
+    const invalidJson = result.error.issues.some(
+      (issue) => issue.message === "invalidJson"
+    );
+
+    throw new InvalidArgumentError(
+      invalidJson
+        ? `${optionName} must be valid JSON`
+        : `${optionName} must be ${invalidShapeMessage}`
+    );
+  }
+
+  return result.data;
+}
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
-  const parsed = Number(value);
+  const parsed = nonNegativeIntegerSchema.safeParse(value);
 
-  if (!Number.isInteger(parsed) || parsed < 0) {
+  if (!parsed.success) {
     throw new InvalidArgumentError(
       `${optionName} must be a non-negative integer`
     );
   }
 
-  return parsed;
+  return parsed.data;
 }
 
 function parseJsonObject(value: string, optionName: string): JsonObject {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new InvalidArgumentError(`${optionName} must be valid JSON`);
-  }
-
-  const result = JsonObjectSchema.safeParse(parsed);
-
-  if (!result.success) {
-    throw new InvalidArgumentError(`${optionName} must be a JSON object`);
-  }
-
-  return result.data;
+  return parseAndValidateJson(
+    value,
+    JsonObjectSchema,
+    optionName,
+    "a JSON object"
+  );
 }
 
 function parseEventRefs(value: string): EventRefs {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new InvalidArgumentError("--refs must be valid JSON");
-  }
-
-  const result = EventRefsSchema.safeParse(parsed);
-
-  if (!result.success) {
-    throw new InvalidArgumentError("--refs must be a JSON object");
-  }
-
-  return result.data;
+  return parseAndValidateJson(
+    value,
+    EventRefsSchema,
+    "--refs",
+    "a JSON object"
+  );
 }
 
 function getGlobalOptions(command: Command): GlobalOptions {
