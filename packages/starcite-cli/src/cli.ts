@@ -1,6 +1,5 @@
 import {
   createStarciteClient,
-  type EventRefs,
   type SessionEvent,
   StarciteApiError,
   type StarciteClient,
@@ -72,8 +71,8 @@ function parseJsonObject(value: string, optionName: string): CliJsonObject {
   return parseJsonOption(value, jsonObjectSchema, optionName, "a JSON object");
 }
 
-function parseEventRefs(value: string): EventRefs {
-  return parseJsonObject(value, "--refs") as EventRefs;
+function parseEventRefs(value: string): CliJsonObject {
+  return parseJsonObject(value, "--refs");
 }
 
 function getGlobalOptions(command: Command): GlobalOptions {
@@ -275,7 +274,7 @@ function appendHighLevel(
     expectedSeq?: number;
   },
   metadata?: CliJsonObject,
-  refs?: EventRefs
+  refs?: CliJsonObject
 ) {
   if (!(options.agent && options.text)) {
     throw new Error(
@@ -306,7 +305,7 @@ function appendRaw(
     expectedSeq?: number;
   },
   metadata?: CliJsonObject,
-  refs?: EventRefs
+  refs?: CliJsonObject
 ) {
   if (!(options.actor && options.payload)) {
     throw new Error(

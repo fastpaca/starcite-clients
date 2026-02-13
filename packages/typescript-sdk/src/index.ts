@@ -12,7 +12,6 @@ export type {
   AppendEventRequest,
   AppendEventResponse,
   CreateSessionInput,
-  EventRefs,
   SessionAppendInput,
   SessionEvent,
   SessionRecord,
@@ -23,18 +22,6 @@ export type {
   StarciteWebSocketFactory,
   TailEvent,
 } from "./types";
-export {
-  AppendEventRequestSchema,
-  AppendEventResponseSchema,
-  CreateSessionInputSchema,
-  EventRefsSchema,
-  SessionAppendInputSchema,
-  SessionEventSchema,
-  SessionRecordSchema,
-  StarciteErrorPayloadSchema,
-  TailEventSchema,
-} from "./types";
-
 /**
  * Creates a new {@link StarciteClient} instance.
  */

@@ -3,23 +3,6 @@ import { z } from "zod";
 const ArbitraryObjectSchema = z.record(z.unknown());
 
 /**
- * Event reference metadata used to link events to prior sequences, requests, or steps.
- */
-export const EventRefsSchema = z
-  .object({
-    to_seq: z.number().int().nonnegative().optional(),
-    request_id: z.string().optional(),
-    sequence_id: z.string().optional(),
-    step: z.number().int().nonnegative().optional(),
-  })
-  .catchall(z.unknown());
-
-/**
- * Inferred TypeScript type for {@link EventRefsSchema}.
- */
-export type EventRefs = z.infer<typeof EventRefsSchema>;
-
-/**
  * Request payload for creating a session.
  */
 export const CreateSessionInputSchema = z.object({
@@ -59,7 +42,7 @@ export const AppendEventRequestSchema = z.object({
   actor: z.string().min(1),
   source: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
-  refs: EventRefsSchema.optional(),
+  refs: ArbitraryObjectSchema.optional(),
   idempotency_key: z.string().optional(),
   expected_seq: z.number().int().nonnegative().optional(),
 });
@@ -93,7 +76,7 @@ export const TailEventSchema = z.object({
   actor: z.string().min(1),
   source: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
-  refs: EventRefsSchema.optional(),
+  refs: ArbitraryObjectSchema.optional(),
   idempotency_key: z.string().nullable().optional(),
   inserted_at: z.string().optional(),
 });
@@ -106,15 +89,15 @@ export type TailEvent = z.infer<typeof TailEventSchema>;
 /**
  * Convenience tail event shape with SDK-derived fields (`agent`, `text`).
  */
-export const SessionEventSchema = TailEventSchema.extend({
+const SessionEventInternalSchema = TailEventSchema.extend({
   agent: z.string().optional(),
   text: z.string().optional(),
 });
 
 /**
- * Inferred TypeScript type for {@link SessionEventSchema}.
+ * Inferred TypeScript type for the SDK-level enriched tail event.
  */
-export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type SessionEvent = z.infer<typeof SessionEventInternalSchema>;
 
 /**
  * High-level `session.append()` input.
@@ -129,7 +112,7 @@ export const SessionAppendInputSchema = z
     type: z.string().optional(),
     source: z.string().optional(),
     metadata: ArbitraryObjectSchema.optional(),
-    refs: EventRefsSchema.optional(),
+    refs: ArbitraryObjectSchema.optional(),
     idempotencyKey: z.string().optional(),
     expectedSeq: z.number().int().nonnegative().optional(),
   })
