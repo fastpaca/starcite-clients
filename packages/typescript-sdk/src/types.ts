@@ -1,14 +1,6 @@
 import { z } from "zod";
 
-/**
- * Generic JSON object shape used for event payloads, metadata, and arbitrary maps.
- */
-export const JsonObjectSchema = z.record(z.unknown());
-
-/**
- * Inferred TypeScript type for {@link JsonObjectSchema}.
- */
-export type JsonObject = z.infer<typeof JsonObjectSchema>;
+const ArbitraryObjectSchema = z.record(z.unknown());
 
 /**
  * Event reference metadata used to link events to prior sequences, requests, or steps.
@@ -33,7 +25,7 @@ export type EventRefs = z.infer<typeof EventRefsSchema>;
 export const CreateSessionInputSchema = z.object({
   id: z.string().optional(),
   title: z.string().optional(),
-  metadata: JsonObjectSchema.optional(),
+  metadata: ArbitraryObjectSchema.optional(),
 });
 
 /**
@@ -47,7 +39,7 @@ export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
 export const SessionRecordSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),
-  metadata: JsonObjectSchema,
+  metadata: ArbitraryObjectSchema,
   last_seq: z.number().int().nonnegative(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -63,10 +55,10 @@ export type SessionRecord = z.infer<typeof SessionRecordSchema>;
  */
 export const AppendEventRequestSchema = z.object({
   type: z.string().min(1),
-  payload: JsonObjectSchema,
+  payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
   source: z.string().optional(),
-  metadata: JsonObjectSchema.optional(),
+  metadata: ArbitraryObjectSchema.optional(),
   refs: EventRefsSchema.optional(),
   idempotency_key: z.string().optional(),
   expected_seq: z.number().int().nonnegative().optional(),
@@ -97,10 +89,10 @@ export type AppendEventResponse = z.infer<typeof AppendEventResponseSchema>;
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
   type: z.string().min(1),
-  payload: JsonObjectSchema,
+  payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
   source: z.string().optional(),
-  metadata: JsonObjectSchema.optional(),
+  metadata: ArbitraryObjectSchema.optional(),
   refs: EventRefsSchema.optional(),
   idempotency_key: z.string().nullable().optional(),
   inserted_at: z.string().optional(),
@@ -133,10 +125,10 @@ export const SessionAppendInputSchema = z
   .object({
     agent: z.string().trim().min(1),
     text: z.string().optional(),
-    payload: JsonObjectSchema.optional(),
+    payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),
     source: z.string().optional(),
-    metadata: JsonObjectSchema.optional(),
+    metadata: ArbitraryObjectSchema.optional(),
     refs: EventRefsSchema.optional(),
     idempotencyKey: z.string().optional(),
     expectedSeq: z.number().int().nonnegative().optional(),

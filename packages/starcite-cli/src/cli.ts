@@ -1,9 +1,6 @@
 import {
   createStarciteClient,
   type EventRefs,
-  EventRefsSchema,
-  type JsonObject,
-  JsonObjectSchema,
   type SessionEvent,
   StarciteApiError,
   type StarciteClient,
@@ -27,9 +24,12 @@ interface CliDependencies {
   logger?: LoggerLike;
 }
 
+type CliJsonObject = Record<string, unknown>;
+
 const defaultLogger: LoggerLike = createConsola();
 
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
+const jsonObjectSchema = z.record(z.unknown());
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
   const parsed = nonNegativeIntegerSchema.safeParse(value);
@@ -68,12 +68,12 @@ function parseJsonOption<T>(
   return result.data;
 }
 
-function parseJsonObject(value: string, optionName: string): JsonObject {
-  return parseJsonOption(value, JsonObjectSchema, optionName, "a JSON object");
+function parseJsonObject(value: string, optionName: string): CliJsonObject {
+  return parseJsonOption(value, jsonObjectSchema, optionName, "a JSON object");
 }
 
 function parseEventRefs(value: string): EventRefs {
-  return parseJsonOption(value, EventRefsSchema, "--refs", "a JSON object");
+  return parseJsonObject(value, "--refs") as EventRefs;
 }
 
 function getGlobalOptions(command: Command): GlobalOptions {
@@ -274,7 +274,7 @@ function appendHighLevel(
     idempotencyKey?: string;
     expectedSeq?: number;
   },
-  metadata?: JsonObject,
+  metadata?: CliJsonObject,
   refs?: EventRefs
 ) {
   if (!(options.agent && options.text)) {
@@ -305,7 +305,7 @@ function appendRaw(
     idempotencyKey?: string;
     expectedSeq?: number;
   },
-  metadata?: JsonObject,
+  metadata?: CliJsonObject,
   refs?: EventRefs
 ) {
   if (!(options.actor && options.payload)) {
