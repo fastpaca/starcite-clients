@@ -37,7 +37,8 @@
     "publish:dry": "bun publish --dry-run --access public",
     "test:dist": "bun run --cwd ../typescript-sdk build && bun run clean && bun run build && node dist/index.js --help > /dev/null",
     "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
-    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md"
+    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
+    "check": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
     "@starcite/sdk": "workspace:^0.1.0",

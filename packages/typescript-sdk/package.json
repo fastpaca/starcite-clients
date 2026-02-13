@@ -42,7 +42,8 @@
     "prepublishOnly": "bun run clean && bun run build",
     "publish:dry": "bun publish --dry-run --access public",
     "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts README.md",
-    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts README.md"
+    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts README.md",
+    "check": "bun run lint && bun run typecheck && bun run test"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
