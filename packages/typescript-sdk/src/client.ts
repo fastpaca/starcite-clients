@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   StarciteApiError,
   StarciteConnectionError,
@@ -17,8 +18,10 @@ import type {
   TailEvent,
 } from "./types";
 import {
+  AppendEventRequestSchema,
   AppendEventResponseSchema,
-  JsonObjectSchema,
+  CreateSessionInputSchema,
+  SessionAppendInputSchema,
   SessionRecordSchema,
   StarciteErrorPayloadSchema,
   TailEventSchema,
@@ -29,6 +32,21 @@ const DEFAULT_BASE_URL =
     ? process.env.STARCITE_BASE_URL
     : "http://localhost:4000";
 const TRAILING_SLASHES_REGEX = /\/+$/;
+
+const TailFrameSchema = z
+  .string()
+  .transform((frame, context): unknown => {
+    try {
+      return JSON.parse(frame) as unknown;
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Tail frame was not valid JSON",
+      });
+      return z.NEVER;
+    }
+  })
+  .pipe(TailEventSchema);
 
 class AsyncQueue<T> {
   private readonly items: Array<
@@ -153,25 +171,12 @@ function toError(error: unknown): Error {
 }
 
 function parseEventFrame(data: unknown): TailEvent {
-  if (typeof data !== "string") {
-    throw new StarciteConnectionError("Tail frame was not valid JSON text");
-  }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    throw new StarciteConnectionError("Tail frame was not valid JSON");
-  }
-
-  const result = TailEventSchema.safeParse(parsed);
+  const result = TailFrameSchema.safeParse(data);
 
   if (!result.success) {
-    const reason = result.error.issues[0]?.message ?? "invalid event payload";
-    throw new StarciteConnectionError(
-      `Tail frame did not match expected schema: ${reason}`
-    );
+    const reason =
+      result.error.issues[0]?.message ?? "Tail frame did not match schema";
+    throw new StarciteConnectionError(reason);
   }
 
   return result.data;
@@ -218,32 +223,20 @@ export class StarciteSession {
   }
 
   append(input: SessionAppendInput): Promise<AppendEventResponse> {
-    if (!input.agent || input.agent.trim().length === 0) {
-      throw new StarciteError("append() requires a non-empty 'agent'");
-    }
-
-    const actor = input.agent.startsWith("agent:")
-      ? input.agent
-      : `agent:${input.agent}`;
-
-    const payload =
-      input.payload ?? (input.text ? { text: input.text } : undefined);
-
-    if (!(payload && JsonObjectSchema.safeParse(payload).success)) {
-      throw new StarciteError(
-        "append() requires either 'text' or an object 'payload'"
-      );
-    }
+    const parsed = SessionAppendInputSchema.parse(input);
+    const actor = parsed.agent.startsWith("agent:")
+      ? parsed.agent
+      : `agent:${parsed.agent}`;
 
     return this.client.appendEvent(this.id, {
-      type: input.type ?? "content",
-      payload,
+      type: parsed.type ?? "content",
+      payload: parsed.payload ?? { text: parsed.text },
       actor,
-      source: input.source ?? "agent",
-      metadata: input.metadata,
-      refs: input.refs,
-      idempotency_key: input.idempotencyKey,
-      expected_seq: input.expectedSeq,
+      source: parsed.source ?? "agent",
+      metadata: parsed.metadata,
+      refs: parsed.refs,
+      idempotency_key: parsed.idempotencyKey,
+      expected_seq: parsed.expectedSeq,
     });
   }
 
@@ -286,13 +279,15 @@ export class StarciteClient {
   }
 
   createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
-    return this.request<SessionRecord>(
+    const payload = CreateSessionInputSchema.parse(input);
+
+    return this.request(
       "/sessions",
       {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify(payload),
       },
-      (responseBody) => SessionRecordSchema.parse(responseBody)
+      SessionRecordSchema
     );
   }
 
@@ -300,13 +295,15 @@ export class StarciteClient {
     sessionId: string,
     input: AppendEventRequest
   ): Promise<AppendEventResponse> {
-    return this.request<AppendEventResponse>(
+    const payload = AppendEventRequestSchema.parse(input);
+
+    return this.request(
       `/sessions/${encodeURIComponent(sessionId)}/append`,
       {
         method: "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify(payload),
       },
-      (responseBody) => AppendEventResponseSchema.parse(responseBody)
+      AppendEventResponseSchema
     );
   }
 
@@ -328,10 +325,8 @@ export class StarciteClient {
     const socket = this.websocketFactory(wsUrl);
 
     const onMessage = (event: unknown): void => {
-      const data = getEventData(event);
-
       try {
-        const parsed = parseEventFrame(data);
+        const parsed = parseEventFrame(getEventData(event));
 
         if (options.agent && agentFromActor(parsed.actor) !== options.agent) {
           return;
@@ -407,7 +402,7 @@ export class StarciteClient {
   private async request<T>(
     path: string,
     init: RequestInit,
-    parser?: (value: unknown) => T
+    schema?: z.ZodType<T>
   ): Promise<T> {
     const headers = new Headers(this.headers);
 
@@ -454,27 +449,21 @@ export class StarciteClient {
       return undefined as T;
     }
 
-    let responseBody: unknown;
+    const responseBody = (await response.json()) as unknown;
 
-    try {
-      responseBody = await response.json();
-    } catch {
-      throw new StarciteConnectionError(
-        `Received invalid JSON response from Starcite at ${this.baseUrl}${path}`
-      );
-    }
-
-    if (!parser) {
+    if (!schema) {
       return responseBody as T;
     }
 
-    try {
-      return parser(responseBody);
-    } catch (error) {
+    const parsed = schema.safeParse(responseBody);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]?.message ?? "invalid response";
       throw new StarciteConnectionError(
-        `Received unexpected response payload from Starcite: ${toError(error).message}`
+        `Received unexpected response payload from Starcite: ${issue}`
       );
     }
+
+    return parsed.data;
   }
 }
 
@@ -484,12 +473,7 @@ async function tryParseJson(
   try {
     const parsed = (await response.json()) as unknown;
     const result = StarciteErrorPayloadSchema.safeParse(parsed);
-
-    if (!result.success) {
-      return null;
-    }
-
-    return result.data;
+    return result.success ? result.data : null;
   } catch {
     return null;
   }

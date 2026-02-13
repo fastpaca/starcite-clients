@@ -76,17 +76,21 @@ export const SessionEventSchema = TailEventSchema.extend({
 
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
-export const SessionAppendInputSchema = z.object({
-  agent: z.string(),
-  text: z.string().optional(),
-  payload: JsonObjectSchema.optional(),
-  type: z.string().optional(),
-  source: z.string().optional(),
-  metadata: JsonObjectSchema.optional(),
-  refs: EventRefsSchema.optional(),
-  idempotencyKey: z.string().optional(),
-  expectedSeq: z.number().int().nonnegative().optional(),
-});
+export const SessionAppendInputSchema = z
+  .object({
+    agent: z.string().trim().min(1),
+    text: z.string().optional(),
+    payload: JsonObjectSchema.optional(),
+    type: z.string().optional(),
+    source: z.string().optional(),
+    metadata: JsonObjectSchema.optional(),
+    refs: EventRefsSchema.optional(),
+    idempotencyKey: z.string().optional(),
+    expectedSeq: z.number().int().nonnegative().optional(),
+  })
+  .refine((value) => !!(value.text || value.payload), {
+    message: "append() requires either 'text' or an object 'payload'",
+  });
 
 export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
 
