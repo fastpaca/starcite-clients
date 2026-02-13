@@ -1,81 +1,94 @@
-export type JsonPrimitive = string | number | boolean | null;
+import { z } from "zod";
 
-export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+export const JsonObjectSchema = z.record(z.unknown());
 
-export interface JsonObject {
-  [key: string]: JsonValue;
-}
+export type JsonObject = z.infer<typeof JsonObjectSchema>;
 
-export type JsonArray = JsonValue[];
+export const EventRefsSchema = z
+  .object({
+    to_seq: z.number().int().nonnegative().optional(),
+    request_id: z.string().optional(),
+    sequence_id: z.string().optional(),
+    step: z.number().int().nonnegative().optional(),
+  })
+  .catchall(z.unknown());
 
-export interface EventRefs {
-  [key: string]: JsonValue | undefined;
-  to_seq?: number;
-  request_id?: string;
-  sequence_id?: string;
-  step?: number;
-}
+export type EventRefs = z.infer<typeof EventRefsSchema>;
 
-export interface CreateSessionInput {
-  id?: string;
-  title?: string;
-  metadata?: JsonObject;
-}
+export const CreateSessionInputSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().optional(),
+  metadata: JsonObjectSchema.optional(),
+});
 
-export interface SessionRecord {
-  id: string;
-  title?: string | null;
-  metadata: JsonObject;
-  last_seq: number;
-  created_at: string;
-  updated_at: string;
-}
+export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
 
-export interface AppendEventRequest {
-  type: string;
-  payload: JsonObject;
-  actor: string;
-  source?: string;
-  metadata?: JsonObject;
-  refs?: EventRefs;
-  idempotency_key?: string;
-  expected_seq?: number;
-}
+export const SessionRecordSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable().optional(),
+  metadata: JsonObjectSchema,
+  last_seq: z.number().int().nonnegative(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
 
-export interface AppendEventResponse {
-  seq: number;
-  last_seq: number;
-  deduped: boolean;
-}
+export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 
-export interface TailEvent {
-  seq: number;
-  type: string;
-  payload: JsonObject;
-  actor: string;
-  source?: string;
-  metadata?: JsonObject;
-  refs?: EventRefs;
-  idempotency_key?: string;
-  inserted_at?: string;
-}
+export const AppendEventRequestSchema = z.object({
+  type: z.string().min(1),
+  payload: JsonObjectSchema,
+  actor: z.string().min(1),
+  source: z.string().optional(),
+  metadata: JsonObjectSchema.optional(),
+  refs: EventRefsSchema.optional(),
+  idempotency_key: z.string().optional(),
+  expected_seq: z.number().int().nonnegative().optional(),
+});
 
-export interface SessionEvent extends TailEvent {
-  agent?: string;
-  text?: string;
-}
+export type AppendEventRequest = z.infer<typeof AppendEventRequestSchema>;
 
-export interface SessionAppendInput {
-  agent: string;
-  text?: string;
-  payload?: JsonObject;
-  type?: string;
-  source?: string;
-  metadata?: JsonObject;
-  refs?: EventRefs;
-  idempotencyKey?: string;
-  expectedSeq?: number;
-}
+export const AppendEventResponseSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  last_seq: z.number().int().nonnegative(),
+  deduped: z.boolean(),
+});
+
+export type AppendEventResponse = z.infer<typeof AppendEventResponseSchema>;
+
+export const TailEventSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  type: z.string().min(1),
+  payload: JsonObjectSchema,
+  actor: z.string().min(1),
+  source: z.string().optional(),
+  metadata: JsonObjectSchema.optional(),
+  refs: EventRefsSchema.optional(),
+  idempotency_key: z.string().nullable().optional(),
+  inserted_at: z.string().optional(),
+});
+
+export type TailEvent = z.infer<typeof TailEventSchema>;
+
+export const SessionEventSchema = TailEventSchema.extend({
+  agent: z.string().optional(),
+  text: z.string().optional(),
+});
+
+export type SessionEvent = z.infer<typeof SessionEventSchema>;
+
+export const SessionAppendInputSchema = z.object({
+  agent: z.string(),
+  text: z.string().optional(),
+  payload: JsonObjectSchema.optional(),
+  type: z.string().optional(),
+  source: z.string().optional(),
+  metadata: JsonObjectSchema.optional(),
+  refs: EventRefsSchema.optional(),
+  idempotencyKey: z.string().optional(),
+  expectedSeq: z.number().int().nonnegative().optional(),
+});
+
+export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
 
 export interface SessionTailOptions {
   cursor?: number;
@@ -98,8 +111,11 @@ export interface StarciteClientOptions {
   websocketFactory?: StarciteWebSocketFactory;
 }
 
-export interface StarciteErrorPayload {
-  error?: string;
-  message?: string;
-  [key: string]: JsonValue | undefined;
-}
+export const StarciteErrorPayloadSchema = z
+  .object({
+    error: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .catchall(z.unknown());
+
+export type StarciteErrorPayload = z.infer<typeof StarciteErrorPayloadSchema>;

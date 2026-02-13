@@ -7,7 +7,6 @@ import type {
   AppendEventRequest,
   AppendEventResponse,
   CreateSessionInput,
-  JsonObject,
   SessionAppendInput,
   SessionEvent,
   SessionRecord,
@@ -16,6 +15,13 @@ import type {
   StarciteErrorPayload,
   StarciteWebSocket,
   TailEvent,
+} from "./types";
+import {
+  AppendEventResponseSchema,
+  JsonObjectSchema,
+  SessionRecordSchema,
+  StarciteErrorPayloadSchema,
+  TailEventSchema,
 } from "./types";
 
 const DEFAULT_BASE_URL =
@@ -138,10 +144,6 @@ function defaultFetch(
   return fetch(input, init);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function toError(error: unknown): Error {
   if (error instanceof Error) {
     return error;
@@ -163,27 +165,24 @@ function parseEventFrame(data: unknown): TailEvent {
     throw new StarciteConnectionError("Tail frame was not valid JSON");
   }
 
-  if (!isObject(parsed)) {
-    throw new StarciteConnectionError("Tail frame JSON must be an object");
+  const result = TailEventSchema.safeParse(parsed);
+
+  if (!result.success) {
+    const reason = result.error.issues[0]?.message ?? "invalid event payload";
+    throw new StarciteConnectionError(
+      `Tail frame did not match expected schema: ${reason}`
+    );
   }
 
-  if (typeof parsed.seq !== "number") {
-    throw new StarciteConnectionError("Tail event is missing numeric 'seq'");
+  return result.data;
+}
+
+function getEventData(event: unknown): unknown {
+  if (event && typeof event === "object" && "data" in event) {
+    return (event as { data?: unknown }).data;
   }
 
-  if (typeof parsed.type !== "string" || parsed.type.length === 0) {
-    throw new StarciteConnectionError("Tail event is missing string 'type'");
-  }
-
-  if (!isObject(parsed.payload)) {
-    throw new StarciteConnectionError("Tail event is missing object 'payload'");
-  }
-
-  if (typeof parsed.actor !== "string" || parsed.actor.length === 0) {
-    throw new StarciteConnectionError("Tail event is missing string 'actor'");
-  }
-
-  return parsed as unknown as TailEvent;
+  return undefined;
 }
 
 function agentFromActor(actor: string): string | undefined {
@@ -197,9 +196,7 @@ function agentFromActor(actor: string): string | undefined {
 function toSessionEvent(event: TailEvent): SessionEvent {
   const agent = agentFromActor(event.actor);
   const text =
-    isObject(event.payload) && typeof event.payload.text === "string"
-      ? event.payload.text
-      : undefined;
+    typeof event.payload.text === "string" ? event.payload.text : undefined;
 
   return {
     ...event,
@@ -230,10 +227,9 @@ export class StarciteSession {
       : `agent:${input.agent}`;
 
     const payload =
-      input.payload ??
-      (input.text ? ({ text: input.text } as JsonObject) : undefined);
+      input.payload ?? (input.text ? { text: input.text } : undefined);
 
-    if (!(payload && isObject(payload))) {
+    if (!(payload && JsonObjectSchema.safeParse(payload).success)) {
       throw new StarciteError(
         "append() requires either 'text' or an object 'payload'"
       );
@@ -290,10 +286,14 @@ export class StarciteClient {
   }
 
   createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
-    return this.request<SessionRecord>("/sessions", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
+    return this.request<SessionRecord>(
+      "/sessions",
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+      (responseBody) => SessionRecordSchema.parse(responseBody)
+    );
   }
 
   appendEvent(
@@ -305,7 +305,8 @@ export class StarciteClient {
       {
         method: "POST",
         body: JSON.stringify(input),
-      }
+      },
+      (responseBody) => AppendEventResponseSchema.parse(responseBody)
     );
   }
 
@@ -327,7 +328,7 @@ export class StarciteClient {
     const socket = this.websocketFactory(wsUrl);
 
     const onMessage = (event: unknown): void => {
-      const data = isObject(event) ? (event.data as unknown) : undefined;
+      const data = getEventData(event);
 
       try {
         const parsed = parseEventFrame(data);
@@ -403,7 +404,11 @@ export class StarciteClient {
     }
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    parser?: (value: unknown) => T
+  ): Promise<T> {
     const headers = new Headers(this.headers);
 
     if (!headers.has("content-type")) {
@@ -449,7 +454,27 @@ export class StarciteClient {
       return undefined as T;
     }
 
-    return (await response.json()) as T;
+    let responseBody: unknown;
+
+    try {
+      responseBody = await response.json();
+    } catch {
+      throw new StarciteConnectionError(
+        `Received invalid JSON response from Starcite at ${this.baseUrl}${path}`
+      );
+    }
+
+    if (!parser) {
+      return responseBody as T;
+    }
+
+    try {
+      return parser(responseBody);
+    } catch (error) {
+      throw new StarciteConnectionError(
+        `Received unexpected response payload from Starcite: ${toError(error).message}`
+      );
+    }
   }
 }
 
@@ -458,12 +483,13 @@ async function tryParseJson(
 ): Promise<StarciteErrorPayload | null> {
   try {
     const parsed = (await response.json()) as unknown;
+    const result = StarciteErrorPayloadSchema.safeParse(parsed);
 
-    if (!isObject(parsed)) {
+    if (!result.success) {
       return null;
     }
 
-    return parsed as StarciteErrorPayload;
+    return result.data;
   } catch {
     return null;
   }

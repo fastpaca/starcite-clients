@@ -13,10 +13,7 @@ export type {
   AppendEventResponse,
   CreateSessionInput,
   EventRefs,
-  JsonArray,
   JsonObject,
-  JsonPrimitive,
-  JsonValue,
   SessionAppendInput,
   SessionEvent,
   SessionRecord,
@@ -26,6 +23,18 @@ export type {
   StarciteWebSocket,
   StarciteWebSocketFactory,
   TailEvent,
+} from "./types";
+export {
+  AppendEventRequestSchema,
+  AppendEventResponseSchema,
+  CreateSessionInputSchema,
+  EventRefsSchema,
+  JsonObjectSchema,
+  SessionAppendInputSchema,
+  SessionEventSchema,
+  SessionRecordSchema,
+  StarciteErrorPayloadSchema,
+  TailEventSchema,
 } from "./types";
 
 export function createStarciteClient(

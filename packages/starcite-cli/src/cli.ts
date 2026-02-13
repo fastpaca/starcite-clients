@@ -1,8 +1,9 @@
 import {
   createStarciteClient,
   type EventRefs,
+  EventRefsSchema,
   type JsonObject,
-  type JsonValue,
+  JsonObjectSchema,
   type SessionEvent,
   StarciteApiError,
   type StarciteClient,
@@ -19,22 +20,17 @@ export interface CliLogger {
   error(message: string): void;
 }
 
-export interface CliDependencies {
-  createClient(baseUrl: string): StarciteClient;
-  logger: CliLogger;
+interface CliRuntime {
+  createClient?: (baseUrl: string) => StarciteClient;
+  logger?: CliLogger;
 }
 
-const defaultDependencies: CliDependencies = {
-  createClient(baseUrl: string): StarciteClient {
-    return createStarciteClient({ baseUrl });
+const defaultLogger: CliLogger = {
+  info(message: string): void {
+    console.log(message);
   },
-  logger: {
-    info(message: string): void {
-      console.log(message);
-    },
-    error(message: string): void {
-      console.error(message);
-    },
+  error(message: string): void {
+    console.error(message);
   },
 };
 
@@ -50,27 +46,6 @@ function parseNonNegativeInteger(value: string, optionName: string): number {
   return parsed;
 }
 
-function isJsonValue(value: unknown): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return true;
-  }
-
-  if (Array.isArray(value)) {
-    return value.every(isJsonValue);
-  }
-
-  if (typeof value === "object") {
-    return Object.values(value).every(isJsonValue);
-  }
-
-  return false;
-}
-
 function parseJsonObject(value: string, optionName: string): JsonObject {
   let parsed: unknown;
 
@@ -80,26 +55,35 @@ function parseJsonObject(value: string, optionName: string): JsonObject {
     throw new InvalidArgumentError(`${optionName} must be valid JSON`);
   }
 
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    Array.isArray(parsed) ||
-    !isJsonValue(parsed)
-  ) {
+  const result = JsonObjectSchema.safeParse(parsed);
+
+  if (!result.success) {
     throw new InvalidArgumentError(`${optionName} must be a JSON object`);
   }
 
-  return parsed as JsonObject;
+  return result.data;
 }
 
-function getClient(command: Command, deps: CliDependencies): StarciteClient {
-  const options = command.optsWithGlobals() as GlobalOptions;
-  return deps.createClient(options.baseUrl);
+function parseEventRefs(value: string): EventRefs {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new InvalidArgumentError("--refs must be valid JSON");
+  }
+
+  const result = EventRefsSchema.safeParse(parsed);
+
+  if (!result.success) {
+    throw new InvalidArgumentError("--refs must be a JSON object");
+  }
+
+  return result.data;
 }
 
-function outputIsJson(command: Command): boolean {
-  const options = command.optsWithGlobals() as GlobalOptions;
-  return options.json;
+function getGlobalOptions(command: Command): GlobalOptions {
+  return command.optsWithGlobals() as GlobalOptions;
 }
 
 function formatTailEvent(event: SessionEvent): string {
@@ -112,17 +96,11 @@ function formatTailEvent(event: SessionEvent): string {
   return `[${actorLabel}] ${JSON.stringify(event.payload)}`;
 }
 
-export function buildProgram(
-  partialDependencies: Partial<CliDependencies> = {}
-): Command {
-  const deps: CliDependencies = {
-    ...defaultDependencies,
-    ...partialDependencies,
-    logger: {
-      ...defaultDependencies.logger,
-      ...partialDependencies.logger,
-    },
-  };
+export function buildProgram(runtime: CliRuntime = {}): Command {
+  const createClient =
+    runtime.createClient ??
+    ((baseUrl: string) => createStarciteClient({ baseUrl }));
+  const logger = runtime.logger ?? defaultLogger;
 
   const program = new Command();
 
@@ -148,7 +126,8 @@ export function buildProgram(
       title?: string;
       metadata?: string;
     }) {
-      const client = getClient(this, deps);
+      const { baseUrl, json } = getGlobalOptions(this);
+      const client = createClient(baseUrl);
       const metadata = options.metadata
         ? parseJsonObject(options.metadata, "--metadata")
         : undefined;
@@ -159,14 +138,14 @@ export function buildProgram(
         metadata,
       });
 
-      if (outputIsJson(this)) {
-        deps.logger.info(
+      if (json) {
+        logger.info(
           JSON.stringify(session.record ?? { id: session.id }, null, 2)
         );
         return;
       }
 
-      deps.logger.info(session.id);
+      logger.info(session.id);
     });
 
   program
@@ -199,27 +178,36 @@ export function buildProgram(
         expectedSeq?: number;
       }
     ) {
-      const client = getClient(this, deps);
+      const { baseUrl, json } = getGlobalOptions(this);
+      const client = createClient(baseUrl);
       const session = client.session(sessionId);
 
       const metadata = options.metadata
         ? parseJsonObject(options.metadata, "--metadata")
         : undefined;
-      const refs = options.refs
-        ? parseJsonObject(options.refs, "--refs")
-        : undefined;
+      const refs = options.refs ? parseEventRefs(options.refs) : undefined;
 
-      const response =
-        options.agent || options.text
-          ? await appendHighLevel(session, options, metadata, refs)
-          : await appendRaw(session, options, metadata, refs);
+      const highLevelMode =
+        options.agent !== undefined || options.text !== undefined;
+      const rawMode =
+        options.actor !== undefined || options.payload !== undefined;
 
-      if (outputIsJson(this)) {
-        deps.logger.info(JSON.stringify(response, null, 2));
+      if (highLevelMode && rawMode) {
+        throw new Error(
+          "Choose either high-level mode (--agent and --text) or raw mode (--actor and --payload), not both"
+        );
+      }
+
+      const response = highLevelMode
+        ? await appendHighLevel(session, options, metadata, refs)
+        : await appendRaw(session, options, metadata, refs);
+
+      if (json) {
+        logger.info(JSON.stringify(response, null, 2));
         return;
       }
 
-      deps.logger.info(
+      logger.info(
         `seq=${response.seq} last_seq=${response.last_seq} deduped=${response.deduped}`
       );
     });
@@ -242,7 +230,8 @@ export function buildProgram(
         limit?: number;
       }
     ) {
-      const client = getClient(this, deps);
+      const { baseUrl, json } = getGlobalOptions(this);
+      const client = createClient(baseUrl);
       const session = client.session(sessionId);
 
       const abortController = new AbortController();
@@ -260,10 +249,10 @@ export function buildProgram(
           agent: options.agent,
           signal: abortController.signal,
         })) {
-          if (outputIsJson(this)) {
-            deps.logger.info(JSON.stringify(event));
+          if (json) {
+            logger.info(JSON.stringify(event));
           } else {
-            deps.logger.info(formatTailEvent(event));
+            logger.info(formatTailEvent(event));
           }
 
           emitted += 1;
@@ -325,15 +314,9 @@ function appendRaw(
   metadata?: JsonObject,
   refs?: EventRefs
 ) {
-  if (!options.actor) {
+  if (!(options.actor && options.payload)) {
     throw new Error(
       "Raw append mode requires --actor and --payload, or use --agent and --text"
-    );
-  }
-
-  if (!options.payload) {
-    throw new Error(
-      "Raw append mode requires --payload JSON, or use --agent and --text"
     );
   }
 
@@ -351,35 +334,29 @@ function appendRaw(
 
 export async function run(
   argv = process.argv,
-  partialDependencies: Partial<CliDependencies> = {}
+  runtime: CliRuntime = {}
 ): Promise<void> {
-  const deps: CliDependencies = {
-    ...defaultDependencies,
-    ...partialDependencies,
-    logger: {
-      ...defaultDependencies.logger,
-      ...partialDependencies.logger,
-    },
-  };
-
-  const program = buildProgram(deps);
+  const program = buildProgram(runtime);
 
   try {
     await program.parseAsync(argv);
   } catch (error) {
     if (error instanceof StarciteApiError) {
-      deps.logger.error(`${error.code} (${error.status}): ${error.message}`);
+      const logger = runtime.logger ?? defaultLogger;
+      logger.error(`${error.code} (${error.status}): ${error.message}`);
       process.exitCode = 1;
       return;
     }
 
     if (error instanceof Error) {
-      deps.logger.error(error.message);
+      const logger = runtime.logger ?? defaultLogger;
+      logger.error(error.message);
       process.exitCode = 1;
       return;
     }
 
-    deps.logger.error("Unknown error");
+    const logger = runtime.logger ?? defaultLogger;
+    logger.error("Unknown error");
     process.exitCode = 1;
   }
 }
