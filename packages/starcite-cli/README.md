@@ -1,6 +1,4 @@
-# starcite
-
-CLI for [Starcite](https://starcite.ai).
+# [starcite](https://starcite.ai) cli
 
 Built for multi-agent systems.
 
@@ -36,7 +34,7 @@ bunx starcite --help
 ## Requirements
 
 - Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
-- Your Starcite API key / service JWT
+- Your Starcite API key
 
 For temporary usage, use `npx starcite` or `bunx starcite` instead of installing globally.
 
@@ -241,26 +239,3 @@ starcite tail ses_demo --agent drafter --limit 5 --json
 ```
 
 Press `Ctrl+C` to stop.
-
-### Useful patterns
-
-Export the event feed to a local file:
-
-```bash
-starcite tail ses_demo --cursor 0 --json --limit 1 > tail.json
-```
-
-## Build Standalone Binary (Repo Dev)
-
-From `starcite-clients`:
-
-```bash
-bun run starcite:compile
-./packages/starcite-cli/dist/starcite --help
-```
-
-## Links
-
-- Product docs and examples: https://starcite.ai
-- API contract: https://github.com/fastpaca/starcite/blob/main/docs/api/rest.md
-- WebSocket tail docs: https://github.com/fastpaca/starcite/blob/main/docs/api/websocket.md

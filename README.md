@@ -1,4 +1,4 @@
-# Starcite Clients
+# [Starcite](https://starcite.ai) Clients
 
 Built for multi-agent systems.
 
@@ -32,14 +32,14 @@ Modern AI products often have many agents producing events at the same time. Sta
 npm install -g starcite
 ```
 
-2. Set your customer instance URL and API key
+1. Set your customer instance URL and API key
 
 ```bash
 export STARCITE_BASE_URL=https://<your-instance>.starcite.io
 export STARCITE_API_KEY=<YOUR_API_KEY>
 ```
 
-3. Run a tiny end-to-end flow
+1. Run a tiny end-to-end flow
 
 ```bash
 starcite config set endpoint "$STARCITE_BASE_URL"
@@ -66,7 +66,7 @@ bun run starcite:compile
 ./packages/starcite-cli/dist/starcite --help
 ```
 
-## Release process (intentional + manual)
+## Release process
 
 This repo intentionally uses manual releases.
 
@@ -78,14 +78,14 @@ bun run release:minor
 bun run release:major
 ```
 
-2. Push the release commit and tag:
+1. Push the release commit and tag:
 
 ```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-3. Publish through GitHub Releases:
+1. Publish through GitHub Releases:
 
 - Create GitHub release `vX.Y.Z`.
 - `publish-npm.yml` publishes `@starcite/sdk` and `starcite` when `release.published` runs.
