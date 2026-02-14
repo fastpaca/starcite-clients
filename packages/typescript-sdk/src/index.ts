@@ -22,6 +22,7 @@ export type {
   StarciteClientOptions,
   StarciteErrorPayload,
   StarciteWebSocket,
+  StarciteWebSocketConnectOptions,
   StarciteWebSocketFactory,
   TailEvent,
 } from "./types";

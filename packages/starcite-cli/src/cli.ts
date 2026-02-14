@@ -28,6 +28,7 @@ import {
 interface GlobalOptions {
   baseUrl?: string;
   configDir?: string;
+  token?: string;
   json: boolean;
 }
 
@@ -210,7 +211,7 @@ async function resolveGlobalOptions(
   const configDir = resolveConfigDir(options.configDir);
   const store = new StarciteCliStore(configDir);
   const config = await store.readConfig();
-  const apiKey = await store.readApiKey();
+  const apiKey = trimString(options.token) ?? (await store.readApiKey());
 
   return {
     baseUrl: resolveBaseUrl(config, options),
@@ -260,7 +261,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     ((baseUrl: string, apiKey?: string) =>
       createStarciteClient({
         baseUrl,
-        headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+        apiKey,
       }));
   const logger = deps.logger ?? defaultLogger;
   const prompt = deps.prompt ?? createDefaultPrompt();
@@ -273,6 +274,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .description("Starcite CLI")
     .showHelpAfterError()
     .option("-u, --base-url <url>", "Starcite API base URL")
+    .option("-k, --token <token>", "Starcite API key / service JWT")
     .option(
       "--config-dir <path>",
       "Starcite CLI config directory (default: ~/.starcite)"

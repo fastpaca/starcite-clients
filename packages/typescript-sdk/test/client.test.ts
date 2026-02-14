@@ -117,6 +117,36 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("applies bearer authorization header from apiKey for HTTP requests", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_auth",
+          title: "Auth",
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-14T00:00:00Z",
+          updated_at: "2026-02-14T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: "jwt_service_key",
+    });
+
+    await client.create({ title: "Auth" });
+
+    const firstCall = fetchMock.mock.calls[0];
+    const requestInit = firstCall?.[1] as RequestInit;
+    const headers = new Headers(requestInit.headers);
+
+    expect(headers.get("authorization")).toBe("Bearer jwt_service_key");
+  });
+
   it("tails events and filters by agent", async () => {
     const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({
@@ -176,6 +206,43 @@ describe("StarciteClient", () => {
     });
     expect(sockets[0]?.url).toBe(
       "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+    );
+  });
+
+  it("sends authorization header in websocket upgrade when apiKey is set", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const websocketFactory = vi.fn(
+      (url: string, options?: { headers?: HeadersInit }) => {
+        const headers = new Headers(options?.headers);
+        expect(headers.get("authorization")).toBe("Bearer jwt_service_key");
+
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      }
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: "jwt_service_key",
+      websocketFactory,
+    });
+
+    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("close", {});
+
+    await expect(nextPromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(websocketFactory).toHaveBeenCalledWith(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0",
+      expect.objectContaining({
+        headers: expect.anything(),
+      })
     );
   });
 

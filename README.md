@@ -26,32 +26,28 @@ Modern AI products often have many agents producing events at the same time. Sta
 
 ## Get started in minutes
 
-1. Install dependencies
+1. Install the CLI
 
 ```bash
-bun install
+npm install -g starcite
 ```
 
-2. Set your API endpoint (or rely on the default)
+2. Set your customer instance URL and API key
 
 ```bash
-# local default
-export STARCITE_BASE_URL=http://localhost:45187
-
-# remote example
-# export STARCITE_BASE_URL=https://api.your-domain.example
+export STARCITE_BASE_URL=https://<your-instance>.starcite.io
+export STARCITE_API_KEY=<YOUR_API_KEY>
 ```
 
 3. Run a tiny end-to-end flow
 
 ```bash
-bun run starcite up
-bun run starcite create --id ses_demo --title "Draft contract"
-bun run starcite sessions list --limit 5
-bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-bun run starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
-bun run starcite tail ses_demo --cursor 0 --limit 1
-bun run starcite down --yes
+starcite config set endpoint "$STARCITE_BASE_URL"
+starcite auth login --api-key "$STARCITE_API_KEY"
+starcite create --id ses_demo --title "Draft contract"
+starcite sessions list --limit 5
+starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
+starcite tail ses_demo --cursor 0 --limit 1
 ```
 
 ## Development commands (if you work in this repo)

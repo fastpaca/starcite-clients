@@ -31,7 +31,8 @@ npm install @starcite/sdk
 ## Requirements
 
 - Node.js 22+, Bun, or any modern runtime with `fetch` and `WebSocket`
-- Starcite API reachable at `http://localhost:4000` (or set `STARCITE_BASE_URL`)
+- Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
+- Your Starcite API key / service JWT
 
 The SDK normalizes the base URL to `/v1` automatically.
 
@@ -41,7 +42,8 @@ The SDK normalizes the base URL to `/v1` automatically.
 import { createStarciteClient } from "@starcite/sdk";
 
 const client = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "http://localhost:4000",
+  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+  apiKey: process.env.STARCITE_API_KEY,
 });
 
 const session = await client.create({
@@ -73,18 +75,23 @@ for await (const event of session.tail({ cursor: 0 })) {
 }
 ```
 
-## Base URL and Headers
+## Authentication
+
+Use your service JWT/API key once at client creation. The SDK injects
+`Authorization: Bearer <token>` for all HTTP calls and WebSocket tail upgrades.
 
 ```ts
 import { createStarciteClient } from "@starcite/sdk";
 
 const client = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "http://localhost:4000",
-  headers: {
-    Authorization: `Bearer ${process.env.STARCITE_TOKEN}`,
-  },
+  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+  apiKey: process.env.STARCITE_API_KEY,
 });
 ```
+
+Token refresh is not built in. If a key is revoked/rotated and requests start
+returning `401`, create a new client with the replacement key and reconnect
+tails from your last processed cursor.
 
 ## List Sessions
 
@@ -161,7 +168,10 @@ import {
   createStarciteClient,
 } from "@starcite/sdk";
 
-const client = createStarciteClient();
+const client = createStarciteClient({
+  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+  apiKey: process.env.STARCITE_API_KEY,
+});
 
 try {
   await client.create();

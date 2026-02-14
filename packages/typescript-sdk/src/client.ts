@@ -17,6 +17,7 @@ import type {
   StarciteClientOptions,
   StarciteErrorPayload,
   StarciteWebSocket,
+  StarciteWebSocketConnectOptions,
   TailEvent,
 } from "./types";
 import {
@@ -35,6 +36,7 @@ const DEFAULT_BASE_URL =
     ? process.env.STARCITE_BASE_URL
     : "http://localhost:4000";
 const TRAILING_SLASHES_REGEX = /\/+$/;
+const BEARER_PREFIX_REGEX = /^bearer\s+/i;
 
 const TailFrameSchema = z
   .string()
@@ -145,14 +147,38 @@ function toWebSocketBaseUrl(apiBaseUrl: string): string {
   );
 }
 
-function defaultWebSocketFactory(url: string): StarciteWebSocket {
+function defaultWebSocketFactory(
+  url: string,
+  options: StarciteWebSocketConnectOptions = {}
+): StarciteWebSocket {
   if (typeof WebSocket === "undefined") {
     throw new StarciteError(
       "WebSocket is not available in this runtime. Provide websocketFactory in StarciteClientOptions."
     );
   }
 
-  return new WebSocket(url) as unknown as StarciteWebSocket;
+  const headers = new Headers(options.headers);
+
+  if (!hasAnyHeaders(headers)) {
+    return new WebSocket(url) as unknown as StarciteWebSocket;
+  }
+
+  const headerObject = Object.fromEntries(headers.entries());
+
+  try {
+    return new (
+      WebSocket as unknown as {
+        new (
+          websocketUrl: string,
+          options: { headers: Record<string, string> }
+        ): StarciteWebSocket;
+      }
+    )(url, { headers: headerObject });
+  } catch {
+    throw new StarciteError(
+      "This runtime cannot set WebSocket upgrade headers with the default factory. Provide websocketFactory in StarciteClientOptions."
+    );
+  }
 }
 
 function defaultFetch(
@@ -174,6 +200,28 @@ function toError(error: unknown): Error {
   }
 
   return new Error(typeof error === "string" ? error : "Unknown error");
+}
+
+function hasAnyHeaders(headers: Headers): boolean {
+  for (const _ of headers.keys()) {
+    return true;
+  }
+
+  return false;
+}
+
+function formatAuthorizationHeader(apiKey: string): string {
+  const normalized = apiKey.trim();
+
+  if (normalized.length === 0) {
+    throw new StarciteError("apiKey cannot be empty");
+  }
+
+  if (BEARER_PREFIX_REGEX.test(normalized)) {
+    return normalized;
+  }
+
+  return `Bearer ${normalized}`;
 }
 
 function parseEventFrame(data: unknown): TailEvent {
@@ -290,7 +338,10 @@ export class StarciteClient {
   private readonly websocketBaseUrl: string;
   private readonly fetchFn: typeof fetch;
   private readonly headers: Headers;
-  private readonly websocketFactory: (url: string) => StarciteWebSocket;
+  private readonly websocketFactory: (
+    url: string,
+    options?: StarciteWebSocketConnectOptions
+  ) => StarciteWebSocket;
 
   /**
    * Creates a new client instance.
@@ -300,6 +351,14 @@ export class StarciteClient {
     this.websocketBaseUrl = toWebSocketBaseUrl(this.baseUrl);
     this.fetchFn = options.fetch ?? defaultFetch;
     this.headers = new Headers(options.headers);
+
+    if (options.apiKey !== undefined) {
+      this.headers.set(
+        "authorization",
+        formatAuthorizationHeader(options.apiKey)
+      );
+    }
+
     this.websocketFactory = options.websocketFactory ?? defaultWebSocketFactory;
   }
 
@@ -418,7 +477,21 @@ export class StarciteClient {
       sessionId
     )}/tail?cursor=${cursor}`;
 
-    const socket = this.websocketFactory(wsUrl);
+    const websocketHeaders = new Headers();
+    const authorization = this.headers.get("authorization");
+
+    if (authorization) {
+      websocketHeaders.set("authorization", authorization);
+    }
+
+    const socket = this.websocketFactory(
+      wsUrl,
+      hasAnyHeaders(websocketHeaders)
+        ? {
+            headers: websocketHeaders,
+          }
+        : undefined
+    );
 
     const onMessage = (event: unknown): void => {
       try {

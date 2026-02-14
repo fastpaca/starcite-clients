@@ -11,7 +11,7 @@ For multi-agent systems:
 - a) listen and monitor what each agent is producing,
 - b) keep frontend/UX consumers consistent by reading from a single ordered timeline.
 
-- Install once for local workflow: `npm install -g starcite`
+- Install globally: `npm install -g starcite`
 - Run once with npm: `npx starcite`
 - Run once with Bun: `bunx starcite`
 
@@ -35,15 +35,15 @@ bunx starcite --help
 
 ## Requirements
 
-- A running Starcite API (default: `http://localhost:45187`)
-- If needed, set `STARCITE_BASE_URL` before running any command
+- Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
+- Your Starcite API key / service JWT
 
 For temporary usage, use `npx starcite` or `bunx starcite` instead of installing globally.
 
 ## Quick Start
 
 ```bash
-starcite up
+starcite init --endpoint https://<your-instance>.starcite.io --api-key <YOUR_API_KEY> --yes
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
@@ -51,24 +51,25 @@ starcite append ses_demo --agent drafter --text "Drafted section 2 with clause r
 starcite tail ses_demo --cursor 0 --limit 1
 ```
 
-## Remote Setup (No Local Docker)
+## Cloud Setup
 
 ```bash
 starcite init
-starcite config set endpoint https://cust-a.starcite.io
+starcite config set endpoint https://<your-instance>.starcite.io
 starcite auth login
 ```
 
 Non-interactive alternative:
 
 ```bash
-starcite config set endpoint https://cust-a.starcite.io
+starcite config set endpoint https://<your-instance>.starcite.io
 starcite config set api-key <YOUR_KEY>
 ```
 
 ## Global Options
 
 - `-u, --base-url <url>`: Starcite API base URL (highest precedence)
+- `-k, --token <token>`: Starcite API key / service JWT (highest precedence)
 - `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
 - `-h, --help`: show help text
@@ -78,13 +79,13 @@ Base URL resolution order:
 1. `--base-url`
 2. `STARCITE_BASE_URL`
 3. `~/.starcite/config.json` or `~/.starcite/config.toml`
-4. `http://localhost:45187`
 
 API key resolution order:
 
-1. `STARCITE_API_KEY`
-2. `~/.starcite/credentials.json`
-3. `apiKey` in `~/.starcite/config.json` or `~/.starcite/config.toml`
+1. `--token`
+2. `STARCITE_API_KEY`
+3. `~/.starcite/credentials.json`
+4. `apiKey` in `~/.starcite/config.json` or `~/.starcite/config.toml`
 
 ## Commands
 
@@ -134,7 +135,7 @@ Useful flags:
 Manage local configuration.
 
 ```bash
-starcite config set endpoint https://cust-a.starcite.io
+starcite config set endpoint https://<your-instance>.starcite.io
 starcite config set producer-id producer:my-agent
 starcite config show
 ```
@@ -247,22 +248,6 @@ Export the event feed to a local file:
 
 ```bash
 starcite tail ses_demo --cursor 0 --json --limit 1 > tail.json
-```
-
-## Local Server with Docker
-
-If you want to follow examples end-to-end locally:
-
-```bash
-git clone https://github.com/fastpaca/starcite.git
-cd starcite
-docker compose up -d
-```
-
-Then point the CLI to the upstream compose port:
-
-```bash
-export STARCITE_BASE_URL=http://localhost:4000
 ```
 
 ## Build Standalone Binary (Repo Dev)

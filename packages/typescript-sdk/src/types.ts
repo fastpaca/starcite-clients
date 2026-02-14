@@ -208,7 +208,20 @@ export interface StarciteWebSocket {
 /**
  * Factory used to create the WebSocket connection for `tail`.
  */
-export type StarciteWebSocketFactory = (url: string) => StarciteWebSocket;
+export interface StarciteWebSocketConnectOptions {
+  /**
+   * Headers to include with the WebSocket handshake request.
+   */
+  headers?: HeadersInit;
+}
+
+/**
+ * Factory used to create the WebSocket connection for `tail`.
+ */
+export type StarciteWebSocketFactory = (
+  url: string,
+  options?: StarciteWebSocketConnectOptions
+) => StarciteWebSocket;
 
 /**
  * Client construction options.
@@ -226,6 +239,11 @@ export interface StarciteClientOptions {
    * Headers applied to every HTTP request.
    */
   headers?: HeadersInit;
+  /**
+   * Service key / JWT token. When set, the SDK automatically sends
+   * `Authorization: Bearer <token>` for HTTP requests and WebSocket upgrades.
+   */
+  apiKey?: string;
   /**
    * Custom WebSocket factory for non-browser runtimes.
    */

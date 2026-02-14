@@ -9,6 +9,7 @@
 - Remote setup and auth commands: `init`, `config`, and `auth`
 - Local CLI state store under `~/.starcite` (override via `--config-dir`)
 - Producer identity generation and per-context producer sequence rehydration
+- Global `--token` flag for one-shot service JWT auth without persisted state
 
 ### Changed
 

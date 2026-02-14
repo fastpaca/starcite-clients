@@ -473,6 +473,46 @@ describe("starcite CLI", () => {
     );
   });
 
+  it("global --token overrides stored API key", async () => {
+    const { logger } = makeLogger();
+    const createClient = vi.fn((baseUrl: string, _apiKey?: string) => {
+      expect(baseUrl).toBe("http://localhost:45187");
+      return { create, session } as never;
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "auth", "login", "--api-key", "sk_saved_123"],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        "sk_cli_override",
+        "create",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(createClient).toHaveBeenLastCalledWith(
+      "http://localhost:45187",
+      "sk_cli_override"
+    );
+  });
+
   it("sessions list supports limit/cursor/metadata filters", async () => {
     const { logger, info } = makeLogger();
 
