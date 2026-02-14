@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
-    "@starcite/sdk": "workspace:^0.1.0",
+    "@starcite/sdk": "^0.1.0",
     "commander": "^13.1.0",
     "conf": "^15.1.0",
     "consola": "^3.4.2",

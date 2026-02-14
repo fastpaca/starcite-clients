@@ -10,6 +10,8 @@ import type {
   CreateSessionInput,
   SessionAppendInput,
   SessionEvent,
+  SessionListOptions,
+  SessionListPage,
   SessionRecord,
   SessionTailOptions,
   StarciteClientOptions,
@@ -22,6 +24,7 @@ import {
   AppendEventResponseSchema,
   CreateSessionInputSchema,
   SessionAppendInputSchema,
+  SessionListPageSchema,
   SessionRecordSchema,
   StarciteErrorPayloadSchema,
   TailEventSchema,
@@ -328,6 +331,53 @@ export class StarciteClient {
         body: JSON.stringify(payload),
       },
       SessionRecordSchema
+    );
+  }
+
+  /**
+   * Lists sessions from the archive-backed catalog.
+   */
+  listSessions(options: SessionListOptions = {}): Promise<SessionListPage> {
+    const query = new URLSearchParams();
+
+    if (options.limit !== undefined) {
+      if (!Number.isInteger(options.limit) || options.limit <= 0) {
+        throw new StarciteError(
+          "listSessions() limit must be a positive integer"
+        );
+      }
+
+      query.set("limit", `${options.limit}`);
+    }
+
+    if (options.cursor !== undefined) {
+      if (options.cursor.trim().length === 0) {
+        throw new StarciteError("listSessions() cursor cannot be empty");
+      }
+
+      query.set("cursor", options.cursor);
+    }
+
+    if (options.metadata !== undefined) {
+      for (const [key, value] of Object.entries(options.metadata)) {
+        if (key.trim().length === 0 || value.trim().length === 0) {
+          throw new StarciteError(
+            "listSessions() metadata filters must be non-empty strings"
+          );
+        }
+
+        query.set(`metadata.${key}`, value);
+      }
+    }
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+
+    return this.request(
+      `/sessions${suffix}`,
+      {
+        method: "GET",
+      },
+      SessionListPageSchema
     );
   }
 

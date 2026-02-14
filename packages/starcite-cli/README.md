@@ -45,6 +45,7 @@ For temporary usage, use `npx starcite` or `bunx starcite` instead of installing
 ```bash
 starcite up
 starcite create --id ses_demo --title "Draft contract"
+starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 starcite tail ses_demo --cursor 0 --limit 1
@@ -94,6 +95,23 @@ Create a session.
 ```bash
 starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":"acme"}'
 ```
+
+### `sessions list`
+
+List sessions from the API catalog.
+
+```bash
+starcite sessions list
+starcite sessions list --limit 20
+starcite sessions list --cursor ses_123
+starcite sessions list --metadata '{"tenant_id":"acme"}'
+```
+
+Useful flags:
+
+- `--limit <count>`: max sessions to return
+- `--cursor <cursor>`: pagination cursor from previous result
+- `--metadata <json>`: flat JSON object of exact-match metadata filters
 
 ### `init`
 

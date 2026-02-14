@@ -56,6 +56,7 @@ function streamEvents(events: SessionEvent[]): AsyncIterable<SessionEvent> {
 describe("starcite CLI", () => {
   const create = vi.fn();
   const session = vi.fn();
+  const listSessions = vi.fn();
   let configDir = "";
 
   const fakeSession: FakeSession = {
@@ -70,12 +71,24 @@ describe("starcite CLI", () => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
     create.mockReset();
     session.mockReset();
+    listSessions.mockReset();
     fakeSession.append.mockReset();
     fakeSession.appendRaw.mockReset();
     fakeSession.tail.mockReset();
 
     create.mockResolvedValue(fakeSession);
     session.mockReturnValue(fakeSession);
+    listSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "ses_123",
+          title: "Draft contract",
+          metadata: { tenant_id: "acme" },
+          created_at: "2026-02-13T00:00:00Z",
+        },
+      ],
+      next_cursor: null,
+    });
     fakeSession.append.mockResolvedValue({
       seq: 1,
       last_seq: 1,
@@ -111,7 +124,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -134,7 +147,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -181,7 +194,7 @@ describe("starcite CLI", () => {
     try {
       const program = buildProgram({
         logger,
-        createClient: () => ({ create, session }) as never,
+        createClient: () => ({ create, session, listSessions }) as never,
       });
 
       await program.parseAsync(
@@ -222,7 +235,7 @@ describe("starcite CLI", () => {
     try {
       const program = buildProgram({
         logger,
-        createClient: () => ({ create, session }) as never,
+        createClient: () => ({ create, session, listSessions }) as never,
       });
 
       await program.parseAsync(
@@ -337,7 +350,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -368,7 +381,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -403,7 +416,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -460,12 +473,93 @@ describe("starcite CLI", () => {
     );
   });
 
+  it("sessions list supports limit/cursor/metadata filters", async () => {
+    const { logger, info } = makeLogger();
+
+    listSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "ses_101",
+          title: "Alpha",
+          metadata: { tenant_id: "acme" },
+          created_at: "2026-02-13T01:00:00Z",
+        },
+        {
+          id: "ses_102",
+          title: null,
+          metadata: { tenant_id: "acme" },
+          created_at: "2026-02-13T01:05:00Z",
+        },
+      ],
+      next_cursor: "ses_102",
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient: () => ({ create, session, listSessions }) as never,
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "sessions",
+        "list",
+        "--limit",
+        "2",
+        "--cursor",
+        "ses_100",
+        "--metadata",
+        '{"tenant_id":"acme"}',
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(listSessions).toHaveBeenCalledWith({
+      limit: 2,
+      cursor: "ses_100",
+      metadata: { tenant_id: "acme" },
+    });
+    expect(info).toEqual([
+      "id\ttitle\tcreated_at",
+      "ses_101\tAlpha\t2026-02-13T01:00:00Z",
+      "ses_102\t\t2026-02-13T01:05:00Z",
+      "next_cursor=ses_102",
+    ]);
+  });
+
+  it("sessions list outputs JSON with --json", async () => {
+    const { logger, info } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => ({ create, session, listSessions }) as never,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "--json", "sessions", "list"],
+      {
+        from: "user",
+      }
+    );
+
+    const output = JSON.parse(info[0] ?? "{}") as {
+      sessions?: Array<{ id?: string }>;
+      next_cursor?: string | null;
+    };
+
+    expect(output.sessions?.[0]?.id).toBe("ses_123");
+    expect(output.next_cursor).toBeNull();
+  });
+
   it("tails events and formats output", async () => {
     const { logger, info } = makeLogger();
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(
@@ -501,7 +595,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await expect(
@@ -543,7 +637,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(["--config-dir", configDir, "up"], {
@@ -596,7 +690,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(["--config-dir", configDir, "up"], {
@@ -658,7 +752,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(["--config-dir", configDir, "down"], {
@@ -719,7 +813,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session }) as never,
+      createClient: () => ({ create, session, listSessions }) as never,
     });
 
     await program.parseAsync(["--config-dir", configDir, "down"], {

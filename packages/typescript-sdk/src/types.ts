@@ -34,6 +34,34 @@ export const SessionRecordSchema = z.object({
 export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 
 /**
+ * Session item returned by the list endpoint.
+ */
+export const SessionListItemSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable().optional(),
+  metadata: ArbitraryObjectSchema,
+  created_at: z.string(),
+});
+
+/**
+ * Inferred TypeScript type for {@link SessionListItemSchema}.
+ */
+export type SessionListItem = z.infer<typeof SessionListItemSchema>;
+
+/**
+ * Paginated session list response.
+ */
+export const SessionListPageSchema = z.object({
+  sessions: z.array(SessionListItemSchema),
+  next_cursor: z.string().nullable(),
+});
+
+/**
+ * Inferred TypeScript type for {@link SessionListPageSchema}.
+ */
+export type SessionListPage = z.infer<typeof SessionListPageSchema>;
+
+/**
  * Low-level request payload for appending an event to a session.
  */
 export const AppendEventRequestSchema = z.object({
@@ -148,6 +176,24 @@ export interface SessionTailOptions {
    * Optional abort signal to close the stream.
    */
   signal?: AbortSignal;
+}
+
+/**
+ * Options for listing sessions.
+ */
+export interface SessionListOptions {
+  /**
+   * Maximum rows to return. Must be a positive integer.
+   */
+  limit?: number;
+  /**
+   * Optional cursor from the previous response.
+   */
+  cursor?: string;
+  /**
+   * Optional flat metadata exact-match filters.
+   */
+  metadata?: Record<string, string>;
 }
 
 /**

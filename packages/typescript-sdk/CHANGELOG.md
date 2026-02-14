@@ -4,9 +4,8 @@
 
 ### Added
 
-- Initial TypeScript SDK with session create/append/tail primitives
-- High-level session API (`starcite.create()`, `session.append()`, `session.tail()`)
-- Typed API and connection errors
+- Session listing support: `client.listSessions(options?)` with pagination and metadata filters
+- Type exports for session listing payloads/options
 
 ### Changed
 

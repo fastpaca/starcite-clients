@@ -162,6 +162,25 @@ function parseEventRefs(value: string): CliJsonObject {
   return parseJsonObject(value, "--refs");
 }
 
+function parseSessionMetadataFilters(value: string): Record<string, string> {
+  const parsed = parseJsonObject(value, "--metadata");
+  const filters: Record<string, string> = {};
+
+  for (const [key, rawValue] of Object.entries(parsed)) {
+    if (key.trim().length === 0) {
+      throw new InvalidArgumentError("--metadata keys must be non-empty");
+    }
+
+    if (typeof rawValue !== "string") {
+      throw new InvalidArgumentError("--metadata values must be strings");
+    }
+
+    filters[key] = rawValue;
+  }
+
+  return filters;
+}
+
 function getGlobalOptions(command: Command): GlobalOptions {
   return command.optsWithGlobals() as GlobalOptions;
 }
@@ -438,6 +457,65 @@ export function buildProgram(deps: CliDependencies = {}): Command {
           }
 
           logger.info("No API key configured. Run `starcite auth login`.");
+        })
+    );
+
+  program
+    .command("sessions")
+    .description("Manage sessions")
+    .addCommand(
+      new Command("list")
+        .description("List sessions")
+        .option("--limit <count>", "Maximum sessions to return", (value) =>
+          parsePositiveInteger(value, "--limit")
+        )
+        .option("--cursor <cursor>", "Pagination cursor")
+        .option("--metadata <json>", "Metadata filter JSON object")
+        .action(async function sessionsListAction(options: {
+          limit?: number;
+          cursor?: string;
+          metadata?: string;
+        }) {
+          const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
+          const client = apiKey
+            ? createClient(baseUrl, apiKey)
+            : createClient(baseUrl);
+
+          const metadata = options.metadata
+            ? parseSessionMetadataFilters(options.metadata)
+            : undefined;
+
+          const cursor = options.cursor?.trim();
+          if (options.cursor !== undefined && !cursor) {
+            throw new InvalidArgumentError("--cursor must be non-empty");
+          }
+
+          const page = await client.listSessions({
+            limit: options.limit,
+            cursor,
+            metadata,
+          });
+
+          if (json) {
+            logger.info(JSON.stringify(page, null, 2));
+            return;
+          }
+
+          if (page.sessions.length === 0) {
+            logger.info("No sessions found.");
+            return;
+          }
+
+          logger.info("id\ttitle\tcreated_at");
+          for (const session of page.sessions) {
+            logger.info(
+              `${session.id}\t${session.title ?? ""}\t${session.created_at}`
+            );
+          }
+
+          if (page.next_cursor) {
+            logger.info(`next_cursor=${page.next_cursor}`);
+          }
         })
     );
 

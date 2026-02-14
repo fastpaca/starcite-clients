@@ -47,7 +47,9 @@ function syncInternalDeps(pkg, dependencyNames, version) {
         continue;
       }
 
-      const desired = `workspace:^${version}`;
+      // Keep publishable semver ranges in manifests so npm consumers can install
+      // tarballs/packages without workspace protocol support.
+      const desired = `^${version}`;
       if (deps[depName] !== desired) {
         deps[depName] = desired;
         updates += 1;

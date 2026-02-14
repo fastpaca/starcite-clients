@@ -179,6 +179,46 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("lists sessions with pagination and metadata filters", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          sessions: [
+            {
+              id: "ses_a",
+              title: "A",
+              metadata: { tenant_id: "acme" },
+              created_at: "2026-02-13T00:00:00Z",
+            },
+          ],
+          next_cursor: "ses_a",
+        }),
+        { status: 200 }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const page = await client.listSessions({
+      limit: 1,
+      cursor: "ses_0",
+      metadata: { tenant_id: "acme" },
+    });
+
+    expect(page.sessions[0]?.id).toBe("ses_a");
+    expect(page.next_cursor).toBe("ses_a");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions?limit=1&cursor=ses_0&metadata.tenant_id=acme",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
   it("raises a connection error on malformed tail data", async () => {
     const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({

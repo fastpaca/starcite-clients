@@ -47,6 +47,7 @@ export STARCITE_BASE_URL=http://localhost:45187
 ```bash
 bun run starcite up
 bun run starcite create --id ses_demo --title "Draft contract"
+bun run starcite sessions list --limit 5
 bun run starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 bun run starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 bun run starcite tail ses_demo --cursor 0 --limit 1

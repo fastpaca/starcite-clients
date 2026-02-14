@@ -13,8 +13,9 @@ Built for teams where multiple producers need shared, ordered context.
 Typical flow:
 
 1. create a session
-2. append ordered events
-3. tail from a cursor over WebSocket
+2. list sessions when needed
+3. append ordered events
+4. tail from a cursor over WebSocket
 
 For multi-agent systems:
 
@@ -83,6 +84,21 @@ const client = createStarciteClient({
     Authorization: `Bearer ${process.env.STARCITE_TOKEN}`,
   },
 });
+```
+
+## List Sessions
+
+```ts
+const page = await client.listSessions({
+  limit: 20,
+  metadata: { tenant_id: "acme" },
+});
+
+for (const session of page.sessions) {
+  console.log(session.id, session.title, session.created_at);
+}
+
+console.log("next cursor:", page.next_cursor);
 ```
 
 ## Append Modes
@@ -167,6 +183,7 @@ try {
 - `StarciteClient`
   - `create(input?)`
   - `createSession(input?)`
+  - `listSessions(options?)`
   - `session(id, record?)`
   - `appendEvent(sessionId, input)`
   - `tailEvents(sessionId, options?)`
