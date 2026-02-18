@@ -1,9 +1,9 @@
 # @starcite/ai-sdk-transport
 
-`useChat` transport adapter for Starcite sessions.
+Minimal `useChat` transport adapter for Starcite sessions.
 
-This package lets you keep Starcite as the event/logging backend while plugging
-directly into AI SDK `useChat` transport contracts.
+This package keeps Starcite as the backend event stream and translates
+Starcite tail events into AI SDK UI message chunks.
 
 ## Install
 
@@ -11,7 +11,7 @@ directly into AI SDK `useChat` transport contracts.
 npm install @starcite/ai-sdk-transport @starcite/sdk ai
 ```
 
-## Quick Start
+## Usage
 
 ```ts
 import { useChat } from "@ai-sdk/react";
@@ -24,59 +24,33 @@ const client = createStarciteClient({
   apiKey: process.env.STARCITE_API_KEY,
 });
 
-const transport = new StarciteChatTransport({
-  client,
-  closeOnFirstAssistantMessage: false,
-});
+const transport = new StarciteChatTransport({ client });
 
-// Structurally compatible with AI SDK ChatTransport.
-const { messages, sendMessage } = useChat({
+const chat = useChat({
   transport: transport as unknown as ChatTransport,
 });
 ```
 
-## Protocol Contract
+## Event Contract
 
-The transport appends user messages as:
+Outgoing user append:
 
-- `type: "chat.user.message"`
+- `chat.user.message`
 
-Then it tails Starcite events and maps assistant events to UI chunks:
+Incoming assistant tail events:
 
-- `chat.response.start` -> `start`
-- `chat.response.delta` -> `text-delta`
-- `chat.response.end` -> `text-end` + `finish`
-- `chat.response.error` -> `text-delta` (error text) + `finish(error)`
+- First `content` or `chat.response.delta` payload with text becomes the assistant response.
+- `chat.response.error` becomes an error assistant response.
 
-Default fallback mode also supports one-shot content events:
+Each response is emitted as one complete UI chunk sequence:
 
-- `content` with `payload.text` -> `start` + `text-start` + `text-delta` + `text-end` + `finish`
+- `start`
+- `text-start`
+- `text-delta`
+- `text-end`
+- `finish`
 
-## Recommended Starcite Response Events
+## Options
 
-For full streaming:
-
-1. Emit `chat.response.start` once.
-2. Emit one or more `chat.response.delta` events.
-3. Emit `chat.response.end` once.
-
-Event payload fields supported by default:
-
-- `messageId` (optional): assistant message id
-- `textPartId` (optional): text part id
-- `delta` or `text`: streamed text content
-- `finishReason` (optional): included in final `finish` chunk
-
-## Transport Options
-
-- `autoCreateSession` (default `true`): attempts to create session by `chatId` before append.
-- `closeOnFirstAssistantMessage` (default `true`): useful if your assistant emits one final `content` event per response.
-- `assistantAgents`: whitelist assistant agent names to consume.
-- `protocol`: override event type names.
-- `buildUserAppendInput`: customize how outbound `useChat` messages map to `session.append(...)`.
-- `ensureSession`: custom session initialization hook.
-
-## Reconnect Behavior
-
-`reconnectToStream()` uses the last seen Starcite `seq` cursor per chat.  
-If no cursor is known yet, it returns `null`.
+- `client` (required)
+- `userAgent` (default `user`)

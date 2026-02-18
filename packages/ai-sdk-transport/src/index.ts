@@ -5,14 +5,10 @@ export {
 } from "./transport";
 
 export type {
-  BuildUserAppendInputArgs,
-  ChatMessageLike,
-  ChatPartLike,
-  ChatTransportTrigger,
+  ChatMessage,
+  ChatTransportLike,
+  ReconnectToStreamOptions,
+  SendMessagesOptions,
   StarciteChatTransportOptions,
-  StarciteProtocolOptions,
-  StarciteReconnectToStreamOptions,
-  StarciteSendMessagesOptions,
-  StarciteUseChatTransport,
-  UIMessageChunkLike,
+  UIMessageChunk,
 } from "./types";
