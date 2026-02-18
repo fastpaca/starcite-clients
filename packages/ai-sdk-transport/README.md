@@ -27,6 +27,12 @@ const client = createStarciteClient({
 
 const transport = new StarciteChatTransport<Payload>({
   client,
+  // Optional when your runtime cannot infer creator principal from apiKey.
+  creatorPrincipal: {
+    tenant_id: "acme",
+    id: "org:acme",
+    type: "user",
+  },
 });
 
 const chat = useChat({
@@ -50,6 +56,7 @@ Your backend should emit valid AI SDK chunks (including `finish`) in event paylo
 ## Options
 
 - `client` (required)
+- `creatorPrincipal` (optional; forwarded to `createSession` as `creator_principal`)
 - `userAgent` (default `user`)
 - `producerId` (optional; defaults to unique per transport instance)
 

@@ -111,6 +111,7 @@ export class StarciteChatTransport<
 > implements ChatTransport<UIMessage>
 {
   private readonly client: StarciteChatTransportOptions<TPayload>["client"];
+  private readonly creatorPrincipal: StarciteChatTransportOptions<TPayload>["creatorPrincipal"];
   private readonly userAgent: string;
   private readonly producerId: string;
 
@@ -120,6 +121,7 @@ export class StarciteChatTransport<
 
   constructor(options: StarciteChatTransportOptions<TPayload>) {
     this.client = options.client;
+    this.creatorPrincipal = options.creatorPrincipal;
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.producerId = options.producerId?.trim() || defaultProducerId();
   }
@@ -176,7 +178,10 @@ export class StarciteChatTransport<
 
     if (!this.knownSessions.has(chatId)) {
       try {
-        await this.client.createSession({ id: chatId });
+        await this.client.createSession({
+          id: chatId,
+          creator_principal: this.creatorPrincipal,
+        });
       } catch (error) {
         if (!isSessionConflict(error)) {
           throw error;
