@@ -294,7 +294,7 @@ describe("StarciteChatTransport", () => {
     );
 
     const reconnectReadPromise = reconnectStream?.getReader().read();
-    sockets[1]?.emit("close", {});
+    sockets[1]?.emit("close", { code: 1000, reason: "finished" });
 
     await expect(reconnectReadPromise).resolves.toEqual({
       done: true,
