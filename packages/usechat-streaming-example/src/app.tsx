@@ -10,9 +10,8 @@ import { createStarciteClient } from "@starcite/sdk";
 import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
 
 const client = createStarciteClient<Payload>({
-  baseUrl: process.env.STARCITE_BASE_URL,
-  apiKey: process.env.STARCITE_API_KEY,
-  payloadSchema,
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
+  apiKey: import.meta.env.VITE_STARCITE_API_KEY,
 });
 
 const transport = new StarciteChatTransport<Payload>({
@@ -83,9 +82,9 @@ export function App() {
           <p className="eyebrow">Starcite x AI SDK</p>
           <h1>useChat streaming transport demo</h1>
           <p>
-            This demo uses an in-memory Starcite backend, your
+            This demo connects to your local Starcite API container, your
             <code>@starcite/ai-sdk-transport</code> adapter, and AI SDK
-            <code>useChat</code> so you can inspect the integration end-to-end.
+            <code>useChat</code>.
           </p>
         </header>
 

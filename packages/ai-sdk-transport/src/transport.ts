@@ -85,17 +85,6 @@ function shouldAppend(trigger: string | undefined): boolean {
   return !REGENERATE_TRIGGERS.has(trigger);
 }
 
-function randomId(prefix: string): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function defaultProducerId(): string {
   if (
     typeof crypto !== "undefined" &&
@@ -111,54 +100,14 @@ function actorIsUser(actor: string, userAgent: string): boolean {
   return actor === `agent:${userAgent}`;
 }
 
-function toUiChunk(payload: Record<string, unknown>): ChatChunk | null {
-  return typeof payload.type === "string" ? (payload as ChatChunk) : null;
-}
-
-function readResponseText(payload: Record<string, unknown>): string {
-  if (typeof payload.delta === "string") {
-    return payload.delta;
-  }
-
-  if (typeof payload.text === "string") {
-    return payload.text;
-  }
-
-  return "";
-}
-
-function readResponseError(payload: Record<string, unknown>): string {
-  if (typeof payload.error === "string") {
-    return payload.error;
-  }
-
-  if (typeof payload.message === "string") {
-    return payload.message;
-  }
-
-  return "Assistant response failed.";
-}
-
-function readMessageId(payload: Record<string, unknown>): string {
-  return typeof payload.messageId === "string"
-    ? payload.messageId
-    : randomId("msg");
-}
-
-function readTextId(payload: Record<string, unknown>): string {
-  if (typeof payload.textPartId === "string") {
-    return payload.textPartId;
-  }
-
-  if (typeof payload.id === "string") {
-    return payload.id;
-  }
-
-  return randomId("text");
+function hasTypeField(value: unknown): value is { type: string } {
+  const record = asRecord(value);
+  return typeof record.type === "string";
 }
 
 export class StarciteChatTransport<
   TPayload extends StarcitePayload = StarcitePayload,
+  TChunk extends TPayload & ChatChunk = TPayload & ChatChunk,
 > implements ChatTransport<UIMessage>
 {
   private readonly client: StarciteChatTransportOptions<TPayload>["client"];
@@ -280,6 +229,10 @@ export class StarciteChatTransport<
     return response.seq;
   }
 
+  private isChunkPayload(payload: TPayload): payload is TChunk {
+    return hasTypeField(payload);
+  }
+
   private streamResponse({
     chatId,
     session,
@@ -317,41 +270,17 @@ export class StarciteChatTransport<
                 continue;
               }
 
-              const payload = asRecord(event.payload as TPayload);
-              const uiChunk = toUiChunk(payload);
-              if (uiChunk) {
-                controller.enqueue(uiChunk);
-
-                if (uiChunk.type === "finish") {
-                  controller.close();
-                  return;
-                }
-
+              const payload = event.payload;
+              if (!this.isChunkPayload(payload)) {
                 continue;
               }
 
-              if (event.type === "chat.response.error") {
-                this.emitMessage(controller, {
-                  messageId: readMessageId(payload),
-                  textId: readTextId(payload),
-                  text: readResponseError(payload),
-                  finishReason: "error",
-                });
+              controller.enqueue(payload);
+
+              if (payload.type === "finish") {
+                controller.close();
                 return;
               }
-
-              const text = readResponseText(payload);
-              if (!text) {
-                continue;
-              }
-
-              this.emitMessage(controller, {
-                messageId: readMessageId(payload),
-                textId: readTextId(payload),
-                text,
-                finishReason: "stop",
-              });
-              return;
             }
 
             controller.close();
@@ -382,45 +311,13 @@ export class StarciteChatTransport<
       },
     });
   }
-
-  private emitMessage(
-    controller: ReadableStreamDefaultController<ChatChunk>,
-    args: {
-      messageId: string;
-      textId: string;
-      text: string;
-      finishReason: "stop" | "error";
-    }
-  ): void {
-    controller.enqueue({
-      type: "start",
-      messageId: args.messageId,
-    });
-    controller.enqueue({
-      type: "text-start",
-      id: args.textId,
-    });
-    controller.enqueue({
-      type: "text-delta",
-      id: args.textId,
-      delta: args.text,
-    });
-    controller.enqueue({
-      type: "text-end",
-      id: args.textId,
-    });
-    controller.enqueue({
-      type: "finish",
-      finishReason: args.finishReason,
-    });
-    controller.close();
-  }
 }
 
 export function createStarciteChatTransport<
   TPayload extends StarcitePayload = StarcitePayload,
+  TChunk extends TPayload & ChatChunk = TPayload & ChatChunk,
 >(
   options: StarciteChatTransportOptions<TPayload>
-): StarciteChatTransport<TPayload> {
+): StarciteChatTransport<TPayload, TChunk> {
   return new StarciteChatTransport(options);
 }

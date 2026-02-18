@@ -42,16 +42,10 @@ Outgoing user append:
 
 Incoming assistant tail events:
 
-- First `content` or `chat.response.delta` payload with text becomes the assistant response.
-- `chat.response.error` becomes an error assistant response.
+- Payloads are passed through directly to `useChat` as AI SDK `UIMessageChunk`.
+- No transport-level payload mapping or validation is applied.
 
-Each response is emitted as one complete UI chunk sequence:
-
-- `start`
-- `text-start`
-- `text-delta`
-- `text-end`
-- `finish`
+Your backend should emit valid AI SDK chunks (including `finish`) in event payloads.
 
 ## Options
 
