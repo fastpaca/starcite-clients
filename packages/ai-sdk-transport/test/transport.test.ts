@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteChatTransport } from "../src/transport";
 import type { ChatChunk } from "../src/types";
 
+const PRODUCER_ID_PREFIX_REGEX = /^producer:use-chat:/;
+
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
 
@@ -113,7 +115,10 @@ describe("StarciteChatTransport", () => {
       },
     });
 
-    const transport = new StarciteChatTransport({ client });
+    const transport = new StarciteChatTransport({
+      client,
+      producerId: "producer:test-tab",
+    });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -137,7 +142,7 @@ describe("StarciteChatTransport", () => {
           type: "chat.user.message",
           payload: { text: "Hello from UI" },
           actor: "agent:user",
-          producer_id: "producer:use-chat",
+          producer_id: "producer:test-tab",
           producer_seq: 1,
           source: "use-chat",
           metadata: {
@@ -193,7 +198,10 @@ describe("StarciteChatTransport", () => {
       },
     });
 
-    const transport = new StarciteChatTransport({ client });
+    const transport = new StarciteChatTransport({
+      client,
+      producerId: "producer:test-tab",
+    });
     const stream = await transport.sendMessages({
       chatId: "ses_chunks",
       messages: [
@@ -281,7 +289,10 @@ describe("StarciteChatTransport", () => {
       },
     });
 
-    const transport = new StarciteChatTransport({ client });
+    const transport = new StarciteChatTransport({
+      client,
+      producerId: "producer:test-tab",
+    });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -336,5 +347,130 @@ describe("StarciteChatTransport", () => {
         chatId: "ses_unknown",
       })
     ).resolves.toBeNull();
+  });
+
+  it("uses a unique producer id by default for each transport instance", async () => {
+    mockCreateSessionAndAppend(fetchMock, "ses_one", 1);
+    mockCreateSessionAndAppend(fetchMock, "ses_two", 1);
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => new FakeWebSocket(url),
+    });
+
+    const transportA = new StarciteChatTransport({ client });
+    const transportB = new StarciteChatTransport({ client });
+
+    await transportA.sendMessages({
+      chatId: "ses_one",
+      messages: [{ id: "u1", role: "user", text: "first tab" }],
+    });
+    await transportB.sendMessages({
+      chatId: "ses_two",
+      messages: [{ id: "u2", role: "user", text: "second tab" }],
+    });
+
+    const appendOne = JSON.parse(
+      ((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body ??
+        "{}") as string
+    ) as { producer_id?: string };
+    const appendTwo = JSON.parse(
+      ((fetchMock.mock.calls[3]?.[1] as RequestInit | undefined)?.body ??
+        "{}") as string
+    ) as { producer_id?: string };
+
+    expect(appendOne.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
+    expect(appendTwo.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
+    expect(appendOne.producer_id).not.toBe(appendTwo.producer_id);
+  });
+
+  it("supports custom payload mapping in and out of the transport", async () => {
+    mockCreateSessionAndAppend(fetchMock, "ses_custom", 1);
+
+    type CustomPayload =
+      | { kind: "user"; prompt: string }
+      | { kind: "chunk"; chunk: ChatChunk };
+
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient<CustomPayload>({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport<CustomPayload>({
+      client,
+      producerId: "producer:custom",
+      buildUserPayload: ({ message }) => ({
+        kind: "user",
+        prompt: typeof message.text === "string" ? message.text : "",
+      }),
+      parseTailPayload: (payload) =>
+        payload.kind === "chunk" ? payload.chunk : null,
+    });
+
+    const stream = await transport.sendMessages({
+      chatId: "ses_custom",
+      messages: [{ id: "u1", role: "user", text: "hello custom" }],
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:4000/v1/sessions/ses_custom/append",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          type: "chat.user.message",
+          payload: { kind: "user", prompt: "hello custom" },
+          actor: "agent:user",
+          producer_id: "producer:custom",
+          producer_seq: 1,
+          source: "use-chat",
+          metadata: {
+            messageId: "u1",
+            trigger: undefined,
+          },
+        }),
+      })
+    );
+
+    const chunksPromise = collectChunks(stream);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: {
+          kind: "chunk",
+          chunk: { type: "start", messageId: "assistant_custom" },
+        },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: {
+          kind: "chunk",
+          chunk: { type: "finish", finishReason: "stop" },
+        },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 2,
+      }),
+    });
+
+    await expect(chunksPromise).resolves.toEqual([
+      { type: "start", messageId: "assistant_custom" },
+      { type: "finish", finishReason: "stop" },
+    ]);
   });
 });

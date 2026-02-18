@@ -5,16 +5,17 @@ import {
 } from "@starcite/sdk";
 import { safeValidateUIMessages, uiMessageChunkSchema } from "ai";
 import type {
+  BuildUserPayload,
   ChatChunk,
   ChatMessage,
   ChatTransportLike,
+  ParseTailPayload,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
 } from "./types";
 
 const DEFAULT_USER_AGENT = "user";
-const DEFAULT_PRODUCER_ID = "producer:use-chat";
 const DEFAULT_SOURCE = "use-chat";
 const USER_MESSAGE_TYPE = "chat.user.message";
 const REGENERATE_TRIGGERS = new Set([
@@ -104,6 +105,17 @@ function randomId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function defaultProducerId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return `producer:use-chat:${crypto.randomUUID()}`;
+  }
+
+  return `producer:use-chat:${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function actorIsUser(actor: string, userAgent: string): boolean {
   return actor === `agent:${userAgent}`;
 }
@@ -156,6 +168,9 @@ export class StarciteChatTransport<
 {
   private readonly client: StarciteChatTransportOptions<TPayload>["client"];
   private readonly userAgent: string;
+  private readonly producerId: string;
+  private readonly buildUserPayload?: BuildUserPayload<TPayload>;
+  private readonly parseTailPayload?: ParseTailPayload<TPayload>;
 
   private readonly knownSessions = new Set<string>();
   private readonly lastCursorByChat = new Map<string, number>();
@@ -164,6 +179,9 @@ export class StarciteChatTransport<
   constructor(options: StarciteChatTransportOptions<TPayload>) {
     this.client = options.client;
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+    this.producerId = options.producerId?.trim() || defaultProducerId();
+    this.buildUserPayload = options.buildUserPayload;
+    this.parseTailPayload = options.parseTailPayload;
   }
 
   async sendMessages(
@@ -248,21 +266,33 @@ export class StarciteChatTransport<
     messages: ChatMessage[]
   ): Promise<number> {
     const userMessage = latestUserMessage(messages);
-    const text = userMessage ? extractText(userMessage) : "";
+    if (!userMessage) {
+      throw new Error("sendMessages() requires at least one message");
+    }
 
-    if (text.trim().length === 0) {
+    const text = extractText(userMessage);
+    const payload = this.buildUserPayload
+      ? this.buildUserPayload({
+          chatId: options.chatId,
+          message: userMessage,
+          trigger: options.trigger,
+          messageId: options.messageId,
+        })
+      : ((text.trim().length > 0 ? { text } : null) as TPayload | null);
+
+    if (!payload) {
       throw new Error(
-        "sendMessages() could not extract text from the latest user message"
+        "sendMessages() could not extract text from the latest user message. Provide buildUserPayload to override."
       );
     }
 
     const response = await session.append({
       agent: this.userAgent,
-      producerId: DEFAULT_PRODUCER_ID,
+      producerId: this.producerId,
       producerSeq: this.nextProducerSeq(options.chatId),
       type: USER_MESSAGE_TYPE,
       source: DEFAULT_SOURCE,
-      text,
+      payload,
       metadata: {
         messageId: options.messageId ?? userMessage?.id,
         trigger: options.trigger,
@@ -310,7 +340,26 @@ export class StarciteChatTransport<
                 continue;
               }
 
-              const payload = asRecord(event.payload);
+              const typedPayload = event.payload as TPayload;
+              if (this.parseTailPayload) {
+                const customChunk = this.parseTailPayload(
+                  typedPayload,
+                  event.type
+                );
+                const finished = await this.emitCustomChunks(
+                  controller,
+                  customChunk
+                );
+                if (finished) {
+                  return;
+                }
+
+                if (customChunk) {
+                  continue;
+                }
+              }
+
+              const payload = asRecord(typedPayload);
               const payloadChunk = await validateUiChunk(payload);
 
               if (payloadChunk.success) {
@@ -410,16 +459,38 @@ export class StarciteChatTransport<
     controller.close();
   }
 
+  private async emitCustomChunks(
+    controller: ReadableStreamDefaultController<ChatChunk>,
+    chunk: ChatChunk | ChatChunk[] | null
+  ): Promise<boolean> {
+    if (!chunk) {
+      return false;
+    }
+
+    const chunks = Array.isArray(chunk) ? chunk : [chunk];
+
+    for (const item of chunks) {
+      const parsed = await this.enqueueValidatedChunk(controller, item);
+      if (parsed.type === "finish") {
+        controller.close();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private async enqueueValidatedChunk(
     controller: ReadableStreamDefaultController<ChatChunk>,
     chunk: unknown
-  ): Promise<void> {
+  ): Promise<ChatChunk> {
     const parsed = await validateUiChunk(chunk);
     if (!parsed.success) {
       throw new Error("Invalid UI message chunk generated by transport");
     }
 
     controller.enqueue(parsed.value);
+    return parsed.value;
   }
 }
 
