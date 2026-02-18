@@ -9,6 +9,7 @@ Built for multi-agent systems.
 - auditable session history you can stream and inspect.
 
 - `@starcite/sdk` (`packages/typescript-sdk`) for app-level integration in TypeScript.
+- `@starcite/ai-sdk-transport` (`packages/ai-sdk-transport`) for AI SDK `useChat` transport integration.
 - `starcite` (`packages/starcite-cli`) for terminal-driven workflows and quick experiments.
 
 ## Why this exists
