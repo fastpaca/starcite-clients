@@ -10,7 +10,7 @@
     },
     "packages/starcite-cli": {
       "name": "starcite",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "bin": {
         "starcite": "./dist/index.js",
       },
@@ -35,7 +35,7 @@
     },
     "packages/typescript-sdk": {
       "name": "@starcite/sdk",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "dependencies": {
         "zod": "^3.25.76",
       },
@@ -44,6 +44,7 @@
         "tsup": "^8.5.0",
         "typescript": "^5.8.3",
         "vitest": "^2.1.9",
+        "ws": "^8.19.0",
       },
     },
   },
@@ -427,6 +428,8 @@
     "when-exit": ["when-exit@2.1.5", "", {}, "sha512-VGkKJ564kzt6Ms1dbgPP/yuIoQCrsFAnRbptpC5wOEsDaNsbCB2bnfnaA8i/vRs5tjUSEOtIuvl9/MyVsvQZCg=="],
 
     "why-is-node-running": ["why-is-node-running@2.3.0", "", { "dependencies": { "siginfo": "2.0.0", "stackback": "0.0.2" }, "bin": { "why-is-node-running": "cli.js" } }, "sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w=="],
+
+    "ws": ["ws@8.19.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="],
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 

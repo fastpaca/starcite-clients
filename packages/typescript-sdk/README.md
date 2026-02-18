@@ -151,13 +151,51 @@ setTimeout(() => controller.abort(), 5000);
 for await (const event of session.tail({
   cursor: 0,
   agent: "drafter",
+  reconnect: true,
+  reconnectDelayMs: 3000,
   signal: controller.signal,
 })) {
   console.log(event);
 }
 ```
 
-`tail()` replays `seq > cursor` and then streams live events on the same connection.
+`tail()` replays `seq > cursor`, streams live events, and automatically reconnects
+on transport failures while resuming from the last observed `seq`.
+
+- Set `reconnect: false` to disable automatic reconnect behavior.
+- By default, reconnect retries continue until the stream is aborted or closes gracefully.
+- Use `reconnectDelayMs` to control retry cadence for spotty networks.
+
+## Browser Restart Resilience
+
+`tail()` reconnects robustly for transport failures, but browser refresh/crash
+resets in-memory state. Persist your last processed `seq` and restart from it.
+
+```ts
+const sessionId = "ses_demo";
+const cursorKey = `starcite:${sessionId}:lastSeq`;
+
+const rawCursor = localStorage.getItem(cursorKey) ?? "0";
+let lastSeq = Number.parseInt(rawCursor, 10);
+
+if (!Number.isInteger(lastSeq) || lastSeq < 0) {
+  lastSeq = 0;
+}
+
+for await (const event of client.session(sessionId).tail({
+  cursor: lastSeq,
+  reconnect: true,
+  reconnectDelayMs: 3000,
+})) {
+  // Process event first, then persist cursor when your side effects succeed.
+  await renderOrStore(event);
+  lastSeq = event.seq;
+  localStorage.setItem(cursorKey, `${lastSeq}`);
+}
+```
+
+This pattern protects against missed events across browser restarts. Design your
+event handler to be idempotent by `seq` to safely tolerate replays.
 
 ## Error Handling
 
@@ -210,6 +248,12 @@ try {
 bun install
 bun run --cwd packages/typescript-sdk build
 bun run --cwd packages/typescript-sdk test
+```
+
+Optional reconnect soak test (runs ~40s, disabled by default):
+
+```bash
+STARCITE_SDK_RUN_SOAK=1 bun run --cwd packages/typescript-sdk test -- test/client.reconnect.integration.test.ts
 ```
 
 ## Links

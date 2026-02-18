@@ -173,6 +173,18 @@ export interface SessionTailOptions {
    */
   agent?: string;
   /**
+   * Automatically reconnect on transport failures and continue from the last observed sequence.
+   *
+   * Defaults to `true`.
+   */
+  reconnect?: boolean;
+  /**
+   * Delay between reconnect attempts in milliseconds.
+   *
+   * Defaults to `3000`.
+   */
+  reconnectDelayMs?: number;
+  /**
    * Optional abort signal to close the stream.
    */
   signal?: AbortSignal;
