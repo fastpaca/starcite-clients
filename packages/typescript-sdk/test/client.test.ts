@@ -46,6 +46,23 @@ class FakeWebSocket implements StarciteWebSocket {
   }
 }
 
+async function waitForSocketCount(
+  sockets: FakeWebSocket[],
+  expectedCount: number
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (sockets.length >= expectedCount) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedCount} socket(s); saw ${sockets.length}`
+  );
+}
+
 describe("StarciteClient", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
@@ -198,7 +215,7 @@ describe("StarciteClient", () => {
     });
 
     const donePromise = iterator.next();
-    sockets[0]?.emit("close", {});
+    sockets[0]?.emit("close", { code: 1000 });
 
     await expect(donePromise).resolves.toEqual({
       done: true,
@@ -232,7 +249,7 @@ describe("StarciteClient", () => {
     const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
-    sockets[0]?.emit("close", {});
+    sockets[0]?.emit("close", { code: 1000 });
 
     await expect(nextPromise).resolves.toEqual({
       done: true,
@@ -244,6 +261,128 @@ describe("StarciteClient", () => {
         headers: expect.anything(),
       })
     );
+  });
+
+  it("reconnects on abnormal close and resumes from the last observed seq", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        cursor: 0,
+        reconnectDelayMs: 0,
+      })
+      [Symbol.asyncIterator]();
+
+    const firstPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await expect(firstPromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 1 },
+    });
+
+    const secondPromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await expect(secondPromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 2 },
+    });
+
+    const donePromise = iterator.next();
+    sockets[1]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("keeps reconnecting until the transport recovers", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        reconnectDelayMs: 0,
+      })
+      [Symbol.asyncIterator]();
+    const firstValuePromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
+    await waitForSocketCount(sockets, 3);
+
+    sockets[2]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "stream resumed" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await expect(firstValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 1 },
+    });
+
+    const donePromise = iterator.next();
+    sockets[2]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
   });
 
   it("lists sessions with pagination and metadata filters", async () => {

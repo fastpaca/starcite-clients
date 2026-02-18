@@ -37,6 +37,8 @@ const DEFAULT_BASE_URL =
     : "http://localhost:4000";
 const TRAILING_SLASHES_REGEX = /\/+$/;
 const BEARER_PREFIX_REGEX = /^bearer\s+/i;
+const DEFAULT_TAIL_RECONNECT_DELAY_MS = 3000;
+const NORMAL_WEBSOCKET_CLOSE_CODE = 1000;
 
 const TailFrameSchema = z
   .string()
@@ -242,6 +244,73 @@ function getEventData(event: unknown): unknown {
   }
 
   return undefined;
+}
+
+function getCloseCode(event: unknown): number | undefined {
+  if (event && typeof event === "object" && "code" in event) {
+    const code = (event as { code?: unknown }).code;
+    return typeof code === "number" ? code : undefined;
+  }
+
+  return undefined;
+}
+
+function getCloseReason(event: unknown): string | undefined {
+  if (event && typeof event === "object" && "reason" in event) {
+    const reason = (event as { reason?: unknown }).reason;
+    return typeof reason === "string" && reason.length > 0 ? reason : undefined;
+  }
+
+  return undefined;
+}
+
+function describeClose(
+  code: number | undefined,
+  reason: string | undefined
+): string {
+  const codeText = `code ${typeof code === "number" ? code : "unknown"}`;
+  return reason ? `${codeText}, reason '${reason}'` : codeText;
+}
+
+async function waitForDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    }, ms);
+
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function agentFromActor(actor: string): string | undefined {
@@ -462,100 +531,169 @@ export class StarciteClient {
   /**
    * Opens a WebSocket tail stream and yields raw events.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: single-loop reconnect state machine is intentionally explicit for stream correctness.
   async *tailRawEvents(
     sessionId: string,
     options: SessionTailOptions = {}
   ): AsyncGenerator<TailEvent> {
-    const queue = new AsyncQueue<TailEvent>();
-    const cursor = options.cursor ?? 0;
+    const initialCursor = options.cursor ?? 0;
+    const reconnectEnabled = options.reconnect ?? true;
+    const reconnectDelayMs =
+      options.reconnectDelayMs ?? DEFAULT_TAIL_RECONNECT_DELAY_MS;
 
-    if (!Number.isInteger(cursor) || cursor < 0) {
+    if (!Number.isInteger(initialCursor) || initialCursor < 0) {
       throw new StarciteError("tail() cursor must be a non-negative integer");
     }
 
-    const wsUrl = `${this.websocketBaseUrl}/sessions/${encodeURIComponent(
-      sessionId
-    )}/tail?cursor=${cursor}`;
-
-    const websocketHeaders = new Headers();
-    const authorization = this.headers.get("authorization");
-
-    if (authorization) {
-      websocketHeaders.set("authorization", authorization);
-    }
-
-    const socket = this.websocketFactory(
-      wsUrl,
-      hasAnyHeaders(websocketHeaders)
-        ? {
-            headers: websocketHeaders,
-          }
-        : undefined
-    );
-
-    const onMessage = (event: unknown): void => {
-      try {
-        const parsed = parseEventFrame(getEventData(event));
-
-        if (options.agent && agentFromActor(parsed.actor) !== options.agent) {
-          return;
-        }
-
-        queue.push(parsed);
-      } catch (error) {
-        queue.fail(error);
-      }
-    };
-
-    const onError = (): void => {
-      queue.fail(
-        new StarciteConnectionError(
-          `Tail connection failed for session '${sessionId}'`
-        )
+    if (!Number.isFinite(reconnectDelayMs) || reconnectDelayMs < 0) {
+      throw new StarciteError(
+        "tail() reconnectDelayMs must be a non-negative number"
       );
-    };
-
-    const onClose = (): void => {
-      queue.close();
-    };
-
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("error", onError);
-    socket.addEventListener("close", onClose);
-
-    const onAbort = (): void => {
-      queue.close();
-      socket.close(1000, "aborted");
-    };
-
-    if (options.signal) {
-      if (options.signal.aborted) {
-        onAbort();
-      } else {
-        options.signal.addEventListener("abort", onAbort, { once: true });
-      }
     }
 
-    try {
-      while (true) {
-        const next = await queue.next();
+    let cursor = initialCursor;
 
-        if (next.done) {
-          break;
+    while (true) {
+      if (options.signal?.aborted) {
+        return;
+      }
+
+      const wsUrl = `${this.websocketBaseUrl}/sessions/${encodeURIComponent(
+        sessionId
+      )}/tail?cursor=${cursor}`;
+
+      const websocketHeaders = new Headers();
+      const authorization = this.headers.get("authorization");
+
+      if (authorization) {
+        websocketHeaders.set("authorization", authorization);
+      }
+
+      let socket: StarciteWebSocket;
+
+      try {
+        socket = this.websocketFactory(
+          wsUrl,
+          hasAnyHeaders(websocketHeaders)
+            ? {
+                headers: websocketHeaders,
+              }
+            : undefined
+        );
+      } catch (error) {
+        const rootCause = toError(error).message;
+
+        if (!reconnectEnabled || options.signal?.aborted) {
+          throw new StarciteConnectionError(
+            `Tail connection failed for session '${sessionId}': ${rootCause}`
+          );
         }
 
-        yield next.value;
+        await waitForDelay(reconnectDelayMs, options.signal);
+        continue;
       }
-    } finally {
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-      socket.removeEventListener("close", onClose);
+
+      const queue = new AsyncQueue<TailEvent>();
+      let sawTransportError = false;
+      let closeCode: number | undefined;
+      let closeReason: string | undefined;
+      let abortRequested = false;
+
+      const onMessage = (event: unknown): void => {
+        try {
+          const parsed = parseEventFrame(getEventData(event));
+          cursor = Math.max(cursor, parsed.seq);
+
+          if (options.agent && agentFromActor(parsed.actor) !== options.agent) {
+            return;
+          }
+
+          queue.push(parsed);
+        } catch (error) {
+          queue.fail(error);
+        }
+      };
+
+      const onError = (): void => {
+        sawTransportError = true;
+        queue.close();
+      };
+
+      const onClose = (event: unknown): void => {
+        closeCode = getCloseCode(event);
+        closeReason = getCloseReason(event);
+        queue.close();
+      };
+
+      const onAbort = (): void => {
+        abortRequested = true;
+        queue.close();
+        socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "aborted");
+      };
+
+      socket.addEventListener("message", onMessage);
+      socket.addEventListener("error", onError);
+      socket.addEventListener("close", onClose);
 
       if (options.signal) {
-        options.signal.removeEventListener("abort", onAbort);
+        if (options.signal.aborted) {
+          onAbort();
+        } else {
+          options.signal.addEventListener("abort", onAbort, { once: true });
+        }
       }
 
-      socket.close(1000, "finished");
+      let iterationError: Error | null = null;
+
+      try {
+        while (true) {
+          const next = await queue.next();
+
+          if (next.done) {
+            break;
+          }
+
+          yield next.value;
+        }
+      } catch (error) {
+        iterationError = toError(error);
+      } finally {
+        socket.removeEventListener("message", onMessage);
+        socket.removeEventListener("error", onError);
+        socket.removeEventListener("close", onClose);
+
+        if (options.signal) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+
+        socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "finished");
+      }
+
+      if (iterationError) {
+        throw iterationError;
+      }
+
+      if (abortRequested || options.signal?.aborted) {
+        return;
+      }
+
+      const gracefullyClosed =
+        !sawTransportError && closeCode === NORMAL_WEBSOCKET_CLOSE_CODE;
+
+      if (gracefullyClosed) {
+        return;
+      }
+
+      if (!reconnectEnabled) {
+        throw new StarciteConnectionError(
+          `Tail connection dropped for session '${sessionId}' (${describeClose(
+            closeCode,
+            closeReason
+          )})`
+        );
+      }
+
+      await waitForDelay(reconnectDelayMs, options.signal);
     }
   }
 
