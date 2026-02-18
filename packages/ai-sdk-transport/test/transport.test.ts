@@ -2,7 +2,7 @@ import type { StarciteWebSocket } from "@starcite/sdk";
 import { StarciteClient } from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteChatTransport } from "../src/transport";
-import type { UIMessageChunkLike } from "../src/types";
+import type { UIMessageChunk } from "../src/types";
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
@@ -26,7 +26,6 @@ class FakeWebSocket implements StarciteWebSocket {
     }
 
     handlers.delete(listener);
-
     if (handlers.size === 0) {
       this.listeners.delete(type);
     }
@@ -49,10 +48,10 @@ class FakeWebSocket implements StarciteWebSocket {
 }
 
 async function collectChunks(
-  stream: ReadableStream<UIMessageChunkLike>
-): Promise<UIMessageChunkLike[]> {
+  stream: ReadableStream<UIMessageChunk>
+): Promise<UIMessageChunk[]> {
   const reader = stream.getReader();
-  const chunks: UIMessageChunkLike[] = [];
+  const chunks: UIMessageChunk[] = [];
 
   while (true) {
     const next = await reader.read();
@@ -66,6 +65,33 @@ async function collectChunks(
   return chunks;
 }
 
+function mockCreateSessionAndAppend(
+  fetchMock: ReturnType<typeof vi.fn<typeof fetch>>,
+  sessionId: string,
+  appendSeq: number
+): void {
+  fetchMock
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: sessionId,
+          title: null,
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-18T00:00:00Z",
+          updated_at: "2026-02-18T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ seq: appendSeq, last_seq: appendSeq, deduped: false }),
+        { status: 201 }
+      )
+    );
+}
+
 describe("StarciteChatTransport", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
@@ -73,12 +99,8 @@ describe("StarciteChatTransport", () => {
     fetchMock.mockReset();
   });
 
-  it("appends user input and streams custom chat.response.* protocol", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
-        status: 201,
-      })
-    );
+  it("appends user input and maps first assistant content event", async () => {
+    mockCreateSessionAndAppend(fetchMock, "ses_ai", 1);
 
     const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({
@@ -91,11 +113,7 @@ describe("StarciteChatTransport", () => {
       },
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      autoCreateSession: false,
-      closeOnFirstAssistantMessage: false,
-    });
+    const transport = new StarciteChatTransport({ client });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -103,8 +121,15 @@ describe("StarciteChatTransport", () => {
       messages: [{ id: "msg_user", role: "user", text: "Hello from UI" }],
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:4000/v1/sessions",
+      expect.objectContaining({ method: "POST" })
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       "http://localhost:4000/v1/sessions/ses_ai/append",
       expect.objectContaining({
         method: "POST",
@@ -132,95 +157,12 @@ describe("StarciteChatTransport", () => {
     sockets[0]?.emit("message", {
       data: JSON.stringify({
         seq: 2,
-        type: "chat.response.start",
-        payload: { messageId: "assistant_1", textPartId: "part_1" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 1,
-      }),
-    });
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 3,
-        type: "chat.response.delta",
-        payload: { delta: "Hi there!" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 2,
-      }),
-    });
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 4,
-        type: "chat.response.end",
-        payload: { finishReason: "stop" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 3,
-      }),
-    });
-
-    const chunks = await chunksPromise;
-    expect(chunks.map((chunk) => chunk.type)).toEqual([
-      "start",
-      "text-start",
-      "text-delta",
-      "text-end",
-      "finish",
-    ]);
-    expect(chunks[0]).toMatchObject({
-      type: "start",
-      messageId: "assistant_1",
-    });
-    expect(chunks[1]).toMatchObject({
-      type: "text-start",
-      id: "part_1",
-    });
-    expect(chunks[2]).toMatchObject({
-      type: "text-delta",
-      id: "part_1",
-      delta: "Hi there!",
-    });
-  });
-
-  it("supports one-shot content events and auto-finishes after the first assistant message", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ seq: 10, last_seq: 10, deduped: false }), {
-        status: 201,
-      })
-    );
-
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    const transport = new StarciteChatTransport({
-      client,
-      autoCreateSession: false,
-    });
-
-    const stream = await transport.sendMessages({
-      chatId: "ses_ai",
-      trigger: "submit-message",
-      messages: [
-        { id: "m1", role: "user", parts: [{ type: "text", text: "Q" }] },
-      ],
-    });
-
-    const chunksPromise = collectChunks(stream);
-
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 11,
         type: "content",
-        payload: { text: "Single response event" },
+        payload: {
+          text: "Hi there!",
+          messageId: "assistant_1",
+          textPartId: "part_1",
+        },
         actor: "agent:assistant",
         producer_id: "producer:assistant",
         producer_seq: 1,
@@ -228,25 +170,17 @@ describe("StarciteChatTransport", () => {
     });
 
     const chunks = await chunksPromise;
-    expect(chunks.map((chunk) => chunk.type)).toEqual([
-      "start",
-      "text-start",
-      "text-delta",
-      "text-end",
-      "finish",
+    expect(chunks).toEqual([
+      { type: "start", messageId: "assistant_1" },
+      { type: "text-start", id: "part_1" },
+      { type: "text-delta", id: "part_1", delta: "Hi there!" },
+      { type: "text-end", id: "part_1" },
+      { type: "finish", finishReason: "stop" },
     ]);
-    expect(chunks[2]).toMatchObject({
-      type: "text-delta",
-      delta: "Single response event",
-    });
   });
 
   it("reconnects using the last tracked cursor", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ seq: 5, last_seq: 5, deduped: false }), {
-        status: 201,
-      })
-    );
+    mockCreateSessionAndAppend(fetchMock, "ses_ai", 5);
 
     const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({
@@ -259,10 +193,7 @@ describe("StarciteChatTransport", () => {
       },
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      autoCreateSession: false,
-    });
+    const transport = new StarciteChatTransport({ client });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -288,6 +219,7 @@ describe("StarciteChatTransport", () => {
     const reconnectStream = await transport.reconnectToStream({
       chatId: "ses_ai",
     });
+
     expect(reconnectStream).not.toBeNull();
     expect(sockets[1]?.url).toBe(
       "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=6"
@@ -309,10 +241,7 @@ describe("StarciteChatTransport", () => {
       websocketFactory: () => new FakeWebSocket("ws://localhost"),
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      autoCreateSession: false,
-    });
+    const transport = new StarciteChatTransport({ client });
 
     await expect(
       transport.reconnectToStream({
