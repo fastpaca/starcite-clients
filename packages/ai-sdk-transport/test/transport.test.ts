@@ -123,7 +123,15 @@ describe("StarciteChatTransport", () => {
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
       trigger: "submit-message",
-      messages: [{ id: "msg_user", role: "user", text: "Hello from UI" }],
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        {
+          id: "msg_user",
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        },
+      ],
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -204,6 +212,9 @@ describe("StarciteChatTransport", () => {
     });
     const stream = await transport.sendMessages({
       chatId: "ses_chunks",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
       messages: [
         { id: "u1", role: "user", parts: [{ type: "text", text: "Q" }] },
       ],
@@ -297,7 +308,11 @@ describe("StarciteChatTransport", () => {
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
       trigger: "submit-message",
-      messages: [{ id: "m1", role: "user", text: "first" }],
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "first" }] },
+      ],
     });
 
     const firstChunksPromise = collectChunks(stream);
@@ -364,11 +379,29 @@ describe("StarciteChatTransport", () => {
 
     await transportA.sendMessages({
       chatId: "ses_one",
-      messages: [{ id: "u1", role: "user", text: "first tab" }],
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        {
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "first tab" }],
+        },
+      ],
     });
     await transportB.sendMessages({
       chatId: "ses_two",
-      messages: [{ id: "u2", role: "user", text: "second tab" }],
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        {
+          id: "u2",
+          role: "user",
+          parts: [{ type: "text", text: "second tab" }],
+        },
+      ],
     });
 
     const appendOne = JSON.parse(
@@ -383,96 +416,5 @@ describe("StarciteChatTransport", () => {
     expect(appendOne.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
     expect(appendTwo.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
     expect(appendOne.producer_id).not.toBe(appendTwo.producer_id);
-  });
-
-  it("supports custom payload mapping in and out of the transport", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_custom", 1);
-
-    type CustomPayload =
-      | { kind: "user"; prompt: string }
-      | { kind: "chunk"; chunk: ChatChunk };
-
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient<CustomPayload>({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    const transport = new StarciteChatTransport<CustomPayload>({
-      client,
-      producerId: "producer:custom",
-      protocol: {
-        buildUserPayload: ({ message }) => ({
-          kind: "user",
-          prompt: typeof message.text === "string" ? message.text : "",
-        }),
-        parseTailPayload: (payload) =>
-          payload.kind === "chunk" ? payload.chunk : null,
-      },
-    });
-
-    const stream = await transport.sendMessages({
-      chatId: "ses_custom",
-      messages: [{ id: "u1", role: "user", text: "hello custom" }],
-    });
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "http://localhost:4000/v1/sessions/ses_custom/append",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          type: "chat.user.message",
-          payload: { kind: "user", prompt: "hello custom" },
-          actor: "agent:user",
-          producer_id: "producer:custom",
-          producer_seq: 1,
-          source: "use-chat",
-          metadata: {
-            messageId: "u1",
-            trigger: undefined,
-          },
-        }),
-      })
-    );
-
-    const chunksPromise = collectChunks(stream);
-
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 2,
-        type: "content",
-        payload: {
-          kind: "chunk",
-          chunk: { type: "start", messageId: "assistant_custom" },
-        },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 1,
-      }),
-    });
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 3,
-        type: "content",
-        payload: {
-          kind: "chunk",
-          chunk: { type: "finish", finishReason: "stop" },
-        },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 2,
-      }),
-    });
-
-    await expect(chunksPromise).resolves.toEqual([
-      { type: "start", messageId: "assistant_custom" },
-      { type: "finish", finishReason: "stop" },
-    ]);
   });
 });
