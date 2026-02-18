@@ -1,4 +1,5 @@
-import type { StarciteClient } from "@starcite/sdk";
+import type { StarciteClient, StarcitePayload } from "@starcite/sdk";
+import type { UIMessageChunk } from "ai";
 
 export interface ChatMessage {
   id?: string;
@@ -32,21 +33,20 @@ export interface ReconnectToStreamOptions {
   metadata?: Record<string, unknown>;
 }
 
-export interface UIMessageChunk {
-  type: string;
-  [key: string]: unknown;
-}
+export type ChatChunk = UIMessageChunk;
 
-export interface StarciteChatTransportOptions {
-  client: StarciteClient;
+export interface StarciteChatTransportOptions<
+  TPayload extends StarcitePayload = StarcitePayload,
+> {
+  client: StarciteClient<TPayload>;
   userAgent?: string;
 }
 
 export interface ChatTransportLike {
   sendMessages(
     options: SendMessagesOptions
-  ): Promise<ReadableStream<UIMessageChunk>>;
+  ): Promise<ReadableStream<ChatChunk>>;
   reconnectToStream(
     options: ReconnectToStreamOptions
-  ): Promise<ReadableStream<UIMessageChunk> | null>;
+  ): Promise<ReadableStream<ChatChunk> | null>;
 }

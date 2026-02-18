@@ -1,5 +1,5 @@
 import { StarciteClient } from "./client";
-import type { StarciteClientOptions } from "./types";
+import type { StarciteClientOptions, StarcitePayload } from "./types";
 
 // biome-ignore lint/performance/noBarrelFile: package entrypoint intentionally re-exports public API.
 export { normalizeBaseUrl, StarciteClient, StarciteSession } from "./client";
@@ -21,6 +21,8 @@ export type {
   SessionTailOptions,
   StarciteClientOptions,
   StarciteErrorPayload,
+  StarcitePayload,
+  StarcitePayloadSchema,
   StarciteWebSocket,
   StarciteWebSocketConnectOptions,
   StarciteWebSocketFactory,
@@ -29,10 +31,10 @@ export type {
 /**
  * Creates a new {@link StarciteClient} instance.
  */
-export function createStarciteClient(
-  options: StarciteClientOptions = {}
-): StarciteClient {
-  return new StarciteClient(options);
+export function createStarciteClient<
+  TPayload extends StarcitePayload = StarcitePayload,
+>(options: StarciteClientOptions<TPayload> = {}): StarciteClient<TPayload> {
+  return new StarciteClient<TPayload>(options);
 }
 
 /**

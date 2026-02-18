@@ -1,11 +1,16 @@
-import { StarciteApiError, type StarciteSession } from "@starcite/sdk";
+import {
+  StarciteApiError,
+  type StarcitePayload,
+  type StarciteSession,
+} from "@starcite/sdk";
+import { safeValidateUIMessages, uiMessageChunkSchema } from "ai";
 import type {
+  ChatChunk,
   ChatMessage,
   ChatTransportLike,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
-  UIMessageChunk,
 } from "./types";
 
 const DEFAULT_USER_AGENT = "user";
@@ -16,6 +21,14 @@ const REGENERATE_TRIGGERS = new Set([
   "regenerate-message",
   "regenerate-assistant-message",
 ]);
+const UI_CHUNK_VALIDATOR = uiMessageChunkSchema();
+const validateUiChunk = (chunk: unknown) => {
+  if (!UI_CHUNK_VALIDATOR.validate) {
+    throw new Error("AI SDK chunk validator is unavailable");
+  }
+
+  return UI_CHUNK_VALIDATOR.validate(chunk);
+};
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -42,9 +55,12 @@ function isSessionConflict(error: unknown): boolean {
 function extractText(message: ChatMessage): string {
   if (Array.isArray(message.parts)) {
     return message.parts
-      .map((part) =>
-        part.type === "text" && typeof part.text === "string" ? part.text : ""
-      )
+      .map((part) => {
+        const record = asRecord(part);
+        return part.type === "text" && typeof record.text === "string"
+          ? record.text
+          : "";
+      })
       .join("");
   }
 
@@ -134,32 +150,42 @@ function readTextId(payload: Record<string, unknown>): string {
   return randomId("text");
 }
 
-export class StarciteChatTransport implements ChatTransportLike {
-  private readonly client: StarciteChatTransportOptions["client"];
+export class StarciteChatTransport<
+  TPayload extends StarcitePayload = StarcitePayload,
+> implements ChatTransportLike
+{
+  private readonly client: StarciteChatTransportOptions<TPayload>["client"];
   private readonly userAgent: string;
 
   private readonly knownSessions = new Set<string>();
   private readonly lastCursorByChat = new Map<string, number>();
   private readonly producerSeqByChat = new Map<string, number>();
 
-  constructor(options: StarciteChatTransportOptions) {
+  constructor(options: StarciteChatTransportOptions<TPayload>) {
     this.client = options.client;
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
   }
 
   async sendMessages(
     options: SendMessagesOptions
-  ): Promise<ReadableStream<UIMessageChunk>> {
+  ): Promise<ReadableStream<ChatChunk>> {
     const chatId = options.chatId.trim();
     if (chatId.length === 0) {
       throw new Error("sendMessages() requires a non-empty chatId");
     }
 
     const session = await this.getSession(chatId);
+    const validated = await safeValidateUIMessages({
+      messages: options.messages,
+    });
+    const messages = validated.success
+      ? (validated.data as unknown as ChatMessage[])
+      : options.messages;
+
     let cursor = this.lastCursorByChat.get(chatId) ?? 0;
 
     if (shouldAppend(options.trigger)) {
-      cursor = await this.appendUserMessage(session, options);
+      cursor = await this.appendUserMessage(session, options, messages);
     }
 
     return this.streamResponse({
@@ -172,7 +198,7 @@ export class StarciteChatTransport implements ChatTransportLike {
 
   async reconnectToStream(
     options: ReconnectToStreamOptions
-  ): Promise<ReadableStream<UIMessageChunk> | null> {
+  ): Promise<ReadableStream<ChatChunk> | null> {
     const chatId = options.chatId.trim();
     if (chatId.length === 0) {
       throw new Error("reconnectToStream() requires a non-empty chatId");
@@ -192,7 +218,7 @@ export class StarciteChatTransport implements ChatTransportLike {
     });
   }
 
-  private async getSession(chatId: string): Promise<StarciteSession> {
+  private async getSession(chatId: string): Promise<StarciteSession<TPayload>> {
     const session = this.client.session(chatId);
 
     if (!this.knownSessions.has(chatId)) {
@@ -217,10 +243,11 @@ export class StarciteChatTransport implements ChatTransportLike {
   }
 
   private async appendUserMessage(
-    session: StarciteSession,
-    options: SendMessagesOptions
+    session: StarciteSession<TPayload>,
+    options: SendMessagesOptions,
+    messages: ChatMessage[]
   ): Promise<number> {
-    const userMessage = latestUserMessage(options.messages);
+    const userMessage = latestUserMessage(messages);
     const text = userMessage ? extractText(userMessage) : "";
 
     if (text.trim().length === 0) {
@@ -253,10 +280,10 @@ export class StarciteChatTransport implements ChatTransportLike {
     abortSignal,
   }: {
     chatId: string;
-    session: StarciteSession;
+    session: StarciteSession<TPayload>;
     cursor: number;
     abortSignal?: AbortSignal;
-  }): ReadableStream<UIMessageChunk> {
+  }): ReadableStream<ChatChunk> {
     const runtimeAbort = new AbortController();
     const onExternalAbort = () => runtimeAbort.abort();
 
@@ -268,7 +295,7 @@ export class StarciteChatTransport implements ChatTransportLike {
       }
     }
 
-    return new ReadableStream<UIMessageChunk>({
+    return new ReadableStream<ChatChunk>({
       start: (controller) => {
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear stream handling keeps this adapter easy to follow.
         const run = async () => {
@@ -284,9 +311,21 @@ export class StarciteChatTransport implements ChatTransportLike {
               }
 
               const payload = asRecord(event.payload);
+              const payloadChunk = await validateUiChunk(payload);
+
+              if (payloadChunk.success) {
+                controller.enqueue(payloadChunk.value);
+
+                if (payloadChunk.value.type === "finish") {
+                  controller.close();
+                  return;
+                }
+
+                continue;
+              }
 
               if (event.type === "chat.response.error") {
-                this.emitMessage(controller, {
+                await this.emitMessage(controller, {
                   messageId: readMessageId(payload),
                   textId: readTextId(payload),
                   text: readResponseError(payload),
@@ -300,7 +339,7 @@ export class StarciteChatTransport implements ChatTransportLike {
                 continue;
               }
 
-              this.emitMessage(controller, {
+              await this.emitMessage(controller, {
                 messageId: readMessageId(payload),
                 textId: readTextId(payload),
                 text,
@@ -338,30 +377,56 @@ export class StarciteChatTransport implements ChatTransportLike {
     });
   }
 
-  private emitMessage(
-    controller: ReadableStreamDefaultController<UIMessageChunk>,
+  private async emitMessage(
+    controller: ReadableStreamDefaultController<ChatChunk>,
     args: {
       messageId: string;
       textId: string;
       text: string;
-      finishReason: string;
+      finishReason: "stop" | "error";
     }
-  ): void {
-    controller.enqueue({ type: "start", messageId: args.messageId });
-    controller.enqueue({ type: "text-start", id: args.textId });
-    controller.enqueue({
+  ): Promise<void> {
+    await this.enqueueValidatedChunk(controller, {
+      type: "start",
+      messageId: args.messageId,
+    });
+    await this.enqueueValidatedChunk(controller, {
+      type: "text-start",
+      id: args.textId,
+    });
+    await this.enqueueValidatedChunk(controller, {
       type: "text-delta",
       id: args.textId,
       delta: args.text,
     });
-    controller.enqueue({ type: "text-end", id: args.textId });
-    controller.enqueue({ type: "finish", finishReason: args.finishReason });
+    await this.enqueueValidatedChunk(controller, {
+      type: "text-end",
+      id: args.textId,
+    });
+    await this.enqueueValidatedChunk(controller, {
+      type: "finish",
+      finishReason: args.finishReason,
+    });
     controller.close();
+  }
+
+  private async enqueueValidatedChunk(
+    controller: ReadableStreamDefaultController<ChatChunk>,
+    chunk: unknown
+  ): Promise<void> {
+    const parsed = await validateUiChunk(chunk);
+    if (!parsed.success) {
+      throw new Error("Invalid UI message chunk generated by transport");
+    }
+
+    controller.enqueue(parsed.value);
   }
 }
 
-export function createStarciteChatTransport(
-  options: StarciteChatTransportOptions
-): StarciteChatTransport {
+export function createStarciteChatTransport<
+  TPayload extends StarcitePayload = StarcitePayload,
+>(
+  options: StarciteChatTransportOptions<TPayload>
+): StarciteChatTransport<TPayload> {
   return new StarciteChatTransport(options);
 }
