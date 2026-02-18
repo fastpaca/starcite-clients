@@ -10,6 +10,7 @@ Built for multi-agent systems.
 
 - `@starcite/sdk` (`packages/typescript-sdk`) for app-level integration in TypeScript.
 - `@starcite/ai-sdk-transport` (`packages/ai-sdk-transport`) for AI SDK `useChat` transport integration.
+- `@starcite/usechat-streaming-example` (`packages/usechat-streaming-example`) for a runnable browser demo of `useChat` + Starcite transport.
 - `starcite` (`packages/starcite-cli`) for terminal-driven workflows and quick experiments.
 
 ## Why this exists
@@ -24,6 +25,7 @@ Modern AI products often have many agents producing events at the same time. Sta
 
 - Start with the TypeScript SDK if you are building an app: `packages/typescript-sdk/README.md`
 - Start with the CLI if you are scripting or testing from terminal: `packages/starcite-cli/README.md`
+- Run the browser demo to inspect streaming integration wiring: `packages/usechat-streaming-example/README.md`
 
 ## Get started in minutes
 
