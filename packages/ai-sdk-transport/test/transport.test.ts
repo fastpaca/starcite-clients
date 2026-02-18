@@ -195,6 +195,64 @@ describe("StarciteChatTransport", () => {
     ]);
   });
 
+  it("passes creator_principal when creating a session", async () => {
+    mockCreateSessionAndAppend(fetchMock, "ses_principal", 1);
+
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({
+      client,
+      creatorPrincipal: {
+        tenant_id: "org:acme",
+        id: "user:tester",
+        type: "user",
+      },
+      producerId: "producer:test-tab",
+    });
+
+    const stream = await transport.sendMessages({
+      chatId: "ses_principal",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        {
+          id: "msg_user",
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:4000/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          id: "ses_principal",
+          creator_principal: {
+            tenant_id: "org:acme",
+            id: "user:tester",
+            type: "user",
+          },
+        }),
+      })
+    );
+
+    stream.cancel();
+    sockets[0]?.emit("close", { code: 1000 });
+  });
+
   it("forwards AI SDK chunks from tail payload when payload already matches schema", async () => {
     mockCreateSessionAndAppend(fetchMock, "ses_chunks", 1);
 

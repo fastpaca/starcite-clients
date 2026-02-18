@@ -2,6 +2,10 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const proxyTarget =
+  process.env.STARCITE_PROXY_TARGET ?? "http://localhost:45187";
+const proxyApiKey = process.env.STARCITE_PROXY_API_KEY?.trim();
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -18,9 +22,14 @@ export default defineConfig({
     port: 4176,
     proxy: {
       "/v1": {
-        target: "http://localhost:45187",
+        target: proxyTarget,
         changeOrigin: true,
         ws: true,
+        headers: proxyApiKey
+          ? {
+              authorization: `Bearer ${proxyApiKey}`,
+            }
+          : undefined,
       },
     },
   },

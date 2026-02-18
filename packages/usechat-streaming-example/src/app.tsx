@@ -2,7 +2,11 @@ import { useChat } from "@ai-sdk/react";
 import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
 import type { UIMessage } from "ai";
 import { type FormEvent, useMemo, useState } from "react";
-import { createDemoStarciteClient, type DemoPayload } from "./demo-starcite";
+import {
+  createDemoStarciteClient,
+  getDemoCreatorPrincipal,
+  type DemoPayload,
+} from "./demo-starcite";
 import "./styles.css";
 
 const integrationSnippet = `import { useChat } from "@ai-sdk/react";
@@ -40,13 +44,15 @@ function toMessageText(message: UIMessage): string {
 
 export function App() {
   const client = useMemo(() => createDemoStarciteClient(), []);
+  const creatorPrincipal = useMemo(() => getDemoCreatorPrincipal(), []);
   const transport = useMemo(
     () =>
       new StarciteChatTransport<DemoPayload>({
         client,
+        creatorPrincipal,
         userAgent: "user",
       }),
-    [client]
+    [client, creatorPrincipal]
   );
 
   const { messages, sendMessage, status, error, stop, regenerate, clearError } =
