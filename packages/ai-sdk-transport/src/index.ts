@@ -5,10 +5,10 @@ export {
 } from "./transport";
 
 export type {
+  ChatChunk,
   ChatMessage,
   ChatTransportLike,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
-  UIMessageChunk,
 } from "./types";

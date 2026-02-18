@@ -2,7 +2,7 @@ import type { StarciteWebSocket } from "@starcite/sdk";
 import { StarciteClient } from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteChatTransport } from "../src/transport";
-import type { UIMessageChunk } from "../src/types";
+import type { ChatChunk } from "../src/types";
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
@@ -48,10 +48,10 @@ class FakeWebSocket implements StarciteWebSocket {
 }
 
 async function collectChunks(
-  stream: ReadableStream<UIMessageChunk>
-): Promise<UIMessageChunk[]> {
+  stream: ReadableStream<ChatChunk>
+): Promise<ChatChunk[]> {
   const reader = stream.getReader();
-  const chunks: UIMessageChunk[] = [];
+  const chunks: ChatChunk[] = [];
 
   while (true) {
     const next = await reader.read();
@@ -175,6 +175,94 @@ describe("StarciteChatTransport", () => {
       { type: "text-start", id: "part_1" },
       { type: "text-delta", id: "part_1", delta: "Hi there!" },
       { type: "text-end", id: "part_1" },
+      { type: "finish", finishReason: "stop" },
+    ]);
+  });
+
+  it("forwards AI SDK chunks from tail payload when payload already matches schema", async () => {
+    mockCreateSessionAndAppend(fetchMock, "ses_chunks", 1);
+
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({ client });
+    const stream = await transport.sendMessages({
+      chatId: "ses_chunks",
+      messages: [
+        { id: "u1", role: "user", parts: [{ type: "text", text: "Q" }] },
+      ],
+    });
+
+    const chunksPromise = collectChunks(stream);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { type: "start", messageId: "m_assistant" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { type: "text-start", id: "p_assistant" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 4,
+        type: "content",
+        payload: {
+          type: "text-delta",
+          id: "p_assistant",
+          delta: "schema native",
+        },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 3,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 5,
+        type: "content",
+        payload: { type: "text-end", id: "p_assistant" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 4,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 6,
+        type: "content",
+        payload: { type: "finish", finishReason: "stop" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 5,
+      }),
+    });
+
+    await expect(chunksPromise).resolves.toEqual([
+      { type: "start", messageId: "m_assistant" },
+      { type: "text-start", id: "p_assistant" },
+      { type: "text-delta", id: "p_assistant", delta: "schema native" },
+      { type: "text-end", id: "p_assistant" },
       { type: "finish", finishReason: "stop" },
     ]);
   });
