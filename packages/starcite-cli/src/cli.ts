@@ -7,6 +7,7 @@ import {
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
 import { createConsola } from "consola";
+import starciteCliPackage from "../package.json";
 import { z } from "zod";
 import {
   buildSeqContextKey,
@@ -54,6 +55,7 @@ interface CliDependencies {
 type CliJsonObject = Record<string, unknown>;
 
 const defaultLogger: LoggerLike = createConsola();
+const cliVersion = starciteCliPackage.version;
 
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
 const positiveIntegerSchema = z.coerce.number().int().positive();
@@ -273,6 +275,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .name("starcite")
     .description("Starcite CLI")
     .showHelpAfterError()
+    .version(cliVersion, "-v, --version", "Print current CLI version")
     .option("-u, --base-url <url>", "Starcite API base URL")
     .option("-k, --token <token>", "Starcite API key / service JWT")
     .option(
@@ -280,6 +283,13 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       "Starcite CLI config directory (default: ~/.starcite)"
     )
     .option("--json", "Output JSON");
+
+  program
+    .command("version")
+    .description("Print current CLI version")
+    .action(() => {
+      logger.info(cliVersion);
+    });
 
   program
     .command("init")

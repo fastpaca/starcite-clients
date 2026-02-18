@@ -11,6 +11,7 @@ import type { SessionEvent } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
 import type { CommandResult, PromptAdapter } from "../src/up";
+import starciteCliPackage from "../package.json";
 
 const GENERATED_PRODUCER_ID_PATTERN = /^cli:/;
 
@@ -140,6 +141,68 @@ describe("starcite CLI", () => {
       metadata: undefined,
     });
     expect(info).toEqual(["ses_123"]);
+  });
+
+  it("prints the CLI version", async () => {
+    const { logger, info } = makeLogger();
+
+    const program = buildProgram({ logger });
+
+    await program.parseAsync(["version"], {
+      from: "user",
+    });
+
+    expect(info).toEqual([starciteCliPackage.version]);
+  });
+
+  it("supports -v / --version", async () => {
+    const output: string[] = [];
+    const program = buildProgram({
+      logger: {
+        info() {},
+        error() {},
+      },
+    });
+
+    program.exitOverride();
+    program.configureOutput({
+      writeOut: (text) => output.push(text),
+      writeErr: () => {},
+    });
+
+    await expect(
+      program.parseAsync(["node", "starcite", "--version"], {
+        from: "user",
+      })
+    ).rejects.toHaveProperty("code", "commander.version");
+
+    expect(output.join("")).toContain(starciteCliPackage.version);
+  });
+
+  it("includes version command and --version option in help", async () => {
+    const output: string[] = [];
+    const program = buildProgram({
+      logger: {
+        info() {},
+        error() {},
+      },
+    });
+
+    program.exitOverride();
+    program.configureOutput({
+      writeOut: (text) => output.push(text),
+      writeErr: () => {},
+    });
+
+    await expect(
+      program.parseAsync(["node", "starcite", "--help"], {
+        from: "user",
+      })
+    ).rejects.toHaveProperty("code", "commander.helpDisplayed");
+
+    const help = output.join("");
+    expect(help).toContain("version  ");
+    expect(help).toContain("-v, --version");
   });
 
   it("appends in high-level mode", async () => {

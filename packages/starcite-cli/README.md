@@ -70,6 +70,7 @@ starcite config set api-key <YOUR_KEY>
 - `-k, --token <token>`: Starcite API key / service JWT (highest precedence)
 - `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
+- `-v, --version`: show CLI version and exit
 - `-h, --help`: show help text
 
 Base URL resolution order:
@@ -86,6 +87,14 @@ API key resolution order:
 4. `apiKey` in `~/.starcite/config.json` or `~/.starcite/config.toml`
 
 ## Commands
+
+### `version`
+
+Print the installed CLI version.
+
+```bash
+starcite version
+```
 
 ### `create`
 
