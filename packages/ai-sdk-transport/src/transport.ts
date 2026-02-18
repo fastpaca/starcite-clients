@@ -5,14 +5,13 @@ import {
 } from "@starcite/sdk";
 import { safeValidateUIMessages, uiMessageChunkSchema } from "ai";
 import type {
-  BuildUserPayload,
   ChatChunk,
   ChatMessage,
   ChatTransportLike,
-  ParseTailPayload,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
+  StarciteProtocol,
 } from "./types";
 
 const DEFAULT_USER_AGENT = "user";
@@ -169,8 +168,7 @@ export class StarciteChatTransport<
   private readonly client: StarciteChatTransportOptions<TPayload>["client"];
   private readonly userAgent: string;
   private readonly producerId: string;
-  private readonly buildUserPayload?: BuildUserPayload<TPayload>;
-  private readonly parseTailPayload?: ParseTailPayload<TPayload>;
+  private readonly protocol?: StarciteProtocol<TPayload>;
 
   private readonly knownSessions = new Set<string>();
   private readonly lastCursorByChat = new Map<string, number>();
@@ -180,8 +178,7 @@ export class StarciteChatTransport<
     this.client = options.client;
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.producerId = options.producerId?.trim() || defaultProducerId();
-    this.buildUserPayload = options.buildUserPayload;
-    this.parseTailPayload = options.parseTailPayload;
+    this.protocol = options.protocol;
   }
 
   async sendMessages(
@@ -271,8 +268,8 @@ export class StarciteChatTransport<
     }
 
     const text = extractText(userMessage);
-    const payload = this.buildUserPayload
-      ? this.buildUserPayload({
+    const payload = this.protocol
+      ? this.protocol.buildUserPayload({
           chatId: options.chatId,
           message: userMessage,
           trigger: options.trigger,
@@ -282,7 +279,7 @@ export class StarciteChatTransport<
 
     if (!payload) {
       throw new Error(
-        "sendMessages() could not extract text from the latest user message. Provide buildUserPayload to override."
+        "sendMessages() could not extract text from the latest user message. Provide protocol.buildUserPayload to override."
       );
     }
 
@@ -341,8 +338,8 @@ export class StarciteChatTransport<
               }
 
               const typedPayload = event.payload as TPayload;
-              if (this.parseTailPayload) {
-                const customChunk = this.parseTailPayload(
+              if (this.protocol) {
+                const customChunk = this.protocol.parseTailPayload(
                   typedPayload,
                   event.type
                 );

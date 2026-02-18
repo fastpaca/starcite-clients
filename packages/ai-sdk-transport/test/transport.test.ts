@@ -406,12 +406,14 @@ describe("StarciteChatTransport", () => {
     const transport = new StarciteChatTransport<CustomPayload>({
       client,
       producerId: "producer:custom",
-      buildUserPayload: ({ message }) => ({
-        kind: "user",
-        prompt: typeof message.text === "string" ? message.text : "",
-      }),
-      parseTailPayload: (payload) =>
-        payload.kind === "chunk" ? payload.chunk : null,
+      protocol: {
+        buildUserPayload: ({ message }) => ({
+          kind: "user",
+          prompt: typeof message.text === "string" ? message.text : "",
+        }),
+        parseTailPayload: (payload) =>
+          payload.kind === "chunk" ? payload.chunk : null,
+      },
     });
 
     const stream = await transport.sendMessages({

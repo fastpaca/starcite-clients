@@ -30,10 +30,15 @@ const transport = new StarciteChatTransport({
   client,
   // Optional: stable per-tab producer id override.
   producerId: `producer:web:${crypto.randomUUID()}`,
-  // Optional: custom payload over the wire.
-  buildUserPayload: ({ message }) => ({ kind: "user", prompt: message.text ?? "" }),
-  parseTailPayload: (payload) =>
-    payload.kind === "chunk" ? payload.chunk : null,
+  // Optional: custom payload protocol over the wire.
+  protocol: {
+    buildUserPayload: ({ message }) => ({
+      kind: "user",
+      prompt: message.text ?? "",
+    }),
+    parseTailPayload: (payload) =>
+      payload.kind === "chunk" ? payload.chunk : null,
+  },
 });
 
 const chat = useChat({
@@ -65,7 +70,6 @@ Each response is emitted as one complete UI chunk sequence:
 - `client` (required)
 - `userAgent` (default `user`)
 - `producerId` (optional; defaults to unique per transport instance)
-- `buildUserPayload` (optional; controls payload appended for user messages)
-- `parseTailPayload` (optional; maps Starcite payloads to AI SDK chunks)
+- `protocol` (optional; `StarciteProtocol<TPayload>`)
 
 Payload validation is intentionally kept in `@starcite/sdk` via `payloadSchema`.
