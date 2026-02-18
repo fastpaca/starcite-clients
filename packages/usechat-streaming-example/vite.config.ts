@@ -16,5 +16,12 @@ export default defineConfig({
   },
   server: {
     port: 4176,
+    proxy: {
+      "/v1": {
+        target: "http://localhost:45187",
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
 });

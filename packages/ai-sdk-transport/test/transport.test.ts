@@ -101,7 +101,7 @@ describe("StarciteChatTransport", () => {
     fetchMock.mockReset();
   });
 
-  it("appends user input and maps first assistant content event", async () => {
+  it("appends user input and forwards assistant chunk payloads", async () => {
     mockCreateSessionAndAppend(fetchMock, "ses_ai", 1);
 
     const sockets: FakeWebSocket[] = [];
@@ -171,23 +171,26 @@ describe("StarciteChatTransport", () => {
       data: JSON.stringify({
         seq: 2,
         type: "content",
-        payload: {
-          text: "Hi there!",
-          messageId: "assistant_1",
-          textPartId: "part_1",
-        },
+        payload: { type: "start", messageId: "assistant_1" },
         actor: "agent:assistant",
         producer_id: "producer:assistant",
         producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { type: "finish", finishReason: "stop" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 2,
       }),
     });
 
     const chunks = await chunksPromise;
     expect(chunks).toEqual([
       { type: "start", messageId: "assistant_1" },
-      { type: "text-start", id: "part_1" },
-      { type: "text-delta", id: "part_1", delta: "Hi there!" },
-      { type: "text-end", id: "part_1" },
       { type: "finish", finishReason: "stop" },
     ]);
   });
@@ -321,14 +324,16 @@ describe("StarciteChatTransport", () => {
       data: JSON.stringify({
         seq: 6,
         type: "content",
-        payload: { text: "first answer" },
+        payload: { type: "finish", finishReason: "stop" },
         actor: "agent:assistant",
         producer_id: "producer:assistant",
         producer_seq: 1,
       }),
     });
 
-    await firstChunksPromise;
+    await expect(firstChunksPromise).resolves.toEqual([
+      { type: "finish", finishReason: "stop" },
+    ]);
 
     const reconnectStream = await transport.reconnectToStream({
       chatId: "ses_ai",

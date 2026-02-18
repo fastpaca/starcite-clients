@@ -399,6 +399,54 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("accepts tail events where source is null", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        cursor: 0,
+      })
+      [Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "null source frame" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 1,
+        source: null,
+      }),
+    });
+
+    const first = await nextPromise;
+    expect(first.done).toBe(false);
+    if (first.done) {
+      return;
+    }
+    expect(first.value.source).toBeUndefined();
+
+    const donePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
   it("sends authorization header in websocket upgrade when apiKey is set", async () => {
     const sockets: FakeWebSocket[] = [];
     const websocketFactory = vi.fn(
