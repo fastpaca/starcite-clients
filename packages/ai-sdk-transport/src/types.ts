@@ -42,13 +42,15 @@ export interface BuildUserPayloadOptions {
   messageId?: string;
 }
 
-export type BuildUserPayload<
+export interface StarciteProtocol<
   TPayload extends StarcitePayload = StarcitePayload,
-> = (options: BuildUserPayloadOptions) => TPayload;
-
-export type ParseTailPayload<
-  TPayload extends StarcitePayload = StarcitePayload,
-> = (payload: TPayload, eventType: string) => ChatChunk | ChatChunk[] | null;
+> {
+  buildUserPayload(options: BuildUserPayloadOptions): TPayload | null;
+  parseTailPayload(
+    payload: TPayload,
+    eventType: string
+  ): ChatChunk | ChatChunk[] | null;
+}
 
 export interface StarciteChatTransportOptions<
   TPayload extends StarcitePayload = StarcitePayload,
@@ -56,8 +58,7 @@ export interface StarciteChatTransportOptions<
   client: StarciteClient<TPayload>;
   userAgent?: string;
   producerId?: string;
-  buildUserPayload?: BuildUserPayload<TPayload>;
-  parseTailPayload?: ParseTailPayload<TPayload>;
+  protocol?: StarciteProtocol<TPayload>;
 }
 
 export interface ChatTransportLike {
