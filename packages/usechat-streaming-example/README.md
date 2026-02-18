@@ -34,7 +34,16 @@ const client = createStarciteClient<Payload>({
   payloadSchema,
 });
 
-const transport = new StarciteChatTransport({ client });
+const protocol: StarciteProtocol<Payload> = {
+  buildUserPayload: ({ message }) => ({ text: message.text ?? "" }),
+  parseTailPayload: (payload) =>
+    "type" in payload ? (payload as unknown as ChatChunk) : null,
+};
+
+const transport = new StarciteChatTransport({
+  client,
+  protocol,
+});
 
 const chat = useChat({
   id: "chat_1",
