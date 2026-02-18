@@ -63,6 +63,13 @@ async function waitForSocketCount(
   );
 }
 
+function tokenFromClaims(claims: Record<string, unknown>): string {
+  const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
+    "base64url"
+  );
+  return `eyJhbGciOiJIUzI1NiJ9.${payload}.N6fK2qA`;
+}
+
 describe("StarciteClient", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
@@ -162,6 +169,171 @@ describe("StarciteClient", () => {
     const headers = new Headers(requestInit.headers);
 
     expect(headers.get("authorization")).toBe("Bearer jwt_service_key");
+  });
+
+  it("injects inferred creator_principal from JWT apiKey", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_auth_claims",
+          title: "Auth",
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-14T00:00:00Z",
+          updated_at: "2026-02-14T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const apiKey = tokenFromClaims({
+      iss: "https://starcite.ai",
+      aud: "starcite-api",
+      sub: "agent-99",
+      tenant_id: "tenant-alpha",
+      principal_id: "user-99",
+      principal_type: "user",
+    });
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    await client.create({ title: "Auth" });
+
+    const firstCall = fetchMock.mock.calls[0];
+    const requestBody = JSON.parse(
+      (firstCall?.[1] as RequestInit).body as string
+    );
+    expect(requestBody.creator_principal).toEqual({
+      tenant_id: "tenant-alpha",
+      id: "user-99",
+      type: "user",
+    });
+  });
+
+  it("uses explicit creator_principal when provided", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_auth_explicit",
+          title: "Auth",
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-14T00:00:00Z",
+          updated_at: "2026-02-14T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: tokenFromClaims({
+        iss: "https://starcite.ai",
+        aud: "starcite-api",
+        sub: "org:tenant-alpha",
+      }),
+    });
+
+    await client.create({
+      title: "Auth",
+      creator_principal: {
+        tenant_id: "tenant-beta",
+        id: "agent-beta",
+        type: "agent",
+      },
+    });
+
+    const firstCall = fetchMock.mock.calls[0];
+    const requestBody = JSON.parse(
+      (firstCall?.[1] as RequestInit).body as string
+    );
+    expect(requestBody.creator_principal).toEqual({
+      tenant_id: "tenant-beta",
+      id: "agent-beta",
+      type: "agent",
+    });
+  });
+
+  it("infers actor-style creator principal from JWT subject", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_auth_actor_subject",
+          title: "Auth",
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-14T00:00:00Z",
+          updated_at: "2026-02-14T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: tokenFromClaims({
+        iss: "https://starcite.ai",
+        aud: "starcite-api",
+        sub: "agent:foo",
+        tenant_id: "tenant-alpha",
+      }),
+    });
+
+    await client.create({ title: "Auth" });
+
+    const firstCall = fetchMock.mock.calls[0];
+    const requestBody = JSON.parse(
+      (firstCall?.[1] as RequestInit).body as string
+    );
+    expect(requestBody.creator_principal).toEqual({
+      tenant_id: "tenant-alpha",
+      id: "agent:foo",
+      type: "agent",
+    });
+  });
+
+  it("infers principal tenant from org-style service token subject", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_org_subject",
+          title: "Auth",
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-14T00:00:00Z",
+          updated_at: "2026-02-14T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: tokenFromClaims({
+        iss: "https://starcite.ai",
+        aud: "starcite-api",
+        sub: "org:tenant-alpha",
+      }),
+    });
+
+    await client.create({ title: "Auth" });
+
+    const firstCall = fetchMock.mock.calls[0];
+    const requestBody = JSON.parse(
+      (firstCall?.[1] as RequestInit).body as string
+    );
+    expect(requestBody.creator_principal).toEqual({
+      tenant_id: "tenant-alpha",
+      id: "org:tenant-alpha",
+      type: "user",
+    });
   });
 
   it("tails events and filters by agent", async () => {

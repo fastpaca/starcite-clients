@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 import { StarciteClient } from "../src/client";
 import type { StarciteWebSocket } from "../src/types";
 
@@ -83,214 +83,108 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
   });
 }
 
-describe("StarciteClient tail reconnect integration", () => {
-  it("reconnects after a yanked transport and catches up from the last seq", async () => {
-    const httpServer = createServer();
-    const websocketServer = new WebSocketServer({ noServer: true });
-    const cursorsSeenByServer: number[] = [];
-    let connections = 0;
+const require = createRequire(import.meta.url);
+let NodeWebSocket: any;
+let WebSocketServer: any;
+let websocketDepsAvailable = false;
 
-    httpServer.on("upgrade", (request, socket, head) => {
-      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        websocketServer.emit("connection", websocket, request);
-      });
-    });
+try {
+  const ws = require("ws");
+  NodeWebSocket = ws.WebSocket;
+  WebSocketServer = ws.WebSocketServer;
+  websocketDepsAvailable = true;
+} catch {
+  websocketDepsAvailable = false;
+}
 
-    websocketServer.on("connection", (websocket, request) => {
-      connections += 1;
+const describeWebSocketIntegration = websocketDepsAvailable
+  ? describe
+  : describe.skip;
 
-      const requestUrl = new URL(request.url ?? "/", "http://localhost");
-      const cursor = Number.parseInt(
-        requestUrl.searchParams.get("cursor") ?? "0",
-        10
-      );
-      cursorsSeenByServer.push(Number.isNaN(cursor) ? -1 : cursor);
+describeWebSocketIntegration(
+  "StarciteClient tail reconnect integration",
+  () => {
+    it("reconnects after a yanked transport and catches up from the last seq", async () => {
+      const httpServer = createServer();
+      const websocketServer = new WebSocketServer({ noServer: true });
+      const cursorsSeenByServer: number[] = [];
+      let connections = 0;
 
-      if (connections === 1) {
-        websocket.send(encodeTailFrame(1, "first frame"), () => {
-          // Simulate abrupt network loss/deployment yank (non-graceful close).
-          websocket.terminate();
-        });
-        return;
-      }
-
-      websocket.send(encodeTailFrame(2, "second frame"), () => {
-        websocket.send(encodeTailFrame(3, "third frame"), () => {
-          websocket.close(1000, "finished");
+      httpServer.on("upgrade", (request, socket, head) => {
+        websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+          websocketServer.emit("connection", websocket, request);
         });
       });
-    });
 
-    await listenOnRandomPort(httpServer);
+      websocketServer.on("connection", (websocket, request) => {
+        connections += 1;
 
-    try {
-      const address = httpServer.address() as AddressInfo | null;
-      if (!address || typeof address === "string") {
-        throw new Error("Failed to resolve local test server address");
-      }
-
-      const client = new StarciteClient({
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        websocketFactory: (url) =>
-          new NodeWebSocket(url) as unknown as StarciteWebSocket,
-      });
-
-      const observedSeqs: number[] = [];
-
-      for await (const event of client.session("ses_integration").tailRaw({
-        cursor: 0,
-        reconnectDelayMs: 10,
-      })) {
-        observedSeqs.push(event.seq);
-      }
-
-      expect(observedSeqs).toEqual([1, 2, 3]);
-      expect(cursorsSeenByServer).toEqual([0, 1]);
-      expect(connections).toBe(2);
-    } finally {
-      for (const clientSocket of websocketServer.clients) {
-        clientSocket.terminate();
-      }
-      await closeWebSocketServer(websocketServer);
-      await closeServer(httpServer);
-    }
-  });
-
-  it("keeps up with 200ms producers across repeated yanked connections", async () => {
-    const httpServer = createServer();
-    const websocketServer = new WebSocketServer({ noServer: true });
-    const replayLog = new Map<number, string>();
-    const activeSockets = new Set<NodeWebSocket>();
-    const cursorsSeenByServer: number[] = [];
-    const TARGET_SEQ = 12;
-    const PRODUCER_INTERVAL_MS = 200;
-    const YANK_AFTER_MS = 450;
-
-    let connections = 0;
-    let lastProducedSeq = 0;
-    let producerTimer: ReturnType<typeof setInterval> | undefined;
-
-    httpServer.on("upgrade", (request, socket, head) => {
-      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        websocketServer.emit("connection", websocket, request);
-      });
-    });
-
-    websocketServer.on("connection", (websocket, request) => {
-      connections += 1;
-      const ws = websocket as unknown as NodeWebSocket;
-      activeSockets.add(ws);
-
-      const requestUrl = new URL(request.url ?? "/", "http://localhost");
-      const cursor = Number.parseInt(
-        requestUrl.searchParams.get("cursor") ?? "0",
-        10
-      );
-      const safeCursor = Number.isNaN(cursor) ? 0 : cursor;
-      cursorsSeenByServer.push(safeCursor);
-
-      for (let seq = safeCursor + 1; seq <= lastProducedSeq; seq += 1) {
-        const frame = replayLog.get(seq);
-        if (frame) {
-          ws.send(frame);
-        }
-      }
-
-      const yankTimer = setTimeout(() => {
-        if (lastProducedSeq < TARGET_SEQ && ws.readyState === ws.OPEN) {
-          ws.terminate();
-        }
-      }, YANK_AFTER_MS);
-
-      ws.on("close", () => {
-        clearTimeout(yankTimer);
-        activeSockets.delete(ws);
-      });
-    });
-
-    await listenOnRandomPort(httpServer);
-
-    try {
-      const address = httpServer.address() as AddressInfo | null;
-      if (!address || typeof address === "string") {
-        throw new Error("Failed to resolve local test server address");
-      }
-
-      producerTimer = setInterval(() => {
-        lastProducedSeq += 1;
-        const frame = encodeTailFrame(
-          lastProducedSeq,
-          `frame ${lastProducedSeq}`
+        const requestUrl = new URL(request.url ?? "/", "http://localhost");
+        const cursor = Number.parseInt(
+          requestUrl.searchParams.get("cursor") ?? "0",
+          10
         );
-        replayLog.set(lastProducedSeq, frame);
+        cursorsSeenByServer.push(Number.isNaN(cursor) ? -1 : cursor);
 
-        for (const ws of activeSockets) {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(frame);
-          }
+        if (connections === 1) {
+          websocket.send(encodeTailFrame(1, "first frame"), () => {
+            // Simulate abrupt network loss/deployment yank (non-graceful close).
+            websocket.terminate();
+          });
+          return;
         }
 
-        if (lastProducedSeq >= TARGET_SEQ) {
-          clearInterval(producerTimer);
-          for (const ws of activeSockets) {
-            if (ws.readyState === ws.OPEN) {
-              ws.close(1000, "producer-finished");
-            }
-          }
-        }
-      }, PRODUCER_INTERVAL_MS);
-
-      const client = new StarciteClient({
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        websocketFactory: (url) =>
-          new NodeWebSocket(url) as unknown as StarciteWebSocket,
+        websocket.send(encodeTailFrame(2, "second frame"), () => {
+          websocket.send(encodeTailFrame(3, "third frame"), () => {
+            websocket.close(1000, "finished");
+          });
+        });
       });
 
-      const observedSeqs: number[] = [];
+      await listenOnRandomPort(httpServer);
 
-      for await (const event of client.session("ses_stream_stress").tailRaw({
-        cursor: 0,
-        reconnectDelayMs: 25,
-      })) {
-        observedSeqs.push(event.seq);
+      try {
+        const address = httpServer.address() as AddressInfo | null;
+        if (!address || typeof address === "string") {
+          throw new Error("Failed to resolve local test server address");
+        }
+
+        const client = new StarciteClient({
+          baseUrl: `http://127.0.0.1:${address.port}`,
+          websocketFactory: (url) =>
+            new NodeWebSocket(url) as unknown as StarciteWebSocket,
+        });
+
+        const observedSeqs: number[] = [];
+
+        for await (const event of client.session("ses_integration").tailRaw({
+          cursor: 0,
+          reconnectDelayMs: 10,
+        })) {
+          observedSeqs.push(event.seq);
+        }
+
+        expect(observedSeqs).toEqual([1, 2, 3]);
+        expect(cursorsSeenByServer).toEqual([0, 1]);
+        expect(connections).toBe(2);
+      } finally {
+        for (const clientSocket of websocketServer.clients) {
+          clientSocket.terminate();
+        }
+        await closeWebSocketServer(websocketServer);
+        await closeServer(httpServer);
       }
+    });
 
-      expect(observedSeqs).toEqual(range(1, TARGET_SEQ));
-      expect(connections).toBeGreaterThanOrEqual(3);
-      expect(cursorsSeenByServer[0]).toBe(0);
-
-      for (let index = 1; index < cursorsSeenByServer.length; index += 1) {
-        const previous = cursorsSeenByServer[index - 1] ?? 0;
-        const current = cursorsSeenByServer[index] ?? 0;
-        expect(current).toBeGreaterThanOrEqual(previous);
-      }
-    } finally {
-      if (producerTimer) {
-        clearInterval(producerTimer);
-      }
-
-      for (const clientSocket of websocketServer.clients) {
-        clientSocket.terminate();
-      }
-      await closeWebSocketServer(websocketServer);
-      await closeServer(httpServer);
-    }
-  }, 15_000);
-
-  it.runIf(process.env.STARCITE_SDK_RUN_SOAK === "1")(
-    "soak: keeps up with 200ms producers during prolonged random yanks",
-    async () => {
+    it("keeps up with 200ms producers across repeated yanked connections", async () => {
       const httpServer = createServer();
       const websocketServer = new WebSocketServer({ noServer: true });
       const replayLog = new Map<number, string>();
       const activeSockets = new Set<NodeWebSocket>();
       const cursorsSeenByServer: number[] = [];
-      const deterministicRandom = createDeterministicRandom(42);
-
-      const TARGET_SEQ = 180;
+      const TARGET_SEQ = 12;
       const PRODUCER_INTERVAL_MS = 200;
-      const MIN_YANK_AFTER_MS = 220;
-      const MAX_YANK_AFTER_MS = 1100;
+      const YANK_AFTER_MS = 450;
 
       let connections = 0;
       let lastProducedSeq = 0;
@@ -322,25 +216,11 @@ describe("StarciteClient tail reconnect integration", () => {
           }
         }
 
-        if (lastProducedSeq >= TARGET_SEQ) {
-          setTimeout(() => {
-            if (ws.readyState === ws.OPEN) {
-              ws.close(1000, "producer-finished");
-            }
-          }, 25);
-        }
-
-        const yankAfterMs = randomIntegerInRange(
-          deterministicRandom,
-          MIN_YANK_AFTER_MS,
-          MAX_YANK_AFTER_MS
-        );
-
         const yankTimer = setTimeout(() => {
           if (lastProducedSeq < TARGET_SEQ && ws.readyState === ws.OPEN) {
             ws.terminate();
           }
-        }, yankAfterMs);
+        }, YANK_AFTER_MS);
 
         ws.on("close", () => {
           clearTimeout(yankTimer);
@@ -360,7 +240,7 @@ describe("StarciteClient tail reconnect integration", () => {
           lastProducedSeq += 1;
           const frame = encodeTailFrame(
             lastProducedSeq,
-            `soak frame ${lastProducedSeq}`
+            `frame ${lastProducedSeq}`
           );
           replayLog.set(lastProducedSeq, frame);
 
@@ -388,7 +268,7 @@ describe("StarciteClient tail reconnect integration", () => {
 
         const observedSeqs: number[] = [];
 
-        for await (const event of client.session("ses_soak").tailRaw({
+        for await (const event of client.session("ses_stream_stress").tailRaw({
           cursor: 0,
           reconnectDelayMs: 25,
         })) {
@@ -396,7 +276,7 @@ describe("StarciteClient tail reconnect integration", () => {
         }
 
         expect(observedSeqs).toEqual(range(1, TARGET_SEQ));
-        expect(connections).toBeGreaterThanOrEqual(10);
+        expect(connections).toBeGreaterThanOrEqual(3);
         expect(cursorsSeenByServer[0]).toBe(0);
 
         for (let index = 1; index < cursorsSeenByServer.length; index += 1) {
@@ -415,7 +295,148 @@ describe("StarciteClient tail reconnect integration", () => {
         await closeWebSocketServer(websocketServer);
         await closeServer(httpServer);
       }
-    },
-    70_000
-  );
-});
+    }, 15_000);
+
+    it.runIf(process.env.STARCITE_SDK_RUN_SOAK === "1")(
+      "soak: keeps up with 200ms producers during prolonged random yanks",
+      async () => {
+        const httpServer = createServer();
+        const websocketServer = new WebSocketServer({ noServer: true });
+        const replayLog = new Map<number, string>();
+        const activeSockets = new Set<NodeWebSocket>();
+        const cursorsSeenByServer: number[] = [];
+        const deterministicRandom = createDeterministicRandom(42);
+
+        const TARGET_SEQ = 180;
+        const PRODUCER_INTERVAL_MS = 200;
+        const MIN_YANK_AFTER_MS = 220;
+        const MAX_YANK_AFTER_MS = 1100;
+
+        let connections = 0;
+        let lastProducedSeq = 0;
+        let producerTimer: ReturnType<typeof setInterval> | undefined;
+
+        httpServer.on("upgrade", (request, socket, head) => {
+          websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+            websocketServer.emit("connection", websocket, request);
+          });
+        });
+
+        websocketServer.on("connection", (websocket, request) => {
+          connections += 1;
+          const ws = websocket as unknown as NodeWebSocket;
+          activeSockets.add(ws);
+
+          const requestUrl = new URL(request.url ?? "/", "http://localhost");
+          const cursor = Number.parseInt(
+            requestUrl.searchParams.get("cursor") ?? "0",
+            10
+          );
+          const safeCursor = Number.isNaN(cursor) ? 0 : cursor;
+          cursorsSeenByServer.push(safeCursor);
+
+          for (let seq = safeCursor + 1; seq <= lastProducedSeq; seq += 1) {
+            const frame = replayLog.get(seq);
+            if (frame) {
+              ws.send(frame);
+            }
+          }
+
+          if (lastProducedSeq >= TARGET_SEQ) {
+            setTimeout(() => {
+              if (ws.readyState === ws.OPEN) {
+                ws.close(1000, "producer-finished");
+              }
+            }, 25);
+          }
+
+          const yankAfterMs = randomIntegerInRange(
+            deterministicRandom,
+            MIN_YANK_AFTER_MS,
+            MAX_YANK_AFTER_MS
+          );
+
+          const yankTimer = setTimeout(() => {
+            if (lastProducedSeq < TARGET_SEQ && ws.readyState === ws.OPEN) {
+              ws.terminate();
+            }
+          }, yankAfterMs);
+
+          ws.on("close", () => {
+            clearTimeout(yankTimer);
+            activeSockets.delete(ws);
+          });
+        });
+
+        await listenOnRandomPort(httpServer);
+
+        try {
+          const address = httpServer.address() as AddressInfo | null;
+          if (!address || typeof address === "string") {
+            throw new Error("Failed to resolve local test server address");
+          }
+
+          producerTimer = setInterval(() => {
+            lastProducedSeq += 1;
+            const frame = encodeTailFrame(
+              lastProducedSeq,
+              `soak frame ${lastProducedSeq}`
+            );
+            replayLog.set(lastProducedSeq, frame);
+
+            for (const ws of activeSockets) {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(frame);
+              }
+            }
+
+            if (lastProducedSeq >= TARGET_SEQ) {
+              clearInterval(producerTimer);
+              for (const ws of activeSockets) {
+                if (ws.readyState === ws.OPEN) {
+                  ws.close(1000, "producer-finished");
+                }
+              }
+            }
+          }, PRODUCER_INTERVAL_MS);
+
+          const client = new StarciteClient({
+            baseUrl: `http://127.0.0.1:${address.port}`,
+            websocketFactory: (url) =>
+              new NodeWebSocket(url) as unknown as StarciteWebSocket,
+          });
+
+          const observedSeqs: number[] = [];
+
+          for await (const event of client.session("ses_soak").tailRaw({
+            cursor: 0,
+            reconnectDelayMs: 25,
+          })) {
+            observedSeqs.push(event.seq);
+          }
+
+          expect(observedSeqs).toEqual(range(1, TARGET_SEQ));
+          expect(connections).toBeGreaterThanOrEqual(10);
+          expect(cursorsSeenByServer[0]).toBe(0);
+
+          for (let index = 1; index < cursorsSeenByServer.length; index += 1) {
+            const previous = cursorsSeenByServer[index - 1] ?? 0;
+            const current = cursorsSeenByServer[index] ?? 0;
+            expect(current).toBeGreaterThanOrEqual(previous);
+          }
+        } finally {
+          if (producerTimer) {
+            clearInterval(producerTimer);
+          }
+
+          for (const clientSocket of websocketServer.clients) {
+            clientSocket.terminate();
+          }
+          await closeWebSocketServer(websocketServer);
+          await closeServer(httpServer);
+        }
+      },
+      70_000
+    );
+  }
+);

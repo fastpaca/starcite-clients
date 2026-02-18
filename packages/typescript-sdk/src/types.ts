@@ -2,6 +2,18 @@ import { z } from "zod";
 
 const ArbitraryObjectSchema = z.record(z.unknown());
 
+const CreatorTypeSchema = z.union([z.literal("user"), z.literal("agent")]);
+
+export const SessionCreatorPrincipalSchema = z.object({
+  tenant_id: z.string().min(1),
+  id: z.string().min(1),
+  type: CreatorTypeSchema,
+});
+
+export type SessionCreatorPrincipal = z.infer<
+  typeof SessionCreatorPrincipalSchema
+>;
+
 /**
  * Request payload for creating a session.
  */
@@ -9,6 +21,7 @@ export const CreateSessionInputSchema = z.object({
   id: z.string().optional(),
   title: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
+  creator_principal: SessionCreatorPrincipalSchema.optional(),
 });
 
 /**

@@ -9,6 +9,7 @@ import type {
   AppendEventResponse,
   CreateSessionInput,
   SessionAppendInput,
+  SessionCreatorPrincipal,
   SessionEvent,
   SessionListOptions,
   SessionListPage,
@@ -25,6 +26,7 @@ import {
   AppendEventResponseSchema,
   CreateSessionInputSchema,
   SessionAppendInputSchema,
+  SessionCreatorPrincipalSchema,
   SessionListPageSchema,
   SessionRecordSchema,
   StarciteErrorPayloadSchema,
@@ -39,6 +41,9 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
 const BEARER_PREFIX_REGEX = /^bearer\s+/i;
 const DEFAULT_TAIL_RECONNECT_DELAY_MS = 3000;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1000;
+const SERVICE_TOKEN_SUB_ORG_PREFIX = "org:";
+const SERVICE_TOKEN_SUB_AGENT_PREFIX = "agent:";
+const SERVICE_TOKEN_SUB_USER_PREFIX = "user:";
 
 const TailFrameSchema = z
   .string()
@@ -226,6 +231,163 @@ function formatAuthorizationHeader(apiKey: string): string {
   return `Bearer ${normalized}`;
 }
 
+function firstNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function parseJwtSegment(segment: string): string | undefined {
+  const base64 = segment
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(segment.length + ((4 - (segment.length % 4)) % 4), "=");
+
+  try {
+    if (typeof atob === "function") {
+      return atob(base64);
+    }
+
+    if (typeof Buffer !== "undefined") {
+      return Buffer.from(base64, "base64").toString("utf8");
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function parseJwtClaims(apiKey: string): Record<string, unknown> | undefined {
+  const token = apiKey.replace(BEARER_PREFIX_REGEX, "").trim();
+  const parts = token.split(".");
+
+  if (parts.length !== 3) {
+    return undefined;
+  }
+
+  const [, payloadSegment] = parts;
+
+  if (payloadSegment === undefined) {
+    return undefined;
+  }
+
+  const payload = parseJwtSegment(payloadSegment);
+
+  if (payload === undefined) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(payload) as unknown;
+    return decoded !== null && typeof decoded === "object"
+      ? (decoded as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseClaimStrings(
+  source: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = firstNonEmptyString(source[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function parseActorIdentityFromSubject(
+  subject: string
+): { id: string; type: "agent" | "user" } | undefined {
+  if (subject.startsWith(SERVICE_TOKEN_SUB_AGENT_PREFIX)) {
+    return { id: subject, type: "agent" };
+  }
+
+  if (subject.startsWith(SERVICE_TOKEN_SUB_USER_PREFIX)) {
+    return { id: subject, type: "user" };
+  }
+
+  return undefined;
+}
+
+function parseTenantIdFromSubject(subject: string): string {
+  const actorIdentity = parseActorIdentityFromSubject(subject);
+  if (actorIdentity !== undefined) {
+    return "";
+  }
+
+  if (subject.startsWith(SERVICE_TOKEN_SUB_ORG_PREFIX)) {
+    return subject.slice(SERVICE_TOKEN_SUB_ORG_PREFIX.length).trim();
+  }
+
+  return subject;
+}
+
+function parseCreatorPrincipalFromClaims(
+  claims: Record<string, unknown>
+): SessionCreatorPrincipal | undefined {
+  const subject = firstNonEmptyString(claims.sub);
+  const explicitPrincipal =
+    claims.principal && typeof claims.principal === "object"
+      ? (claims.principal as Record<string, unknown>)
+      : undefined;
+  const mergedClaims = explicitPrincipal
+    ? { ...claims, ...explicitPrincipal }
+    : claims;
+  const actorFromSubject = subject
+    ? parseActorIdentityFromSubject(subject)
+    : undefined;
+  const principalTypeFromClaims = parseClaimStrings(mergedClaims, [
+    "principal_type",
+    "principalType",
+    "type",
+  ]);
+  const tenantId = parseClaimStrings(mergedClaims, ["tenant_id", "tenantId"]);
+  const rawPrincipalId = parseClaimStrings(mergedClaims, [
+    "principal_id",
+    "principalId",
+    "id",
+    "sub",
+  ]);
+  const actorFromRawId = rawPrincipalId
+    ? parseActorIdentityFromSubject(rawPrincipalId)
+    : undefined;
+
+  const principal = {
+    tenant_id: tenantId ?? (subject ? parseTenantIdFromSubject(subject) : ""),
+    id: rawPrincipalId ?? actorFromSubject?.id ?? "",
+    type:
+      principalTypeFromClaims === "agent" || principalTypeFromClaims === "user"
+        ? principalTypeFromClaims
+        : (actorFromSubject?.type ?? actorFromRawId?.type ?? "user"),
+  };
+
+  if (
+    principal.tenant_id.length === 0 ||
+    principal.id.length === 0 ||
+    principal.type.length === 0
+  ) {
+    return undefined;
+  }
+
+  const result = SessionCreatorPrincipalSchema.safeParse(principal);
+
+  return result.success ? result.data : undefined;
+}
+
+function parseCreatorPrincipalFromClaimsSafe(
+  apiKey: string
+): SessionCreatorPrincipal | undefined {
+  const claims = parseJwtClaims(apiKey);
+  return claims ? parseCreatorPrincipalFromClaims(claims) : undefined;
+}
+
 function parseEventFrame(data: unknown): TailEvent {
   const result = TailFrameSchema.safeParse(data);
 
@@ -404,6 +566,7 @@ export class StarciteClient {
   /** Normalized API base URL ending with `/v1`. */
   readonly baseUrl: string;
 
+  private readonly inferredCreatorPrincipal?: SessionCreatorPrincipal;
   private readonly websocketBaseUrl: string;
   private readonly fetchFn: typeof fetch;
   private readonly headers: Headers;
@@ -422,10 +585,10 @@ export class StarciteClient {
     this.headers = new Headers(options.headers);
 
     if (options.apiKey !== undefined) {
-      this.headers.set(
-        "authorization",
-        formatAuthorizationHeader(options.apiKey)
-      );
+      const authorization = formatAuthorizationHeader(options.apiKey);
+      this.headers.set("authorization", authorization);
+      this.inferredCreatorPrincipal =
+        parseCreatorPrincipalFromClaimsSafe(authorization);
     }
 
     this.websocketFactory = options.websocketFactory ?? defaultWebSocketFactory;
@@ -450,7 +613,11 @@ export class StarciteClient {
    * Creates a new session and returns the raw session record.
    */
   createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
-    const payload = CreateSessionInputSchema.parse(input);
+    const payload = CreateSessionInputSchema.parse({
+      ...input,
+      creator_principal:
+        input.creator_principal ?? this.inferredCreatorPrincipal,
+    });
 
     return this.request(
       "/sessions",
