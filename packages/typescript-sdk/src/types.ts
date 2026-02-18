@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 const ArbitraryObjectSchema = z.record(z.unknown());
+const OptionalStringFromNullSchema = z
+  .string()
+  .nullish()
+  .transform((value) => value ?? undefined);
 
 const CreatorTypeSchema = z.union([z.literal("user"), z.literal("agent")]);
 
@@ -13,6 +17,18 @@ export const SessionCreatorPrincipalSchema = z.object({
 export type SessionCreatorPrincipal = z.infer<
   typeof SessionCreatorPrincipalSchema
 >;
+
+/**
+ * Base shape for Starcite event payloads.
+ */
+export type StarcitePayload = Record<string, unknown>;
+
+/**
+ * Optional payload validator/parser used to enforce a typed payload contract.
+ */
+export type StarcitePayloadSchema<
+  TPayload extends StarcitePayload = StarcitePayload,
+> = z.ZodType<TPayload>;
 
 /**
  * Request payload for creating a session.
@@ -93,7 +109,10 @@ export const AppendEventRequestSchema = z.object({
 /**
  * Inferred TypeScript type for {@link AppendEventRequestSchema}.
  */
-export type AppendEventRequest = z.infer<typeof AppendEventRequestSchema>;
+type AppendEventRequestBase = z.infer<typeof AppendEventRequestSchema>;
+export type AppendEventRequest<
+  TPayload extends StarcitePayload = StarcitePayload,
+> = Omit<AppendEventRequestBase, "payload"> & { payload: TPayload };
 
 /**
  * API response returned after appending an event.
@@ -119,7 +138,7 @@ export const TailEventSchema = z.object({
   actor: z.string().min(1),
   producer_id: z.string().min(1),
   producer_seq: z.number().int().positive(),
-  source: z.string().optional(),
+  source: OptionalStringFromNullSchema,
   metadata: ArbitraryObjectSchema.optional(),
   refs: ArbitraryObjectSchema.optional(),
   idempotency_key: z.string().nullable().optional(),
@@ -129,7 +148,9 @@ export const TailEventSchema = z.object({
 /**
  * Inferred TypeScript type for {@link TailEventSchema}.
  */
-export type TailEvent = z.infer<typeof TailEventSchema>;
+type TailEventBase = z.infer<typeof TailEventSchema>;
+export type TailEvent<TPayload extends StarcitePayload = StarcitePayload> =
+  Omit<TailEventBase, "payload"> & { payload: TPayload };
 
 /**
  * Convenience tail event shape with SDK-derived fields (`agent`, `text`).
@@ -142,7 +163,9 @@ const SessionEventInternalSchema = TailEventSchema.extend({
 /**
  * Inferred TypeScript type for the SDK-level enriched tail event.
  */
-export type SessionEvent = z.infer<typeof SessionEventInternalSchema>;
+type SessionEventBase = z.infer<typeof SessionEventInternalSchema>;
+export type SessionEvent<TPayload extends StarcitePayload = StarcitePayload> =
+  Omit<SessionEventBase, "payload"> & { payload: TPayload };
 
 /**
  * High-level `session.append()` input.
@@ -171,7 +194,10 @@ export const SessionAppendInputSchema = z
 /**
  * Inferred TypeScript type for {@link SessionAppendInputSchema}.
  */
-export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
+type SessionAppendInputBase = z.infer<typeof SessionAppendInputSchema>;
+export type SessionAppendInput<
+  TPayload extends StarcitePayload = StarcitePayload,
+> = Omit<SessionAppendInputBase, "payload"> & { payload?: TPayload };
 
 /**
  * Options for streaming events from a session.
@@ -251,7 +277,9 @@ export type StarciteWebSocketFactory = (
 /**
  * Client construction options.
  */
-export interface StarciteClientOptions {
+export interface StarciteClientOptions<
+  TPayload extends StarcitePayload = StarcitePayload,
+> {
   /**
    * Base API URL. Defaults to `process.env.STARCITE_BASE_URL` or `http://localhost:4000`.
    */
@@ -273,6 +301,10 @@ export interface StarciteClientOptions {
    * Custom WebSocket factory for non-browser runtimes.
    */
   websocketFactory?: StarciteWebSocketFactory;
+  /**
+   * Optional payload schema enforced for append and tail event payloads.
+   */
+  payloadSchema?: StarcitePayloadSchema<TPayload>;
 }
 
 /**

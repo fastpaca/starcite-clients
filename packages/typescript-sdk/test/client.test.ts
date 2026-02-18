@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { StarciteClient } from "../src/client";
-import { StarciteConnectionError } from "../src/errors";
+import { StarciteConnectionError, StarciteError } from "../src/errors";
 import type { StarciteWebSocket } from "../src/types";
 
 class FakeWebSocket implements StarciteWebSocket {
@@ -398,6 +399,54 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("accepts tail events where source is null", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        cursor: 0,
+      })
+      [Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "null source frame" },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 1,
+        source: null,
+      }),
+    });
+
+    const first = await nextPromise;
+    expect(first.done).toBe(false);
+    if (first.done) {
+      return;
+    }
+    expect(first.value.source).toBeUndefined();
+
+    const donePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
   it("sends authorization header in websocket upgrade when apiKey is set", async () => {
     const sockets: FakeWebSocket[] = [];
     const websocketFactory = vi.fn(
@@ -613,6 +662,59 @@ describe("StarciteClient", () => {
     const nextPromise = iterator.next();
 
     sockets[0]?.emit("message", { data: "not json" });
+
+    await expect(nextPromise).rejects.toBeInstanceOf(StarciteConnectionError);
+  });
+
+  it("validates append payload against optional payload schema", () => {
+    const client = new StarciteClient<{ text: string }>({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      payloadSchema: z.object({ text: z.string() }),
+    });
+
+    expect(() =>
+      client.session("ses_schema").appendRaw({
+        type: "content",
+        payload: { text: 123 } as unknown as { text: string },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      })
+    ).toThrow(StarciteError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("validates tail payload against optional payload schema", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient<{ text: string }>({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      payloadSchema: z.object({ text: z.string() }),
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_schema")
+      .tailRaw()
+      [Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: 123 },
+        actor: "agent:assistant",
+        producer_id: "producer:assistant",
+        producer_seq: 1,
+      }),
+    });
 
     await expect(nextPromise).rejects.toBeInstanceOf(StarciteConnectionError);
   });

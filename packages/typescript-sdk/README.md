@@ -93,6 +93,31 @@ Token refresh is not built in. If a key is revoked/rotated and requests start
 returning `401`, create a new client with the replacement key and reconnect
 tails from your last processed cursor.
 
+## Typed Payload Schema (Optional)
+
+Set a payload schema at client creation to enforce runtime validation for:
+
+- `append` / `appendRaw` payloads before sending
+- `tail` / `tailRaw` payloads received from the stream
+
+```ts
+import { z } from "zod";
+import { createStarciteClient } from "@starcite/sdk";
+
+const payloadSchema = z.object({
+  kind: z.enum(["chat.user.message", "chat.response.delta", "chat.response.error"]),
+  data: z.record(z.unknown()),
+});
+
+const client = createStarciteClient({
+  baseUrl: process.env.STARCITE_BASE_URL,
+  apiKey: process.env.STARCITE_API_KEY,
+  payloadSchema,
+});
+```
+
+When `payloadSchema` is omitted, payloads remain untyped objects (`Record<string, unknown>`).
+
 ## List Sessions
 
 ```ts

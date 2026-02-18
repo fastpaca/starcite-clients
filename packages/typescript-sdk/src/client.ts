@@ -17,6 +17,8 @@ import type {
   SessionTailOptions,
   StarciteClientOptions,
   StarciteErrorPayload,
+  StarcitePayload,
+  StarcitePayloadSchema,
   StarciteWebSocket,
   StarciteWebSocketConnectOptions,
   TailEvent,
@@ -483,7 +485,9 @@ function agentFromActor(actor: string): string | undefined {
   return undefined;
 }
 
-function toSessionEvent(event: TailEvent): SessionEvent {
+function toSessionEvent<TPayload extends StarcitePayload = StarcitePayload>(
+  event: TailEvent<TPayload>
+): SessionEvent<TPayload> {
   const agent = agentFromActor(event.actor);
   const text =
     typeof event.payload.text === "string" ? event.payload.text : undefined;
@@ -492,21 +496,27 @@ function toSessionEvent(event: TailEvent): SessionEvent {
     ...event,
     agent,
     text,
-  };
+  } as SessionEvent<TPayload>;
 }
 
 /**
  * Session-scoped helper for append and tail operations.
  */
-export class StarciteSession {
+export class StarciteSession<
+  TPayload extends StarcitePayload = StarcitePayload,
+> {
   /** Session identifier. */
   readonly id: string;
   /** Optional session record captured at creation time. */
   readonly record?: SessionRecord;
 
-  private readonly client: StarciteClient;
+  private readonly client: StarciteClient<TPayload>;
 
-  constructor(client: StarciteClient, id: string, record?: SessionRecord) {
+  constructor(
+    client: StarciteClient<TPayload>,
+    id: string,
+    record?: SessionRecord
+  ) {
     this.client = client;
     this.id = id;
     this.record = record;
@@ -517,15 +527,18 @@ export class StarciteSession {
    *
    * Automatically prefixes `agent` as `agent:<name>` when needed.
    */
-  append(input: SessionAppendInput): Promise<AppendEventResponse> {
+  append(input: SessionAppendInput<TPayload>): Promise<AppendEventResponse> {
     const parsed = SessionAppendInputSchema.parse(input);
     const actor = parsed.agent.startsWith("agent:")
       ? parsed.agent
       : `agent:${parsed.agent}`;
+    const payload: TPayload =
+      (parsed.payload as TPayload | undefined) ??
+      ({ text: parsed.text } as unknown as TPayload);
 
     return this.client.appendEvent(this.id, {
       type: parsed.type ?? "content",
-      payload: parsed.payload ?? { text: parsed.text },
+      payload,
       actor,
       producer_id: parsed.producerId,
       producer_seq: parsed.producerSeq,
@@ -540,21 +553,25 @@ export class StarciteSession {
   /**
    * Appends a raw event payload as-is.
    */
-  appendRaw(input: AppendEventRequest): Promise<AppendEventResponse> {
+  appendRaw(input: AppendEventRequest<TPayload>): Promise<AppendEventResponse> {
     return this.client.appendEvent(this.id, input);
   }
 
   /**
    * Streams transformed session events with SDK convenience fields (`agent`, `text`).
    */
-  tail(options: SessionTailOptions = {}): AsyncIterable<SessionEvent> {
+  tail(
+    options: SessionTailOptions = {}
+  ): AsyncIterable<SessionEvent<TPayload>> {
     return this.client.tailEvents(this.id, options);
   }
 
   /**
    * Streams raw tail events returned by the API.
    */
-  tailRaw(options: SessionTailOptions = {}): AsyncIterable<TailEvent> {
+  tailRaw(
+    options: SessionTailOptions = {}
+  ): AsyncIterable<TailEvent<TPayload>> {
     return this.client.tailRawEvents(this.id, options);
   }
 }
@@ -562,7 +579,9 @@ export class StarciteSession {
 /**
  * Starcite API client for HTTP and WebSocket session operations.
  */
-export class StarciteClient {
+export class StarciteClient<
+  TPayload extends StarcitePayload = StarcitePayload,
+> {
   /** Normalized API base URL ending with `/v1`. */
   readonly baseUrl: string;
 
@@ -574,15 +593,17 @@ export class StarciteClient {
     url: string,
     options?: StarciteWebSocketConnectOptions
   ) => StarciteWebSocket;
+  private readonly payloadSchema?: StarcitePayloadSchema<TPayload>;
 
   /**
    * Creates a new client instance.
    */
-  constructor(options: StarciteClientOptions = {}) {
+  constructor(options: StarciteClientOptions<TPayload> = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.websocketBaseUrl = toWebSocketBaseUrl(this.baseUrl);
     this.fetchFn = options.fetch ?? defaultFetch;
     this.headers = new Headers(options.headers);
+    this.payloadSchema = options.payloadSchema;
 
     if (options.apiKey !== undefined) {
       const authorization = formatAuthorizationHeader(options.apiKey);
@@ -597,14 +618,19 @@ export class StarciteClient {
   /**
    * Returns a session helper bound to an existing session id.
    */
-  session(sessionId: string, record?: SessionRecord): StarciteSession {
+  session(
+    sessionId: string,
+    record?: SessionRecord
+  ): StarciteSession<TPayload> {
     return new StarciteSession(this, sessionId, record);
   }
 
   /**
    * Creates a new session and returns a bound `StarciteSession` helper.
    */
-  async create(input: CreateSessionInput = {}): Promise<StarciteSession> {
+  async create(
+    input: CreateSessionInput = {}
+  ): Promise<StarciteSession<TPayload>> {
     const record = await this.createSession(input);
     return this.session(record.id, record);
   }
@@ -681,15 +707,20 @@ export class StarciteClient {
    */
   appendEvent(
     sessionId: string,
-    input: AppendEventRequest
+    input: AppendEventRequest<TPayload>
   ): Promise<AppendEventResponse> {
-    const payload = AppendEventRequestSchema.parse(input);
+    const parsedInput = AppendEventRequestSchema.parse(input);
+    const payload = this.parsePayloadForAppend(parsedInput.payload);
+    const requestPayload: AppendEventRequest<TPayload> = {
+      ...parsedInput,
+      payload,
+    };
 
     return this.request(
       `/sessions/${encodeURIComponent(sessionId)}/append`,
       {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify(requestPayload),
       },
       AppendEventResponseSchema
     );
@@ -702,7 +733,7 @@ export class StarciteClient {
   async *tailRawEvents(
     sessionId: string,
     options: SessionTailOptions = {}
-  ): AsyncGenerator<TailEvent> {
+  ): AsyncGenerator<TailEvent<TPayload>> {
     const initialCursor = options.cursor ?? 0;
     const reconnectEnabled = options.reconnect ?? true;
     const reconnectDelayMs =
@@ -760,7 +791,7 @@ export class StarciteClient {
         continue;
       }
 
-      const queue = new AsyncQueue<TailEvent>();
+      const queue = new AsyncQueue<TailEvent<TPayload>>();
       let sawTransportError = false;
       let closeCode: number | undefined;
       let closeReason: string | undefined;
@@ -768,7 +799,7 @@ export class StarciteClient {
 
       const onMessage = (event: unknown): void => {
         try {
-          const parsed = parseEventFrame(getEventData(event));
+          const parsed = this.parseTailEvent(getEventData(event));
           cursor = Math.max(cursor, parsed.seq);
 
           if (options.agent && agentFromActor(parsed.actor) !== options.agent) {
@@ -870,10 +901,49 @@ export class StarciteClient {
   async *tailEvents(
     sessionId: string,
     options: SessionTailOptions = {}
-  ): AsyncGenerator<SessionEvent> {
+  ): AsyncGenerator<SessionEvent<TPayload>> {
     for await (const rawEvent of this.tailRawEvents(sessionId, options)) {
       yield toSessionEvent(rawEvent);
     }
+  }
+
+  private parsePayloadForAppend(payload: unknown): TPayload {
+    if (!this.payloadSchema) {
+      return payload as TPayload;
+    }
+
+    const parsed = this.payloadSchema.safeParse(payload);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]?.message ?? "invalid payload";
+      throw new StarciteError(
+        `appendEvent() payload did not match payloadSchema: ${issue}`
+      );
+    }
+
+    return parsed.data;
+  }
+
+  private parseTailEvent(data: unknown): TailEvent<TPayload> {
+    const parsed = parseEventFrame(data);
+
+    if (!this.payloadSchema) {
+      return parsed as TailEvent<TPayload>;
+    }
+
+    const payload = this.payloadSchema.safeParse(parsed.payload);
+    if (!payload.success) {
+      const issue =
+        payload.error.issues[0]?.message ??
+        "tail payload did not match payloadSchema";
+      throw new StarciteConnectionError(
+        `Received tail payload that did not match payloadSchema: ${issue}`
+      );
+    }
+
+    return {
+      ...parsed,
+      payload: payload.data,
+    } as TailEvent<TPayload>;
   }
 
   private async request<T>(
