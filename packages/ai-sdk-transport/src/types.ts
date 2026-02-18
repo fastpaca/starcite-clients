@@ -35,11 +35,29 @@ export interface ReconnectToStreamOptions {
 
 export type ChatChunk = UIMessageChunk;
 
+export interface BuildUserPayloadOptions {
+  chatId: string;
+  message: ChatMessage;
+  trigger?: string;
+  messageId?: string;
+}
+
+export type BuildUserPayload<
+  TPayload extends StarcitePayload = StarcitePayload,
+> = (options: BuildUserPayloadOptions) => TPayload;
+
+export type ParseTailPayload<
+  TPayload extends StarcitePayload = StarcitePayload,
+> = (payload: TPayload, eventType: string) => ChatChunk | ChatChunk[] | null;
+
 export interface StarciteChatTransportOptions<
   TPayload extends StarcitePayload = StarcitePayload,
 > {
   client: StarciteClient<TPayload>;
   userAgent?: string;
+  producerId?: string;
+  buildUserPayload?: BuildUserPayload<TPayload>;
+  parseTailPayload?: ParseTailPayload<TPayload>;
 }
 
 export interface ChatTransportLike {

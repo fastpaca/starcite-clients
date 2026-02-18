@@ -5,9 +5,12 @@ export {
 } from "./transport";
 
 export type {
+  BuildUserPayload,
+  BuildUserPayloadOptions,
   ChatChunk,
   ChatMessage,
   ChatTransportLike,
+  ParseTailPayload,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
