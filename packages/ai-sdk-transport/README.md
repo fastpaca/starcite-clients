@@ -15,7 +15,6 @@ npm install @starcite/ai-sdk-transport @starcite/sdk ai
 
 ```ts
 import { useChat } from "@ai-sdk/react";
-import type { ChatTransport } from "ai";
 import { createStarciteClient } from "@starcite/sdk";
 import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
 
@@ -26,23 +25,12 @@ const client = createStarciteClient({
   payloadSchema,
 });
 
-const transport = new StarciteChatTransport({
+const transport = new StarciteChatTransport<Payload>({
   client,
-  // Optional: stable per-tab producer id override.
-  producerId: `producer:web:${crypto.randomUUID()}`,
-  // Optional: custom payload protocol over the wire.
-  protocol: {
-    buildUserPayload: ({ message }) => ({
-      kind: "user",
-      prompt: message.text ?? "",
-    }),
-    parseTailPayload: (payload) =>
-      payload.kind === "chunk" ? payload.chunk : null,
-  },
 });
 
 const chat = useChat({
-  transport: transport as unknown as ChatTransport,
+  transport,
 });
 ```
 
@@ -70,6 +58,5 @@ Each response is emitted as one complete UI chunk sequence:
 - `client` (required)
 - `userAgent` (default `user`)
 - `producerId` (optional; defaults to unique per transport instance)
-- `protocol` (optional; `StarciteProtocol<TPayload>`)
 
 Payload validation is intentionally kept in `@starcite/sdk` via `payloadSchema`.

@@ -1,16 +1,11 @@
 import { useChat } from "@ai-sdk/react";
-import {
-  type ChatChunk as StarciteChatChunk,
-  StarciteChatTransport,
-  type StarciteProtocol,
-} from "@starcite/ai-sdk-transport";
-import type { ChatTransport, UIMessage } from "ai";
+import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
+import type { UIMessage } from "ai";
 import { type FormEvent, useMemo, useState } from "react";
 import { createDemoStarciteClient, type DemoPayload } from "./demo-starcite";
 import "./styles.css";
 
 const integrationSnippet = `import { useChat } from "@ai-sdk/react";
-import type { ChatTransport } from "ai";
 import { createStarciteClient } from "@starcite/sdk";
 import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
 
@@ -20,28 +15,13 @@ const client = createStarciteClient<Payload>({
   payloadSchema,
 });
 
-const protocol: StarciteProtocol<Payload> = {
-  buildUserPayload: ({ message }) => ({ text: message.text ?? "" }),
-  parseTailPayload: (payload) =>
-    "type" in payload ? (payload as unknown as ChatChunk) : null,
-};
-
-const transport = new StarciteChatTransport({
+const transport = new StarciteChatTransport<Payload>({
   client,
-  protocol,
 });
 const chat = useChat({
   id: "chat_1",
-  transport: transport as unknown as ChatTransport<UIMessage>,
+  transport,
 });`;
-
-const demoProtocol: StarciteProtocol<DemoPayload> = {
-  buildUserPayload: ({ message }) => ({
-    text: typeof message.text === "string" ? message.text : "",
-  }),
-  parseTailPayload: (payload) =>
-    "type" in payload ? (payload as unknown as StarciteChatChunk) : null,
-};
 
 function toMessageText(message: UIMessage): string {
   if (!Array.isArray(message.parts)) {
@@ -65,7 +45,6 @@ export function App() {
     () =>
       new StarciteChatTransport<DemoPayload>({
         client,
-        protocol: demoProtocol,
         userAgent: "user",
       }),
     [client]
@@ -74,7 +53,7 @@ export function App() {
   const { messages, sendMessage, status, error, stop, regenerate, clearError } =
     useChat({
       id: "starcite-demo-chat",
-      transport: transport as unknown as ChatTransport<UIMessage>,
+      transport,
     });
 
   const [draft, setDraft] = useState("");
