@@ -7,8 +7,8 @@ import {
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
 import { createConsola } from "consola";
-import starciteCliPackage from "../package.json";
 import { z } from "zod";
+import starciteCliPackage from "../package.json";
 import {
   buildSeqContextKey,
   resolveConfigDir,

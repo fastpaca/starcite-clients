@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionEvent } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import starciteCliPackage from "../package.json";
 import { buildProgram } from "../src/cli";
 import type { CommandResult, PromptAdapter } from "../src/up";
-import starciteCliPackage from "../package.json";
 
 const GENERATED_PRODUCER_ID_PATTERN = /^cli:/;
 
@@ -159,15 +159,21 @@ describe("starcite CLI", () => {
     const output: string[] = [];
     const program = buildProgram({
       logger: {
-        info() {},
-        error() {},
+        info() {
+          // Intentionally silent in this test.
+        },
+        error() {
+          // Intentionally silent in this test.
+        },
       },
     });
 
     program.exitOverride();
     program.configureOutput({
       writeOut: (text) => output.push(text),
-      writeErr: () => {},
+      writeErr: () => {
+        // Intentionally silent in this test.
+      },
     });
 
     await expect(
@@ -183,15 +189,21 @@ describe("starcite CLI", () => {
     const output: string[] = [];
     const program = buildProgram({
       logger: {
-        info() {},
-        error() {},
+        info() {
+          // Intentionally silent in this test.
+        },
+        error() {
+          // Intentionally silent in this test.
+        },
       },
     });
 
     program.exitOverride();
     program.configureOutput({
       writeOut: (text) => output.push(text),
-      writeErr: () => {},
+      writeErr: () => {
+        // Intentionally silent in this test.
+      },
     });
 
     await expect(
