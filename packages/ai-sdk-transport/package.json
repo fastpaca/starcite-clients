@@ -1,0 +1,65 @@
+{
+  "name": "@starcite/ai-sdk-transport",
+  "version": "0.0.1",
+  "description": "AI SDK useChat transport for Starcite sessions",
+  "license": "Apache-2.0",
+  "homepage": "https://starcite.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fastpaca/starcite-clients.git",
+    "directory": "packages/ai-sdk-transport"
+  },
+  "bugs": {
+    "url": "https://github.com/fastpaca/starcite-clients/issues"
+  },
+  "keywords": [
+    "starcite",
+    "ai-sdk",
+    "usechat",
+    "transport",
+    "streaming",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "bun run clean && bun run build",
+    "publish:dry": "bun publish --dry-run --access public",
+    "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
+    "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
+    "check": "bun run lint && bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "@starcite/sdk": "^0.0.1"
+  },
+  "peerDependencies": {
+    "ai": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9"
+  }
+}

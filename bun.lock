@@ -8,6 +8,25 @@
         "ultracite": "^7.1.5",
       },
     },
+    "packages/ai-sdk-transport": {
+      "name": "@starcite/ai-sdk-transport",
+      "version": "0.0.1",
+      "dependencies": {
+        "@starcite/sdk": "^0.0.1",
+      },
+      "devDependencies": {
+        "@types/node": "^22.15.30",
+        "tsup": "^8.5.0",
+        "typescript": "^5.8.3",
+        "vitest": "^2.1.9",
+      },
+      "peerDependencies": {
+        "ai": ">=5.0.0",
+      },
+      "optionalPeers": [
+        "ai",
+      ],
+    },
     "packages/starcite-cli": {
       "name": "starcite",
       "version": "0.0.3",
@@ -196,6 +215,8 @@
     "@rollup/rollup-win32-x64-gnu": ["@rollup/rollup-win32-x64-gnu@4.57.1", "", { "os": "win32", "cpu": "x64" }, "sha512-VMBH2eOOaKGtIJYleXsi2B8CPVADrh+TyNxJ4mWPnKfLB/DBUmzW+5m1xUrcwWoMfSLagIRpjUFeW5CO5hyciQ=="],
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.57.1", "", { "os": "win32", "cpu": "x64" }, "sha512-mxRFDdHIWRxg3UfIIAwCm6NzvxG0jDX/wBN6KsQFTvKFqqg9vTrWUE68qEjHt19A5wwx5X5aUi2zuZT7YR0jrA=="],
+
+    "@starcite/ai-sdk-transport": ["@starcite/ai-sdk-transport@workspace:packages/ai-sdk-transport"],
 
     "@starcite/sdk": ["@starcite/sdk@workspace:packages/typescript-sdk"],
 
