@@ -687,6 +687,7 @@ describe("starcite CLI", () => {
     expect(fakeSession.tail).toHaveBeenCalledWith({
       cursor: 0,
       agent: undefined,
+      follow: true,
       signal: expect.any(AbortSignal),
     });
     expect(info).toEqual(["[drafter] Drafting clause 4.2..."]);

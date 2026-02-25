@@ -723,12 +723,14 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--limit <count>", "Stop after N events", (value) =>
       parseNonNegativeInteger(value, "--limit")
     )
+    .option("--no-follow", "Exit after replaying stored events")
     .action(async function tailAction(
       sessionId: string,
       options: {
         cursor?: number;
         agent?: string;
         limit?: number;
+        follow: boolean;
       }
     ) {
       const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
@@ -750,6 +752,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         for await (const event of session.tail({
           cursor: options.cursor ?? 0,
           agent: options.agent,
+          follow: options.follow,
           signal: abortController.signal,
         })) {
           if (json) {
