@@ -772,7 +772,9 @@ export class StarciteClient {
 
       const resetCatchUpTimer = (): void => {
         if (!follow) {
-          if (catchUpTimer) clearTimeout(catchUpTimer);
+          if (catchUpTimer) {
+            clearTimeout(catchUpTimer);
+          }
           catchUpTimer = setTimeout(() => {
             queue.close();
           }, CATCH_UP_IDLE_MS);
@@ -798,20 +800,26 @@ export class StarciteClient {
 
       const onError = (): void => {
         sawTransportError = true;
-        if (catchUpTimer) clearTimeout(catchUpTimer);
+        if (catchUpTimer) {
+          clearTimeout(catchUpTimer);
+        }
         queue.close();
       };
 
       const onClose = (event: unknown): void => {
         closeCode = getCloseCode(event);
         closeReason = getCloseReason(event);
-        if (catchUpTimer) clearTimeout(catchUpTimer);
+        if (catchUpTimer) {
+          clearTimeout(catchUpTimer);
+        }
         queue.close();
       };
 
       const onAbort = (): void => {
         abortRequested = true;
-        if (catchUpTimer) clearTimeout(catchUpTimer);
+        if (catchUpTimer) {
+          clearTimeout(catchUpTimer);
+        }
         queue.close();
         socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "aborted");
       };
@@ -848,7 +856,9 @@ export class StarciteClient {
       } catch (error) {
         iterationError = toError(error);
       } finally {
-        if (catchUpTimer) clearTimeout(catchUpTimer);
+        if (catchUpTimer) {
+          clearTimeout(catchUpTimer);
+        }
         socket.removeEventListener("open", onOpen);
         socket.removeEventListener("message", onMessage);
         socket.removeEventListener("error", onError);
