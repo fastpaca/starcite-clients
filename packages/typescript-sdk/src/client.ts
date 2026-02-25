@@ -40,6 +40,7 @@ const DEFAULT_BASE_URL =
 const TRAILING_SLASHES_REGEX = /\/+$/;
 const BEARER_PREFIX_REGEX = /^bearer\s+/i;
 const DEFAULT_TAIL_RECONNECT_DELAY_MS = 3000;
+const CATCH_UP_IDLE_MS = 1000;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1000;
 const SERVICE_TOKEN_SUB_ORG_PREFIX = "org:";
 const SERVICE_TOKEN_SUB_AGENT_PREFIX = "agent:";
@@ -704,7 +705,8 @@ export class StarciteClient {
     options: SessionTailOptions = {}
   ): AsyncGenerator<TailEvent> {
     const initialCursor = options.cursor ?? 0;
-    const reconnectEnabled = options.reconnect ?? true;
+    const follow = options.follow ?? true;
+    const reconnectEnabled = follow ? (options.reconnect ?? true) : false;
     const reconnectDelayMs =
       options.reconnectDelayMs ?? DEFAULT_TAIL_RECONNECT_DELAY_MS;
 
@@ -766,16 +768,29 @@ export class StarciteClient {
       let closeReason: string | undefined;
       let abortRequested = false;
 
+      let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const resetCatchUpTimer = (): void => {
+        if (!follow) {
+          if (catchUpTimer) clearTimeout(catchUpTimer);
+          catchUpTimer = setTimeout(() => {
+            queue.close();
+          }, CATCH_UP_IDLE_MS);
+        }
+      };
+
       const onMessage = (event: unknown): void => {
         try {
           const parsed = parseEventFrame(getEventData(event));
           cursor = Math.max(cursor, parsed.seq);
 
           if (options.agent && agentFromActor(parsed.actor) !== options.agent) {
+            resetCatchUpTimer();
             return;
           }
 
           queue.push(parsed);
+          resetCatchUpTimer();
         } catch (error) {
           queue.fail(error);
         }
@@ -783,21 +798,29 @@ export class StarciteClient {
 
       const onError = (): void => {
         sawTransportError = true;
+        if (catchUpTimer) clearTimeout(catchUpTimer);
         queue.close();
       };
 
       const onClose = (event: unknown): void => {
         closeCode = getCloseCode(event);
         closeReason = getCloseReason(event);
+        if (catchUpTimer) clearTimeout(catchUpTimer);
         queue.close();
       };
 
       const onAbort = (): void => {
         abortRequested = true;
+        if (catchUpTimer) clearTimeout(catchUpTimer);
         queue.close();
         socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "aborted");
       };
 
+      const onOpen = (): void => {
+        resetCatchUpTimer();
+      };
+
+      socket.addEventListener("open", onOpen);
       socket.addEventListener("message", onMessage);
       socket.addEventListener("error", onError);
       socket.addEventListener("close", onClose);
@@ -825,6 +848,8 @@ export class StarciteClient {
       } catch (error) {
         iterationError = toError(error);
       } finally {
+        if (catchUpTimer) clearTimeout(catchUpTimer);
+        socket.removeEventListener("open", onOpen);
         socket.removeEventListener("message", onMessage);
         socket.removeEventListener("error", onError);
         socket.removeEventListener("close", onClose);
@@ -840,7 +865,7 @@ export class StarciteClient {
         throw iterationError;
       }
 
-      if (abortRequested || options.signal?.aborted) {
+      if (abortRequested || options.signal?.aborted || !follow) {
         return;
       }
 

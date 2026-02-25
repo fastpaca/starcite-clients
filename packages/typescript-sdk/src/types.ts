@@ -198,6 +198,12 @@ export interface SessionTailOptions {
    */
   reconnectDelayMs?: number;
   /**
+   * When `false`, exit after replaying stored events instead of streaming live.
+   *
+   * Defaults to `true`.
+   */
+  follow?: boolean;
+  /**
    * Optional abort signal to close the stream.
    */
   signal?: AbortSignal;
