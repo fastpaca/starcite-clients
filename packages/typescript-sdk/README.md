@@ -150,6 +150,7 @@ setTimeout(() => controller.abort(), 5000);
 
 for await (const event of session.tail({
   cursor: 0,
+  batchSize: 256,
   agent: "drafter",
   reconnect: true,
   reconnectDelayMs: 3000,
@@ -165,6 +166,21 @@ on transport failures while resuming from the last observed `seq`.
 - Set `reconnect: false` to disable automatic reconnect behavior.
 - By default, reconnect retries continue until the stream is aborted or closes gracefully.
 - Use `reconnectDelayMs` to control retry cadence for spotty networks.
+- Use `batchSize` (`1..1000`) to request batched tail frames from the server for faster catch-up.
+- `tail()` / `tailRaw()` yield one event at a time.
+- Use `tailBatches()` / `tailRawBatches()` to ingest one frame-sized array at a time.
+
+Batch ingestion example:
+
+```ts
+for await (const batch of session.tailBatches({
+  cursor: 0,
+  batchSize: 256,
+})) {
+  // Apply one state update per received frame.
+  applyEvents(batch);
+}
+```
 
 ## Browser Restart Resilience
 
@@ -235,12 +251,16 @@ try {
   - `session(id, record?)`
   - `appendEvent(sessionId, input)`
   - `tailEvents(sessionId, options?)`
+  - `tailEventBatches(sessionId, options?)`
   - `tailRawEvents(sessionId, options?)`
+  - `tailRawEventBatches(sessionId, options?)`
 - `StarciteSession`
   - `append(input)`
   - `appendRaw(input)`
   - `tail(options?)`
+  - `tailBatches(options?)`
   - `tailRaw(options?)`
+  - `tailRawBatches(options?)`
 
 ## Local Development
 

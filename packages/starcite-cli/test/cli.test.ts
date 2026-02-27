@@ -686,6 +686,7 @@ describe("starcite CLI", () => {
 
     expect(fakeSession.tail).toHaveBeenCalledWith({
       cursor: 0,
+      batchSize: 256,
       agent: undefined,
       follow: true,
       signal: expect.any(AbortSignal),

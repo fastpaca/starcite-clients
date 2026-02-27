@@ -14,6 +14,7 @@ export type {
   CreateSessionInput,
   SessionAppendInput,
   SessionEvent,
+  SessionEventBatch,
   SessionListItem,
   SessionListOptions,
   SessionListPage,
@@ -25,6 +26,7 @@ export type {
   StarciteWebSocketConnectOptions,
   StarciteWebSocketFactory,
   TailEvent,
+  TailEventBatch,
 } from "./types";
 /**
  * Creates a new {@link StarciteClient} instance.

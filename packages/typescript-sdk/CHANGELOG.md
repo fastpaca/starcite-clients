@@ -9,9 +9,12 @@
 - First-class auth input via `apiKey` in `createStarciteClient(...)`
 - Automatic bearer auth on WebSocket tail upgrades (pre-upgrade headers)
 - Tail reconnect controls: `reconnect` and fixed-interval `reconnectDelayMs`
+- Tail frame batching support via `tail({ batchSize })` (`1..1000`)
+- Batch ingestion APIs: `tailBatches()`, `tailRawBatches()`, `tailEventBatches()`, `tailRawEventBatches()`
 - Integration reconnect stress coverage with 200ms producer cadence and opt-in soak mode
 
 ### Changed
 
 - `append` payloads now require `producer_id`/`producer_seq` (raw) and `producerId`/`producerSeq` (high-level)
 - `tail()` now auto-recovers from abnormal disconnects and resumes from the last observed sequence
+- Tail streams now accept both single-event and batched WebSocket frame shapes

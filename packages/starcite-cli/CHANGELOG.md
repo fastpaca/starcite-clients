@@ -10,6 +10,7 @@
 - Local CLI state store under `~/.starcite` (override via `--config-dir`)
 - Producer identity generation and per-context producer sequence rehydration
 - Global `--token` flag for one-shot service JWT auth without persisted state
+- `tail` now always requests batched replay frames with a tuned default batch size
 
 ### Changed
 
