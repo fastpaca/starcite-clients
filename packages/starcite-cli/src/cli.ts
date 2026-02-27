@@ -61,11 +61,36 @@ const cliVersion = starciteCliPackage.version;
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
 const positiveIntegerSchema = z.coerce.number().int().positive();
 const jsonObjectSchema = z.record(z.unknown());
+const GlobalOptionsSchema = z.object({
+  baseUrl: z.string().optional(),
+  configDir: z.string().optional(),
+  token: z.string().optional(),
+  json: z.boolean().optional().default(false),
+});
 const TRAILING_SLASHES_REGEX = /\/+$/;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
 const CLI_SESSION_TOKEN_PRINCIPAL_ID = "starcite-cli";
 
 type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
+
+interface AppendCommandOptions {
+  agent?: string;
+  text?: string;
+  type: string;
+  source?: string;
+  producerId?: string;
+  producerSeq?: number;
+  actor?: string;
+  payload?: string;
+  metadata?: string;
+  refs?: string;
+  idempotencyKey?: string;
+  expectedSeq?: number;
+}
+
+type ResolvedAppendMode =
+  | { kind: "high-level"; agent: string; text: string }
+  | { kind: "raw"; actor: string; payload: string };
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
   const parsed = nonNegativeIntegerSchema.safeParse(value);
@@ -188,7 +213,12 @@ function parseSessionMetadataFilters(value: string): Record<string, string> {
 }
 
 function getGlobalOptions(command: Command): GlobalOptions {
-  return command.optsWithGlobals() as GlobalOptions;
+  const parsed = GlobalOptionsSchema.safeParse(command.optsWithGlobals());
+  if (!parsed.success) {
+    throw new Error("Failed to parse global CLI options");
+  }
+
+  return parsed.data;
 }
 
 function trimString(value?: string): string | undefined {
@@ -312,11 +342,56 @@ function tokenScopes(token: string): Set<string> {
 
 function shouldAutoIssueSessionToken(token: string): boolean {
   const scopes = tokenScopes(token);
-  if (scopes.size === 0) {
-    return true;
+  return scopes.has("auth:issue");
+}
+
+function createClientForGlobals(
+  createClient: (baseUrl: string, apiKey?: string) => StarciteClient,
+  options: Pick<ResolvedGlobalOptions, "baseUrl" | "apiKey">
+): StarciteClient {
+  return options.apiKey
+    ? createClient(options.baseUrl, options.apiKey)
+    : createClient(options.baseUrl);
+}
+
+function resolveAppendMode(options: AppendCommandOptions): ResolvedAppendMode {
+  const highLevelMode =
+    options.agent !== undefined || options.text !== undefined;
+  const rawMode = options.actor !== undefined || options.payload !== undefined;
+
+  if (highLevelMode && rawMode) {
+    throw new InvalidArgumentError(
+      "Choose either high-level mode (--agent and --text) or raw mode (--actor and --payload), not both"
+    );
   }
 
-  return scopes.has("auth:issue");
+  if (highLevelMode) {
+    const agent = trimString(options.agent);
+    const text = trimString(options.text);
+    if (!(agent && text)) {
+      throw new InvalidArgumentError(
+        "--agent and --text are required for high-level append mode"
+      );
+    }
+
+    return { kind: "high-level", agent, text };
+  }
+
+  if (rawMode) {
+    const actor = trimString(options.actor);
+    const payload = trimString(options.payload);
+    if (!(actor && payload)) {
+      throw new InvalidArgumentError(
+        "Raw append mode requires --actor and --payload, or use --agent and --text"
+      );
+    }
+
+    return { kind: "raw", actor, payload };
+  }
+
+  throw new InvalidArgumentError(
+    "append requires either high-level mode (--agent and --text) or raw mode (--actor and --payload)"
+  );
 }
 
 async function resolveSessionClient(
@@ -523,7 +598,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
           }
 
           if (!apiKey) {
-            throw new Error("API key cannot be empty");
+            throw new InvalidArgumentError("API key cannot be empty");
           }
 
           await store.saveApiKey(apiKey);
@@ -578,10 +653,9 @@ export function buildProgram(deps: CliDependencies = {}): Command {
           cursor?: string;
           metadata?: string;
         }) {
-          const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
-          const client = apiKey
-            ? createClient(baseUrl, apiKey)
-            : createClient(baseUrl);
+          const resolved = await resolveGlobalOptions(this);
+          const { json } = resolved;
+          const client = createClientForGlobals(createClient, resolved);
 
           const metadata = options.metadata
             ? parseSessionMetadataFilters(options.metadata)
@@ -681,10 +755,9 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       title?: string;
       metadata?: string;
     }) {
-      const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
-      const client = apiKey
-        ? createClient(baseUrl, apiKey)
-        : createClient(baseUrl);
+      const resolved = await resolveGlobalOptions(this);
+      const { json } = resolved;
+      const client = createClientForGlobals(createClient, resolved);
       const metadata = options.metadata
         ? parseJsonObject(options.metadata, "--metadata")
         : undefined;
@@ -731,20 +804,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     )
     .action(async function appendAction(
       sessionId: string,
-      options: {
-        agent?: string;
-        text?: string;
-        type: string;
-        source?: string;
-        producerId?: string;
-        producerSeq?: number;
-        actor?: string;
-        payload?: string;
-        metadata?: string;
-        refs?: string;
-        idempotencyKey?: string;
-        expectedSeq?: number;
-      }
+      options: AppendCommandOptions
     ) {
       const { baseUrl, apiKey, json, store } = await resolveGlobalOptions(this);
       const client = await resolveSessionClient(
@@ -760,17 +820,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         ? parseJsonObject(options.metadata, "--metadata")
         : undefined;
       const refs = options.refs ? parseEventRefs(options.refs) : undefined;
-
-      const highLevelMode =
-        options.agent !== undefined || options.text !== undefined;
-      const rawMode =
-        options.actor !== undefined || options.payload !== undefined;
-
-      if (highLevelMode && rawMode) {
-        throw new Error(
-          "Choose either high-level mode (--agent and --text) or raw mode (--actor and --payload), not both"
-        );
-      }
+      const mode = resolveAppendMode(options);
 
       const producerId = await store.resolveProducerId(options.producerId);
       const normalizedBaseUrl = toApiBaseUrl(baseUrl);
@@ -789,9 +839,28 @@ export function buildProgram(deps: CliDependencies = {}): Command {
           producerSeq,
         };
 
-        const appendResponse = highLevelMode
-          ? await appendHighLevel(session, appendOptions, metadata, refs)
-          : await appendRaw(session, appendOptions, metadata, refs);
+        const appendResponse =
+          mode.kind === "high-level"
+            ? await appendHighLevel(
+                session,
+                {
+                  ...appendOptions,
+                  agent: mode.agent,
+                  text: mode.text,
+                },
+                metadata,
+                refs
+              )
+            : await appendRaw(
+                session,
+                {
+                  ...appendOptions,
+                  actor: mode.actor,
+                  payload: mode.payload,
+                },
+                metadata,
+                refs
+              );
 
         await store.bumpNextSeq(contextKey, producerSeq);
         return appendResponse;
@@ -878,8 +947,8 @@ export function buildProgram(deps: CliDependencies = {}): Command {
 function appendHighLevel(
   session: ReturnType<StarciteClient["session"]>,
   options: {
-    agent?: string;
-    text?: string;
+    agent: string;
+    text: string;
     type: string;
     source?: string;
     producerId: string;
@@ -890,11 +959,6 @@ function appendHighLevel(
   metadata?: CliJsonObject,
   refs?: CliJsonObject
 ) {
-  if (!(options.agent && options.text)) {
-    throw new Error(
-      "--agent and --text are required for high-level append mode"
-    );
-  }
   return session.append({
     agent: options.agent,
     producerId: options.producerId,
@@ -912,8 +976,8 @@ function appendHighLevel(
 function appendRaw(
   session: ReturnType<StarciteClient["session"]>,
   options: {
-    actor?: string;
-    payload?: string;
+    actor: string;
+    payload: string;
     type: string;
     source?: string;
     producerId: string;
@@ -924,11 +988,6 @@ function appendRaw(
   metadata?: CliJsonObject,
   refs?: CliJsonObject
 ) {
-  if (!(options.actor && options.payload)) {
-    throw new Error(
-      "Raw append mode requires --actor and --payload, or use --agent and --text"
-    );
-  }
   return session.appendRaw({
     type: options.type,
     payload: parseJsonObject(options.payload, "--payload"),

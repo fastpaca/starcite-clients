@@ -54,7 +54,7 @@ describe("cursor store helpers", () => {
     expect(await store.load("ses_custom")).toBe(5);
   });
 
-  it("returns parsed persisted cursor values without additional validation", async () => {
+  it("ignores invalid persisted cursor values", async () => {
     const map = new Map<string, string>([["starcite:ses_bad:lastSeq", "oops"]]);
     const store = createWebStorageCursorStore({
       getItem(key: string): string | null {
@@ -65,7 +65,7 @@ describe("cursor store helpers", () => {
       },
     });
 
-    expect(await store.load("ses_bad")).toSatisfy(Number.isNaN);
+    expect(await store.load("ses_bad")).toBeUndefined();
   });
 
   it("throws when localStorage is unavailable", () => {

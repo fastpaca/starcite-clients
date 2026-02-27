@@ -154,11 +154,22 @@ describe("StarciteClient", () => {
       JSON.stringify({
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
+        actor: "agent:researcher",
         producer_id: "producer:researcher",
         producer_seq: 1,
         source: "agent",
       })
     );
+  });
+
+  it("validates baseUrl at client construction", () => {
+    expect(
+      () =>
+        new StarciteClient({
+          baseUrl: "localhost:4000",
+          fetch: fetchMock,
+        })
+    ).toThrowError(StarciteError);
   });
 
   it("mints session tokens using API key issuer authority instead of API base URL", async () => {

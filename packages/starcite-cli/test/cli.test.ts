@@ -624,6 +624,55 @@ describe("starcite CLI", () => {
     expect(info).toContain("seq=1 last_seq=1 deduped=false");
   });
 
+  it("append uses the configured API key when token scopes cannot be inferred", async () => {
+    const { logger, info } = makeLogger();
+    const opaqueToken = "sk_service_opaque_token";
+    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
+      expect(baseUrl).toBe("http://localhost:45187");
+      expect(apiKey).toBe(opaqueToken);
+      return { session } as never;
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "auth", "login", "--api-key", opaqueToken],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--producer-id",
+        "producer:researcher",
+        "--producer-seq",
+        "1",
+        "--text",
+        "Found 8 relevant cases...",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(issueSessionToken).not.toHaveBeenCalled();
+    expect(createClient).toHaveBeenCalledWith(
+      "http://localhost:45187",
+      opaqueToken
+    );
+    expect(info).toContain("seq=1 last_seq=1 deduped=false");
+  });
+
   it("tail auto-mints a read session token when API key has auth:issue scope", async () => {
     const { logger, info } = makeLogger();
     const serviceToken = encodeJwt({

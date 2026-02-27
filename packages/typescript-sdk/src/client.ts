@@ -222,8 +222,8 @@ interface ConsumeTailOptions<TEvent>
  * Converts a Starcite base URL to the `/v1` API root used by this SDK.
  */
 export function toApiBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(TRAILING_SLASHES_REGEX, "");
-  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+  const normalized = normalizeAbsoluteHttpUrl(baseUrl, "baseUrl");
+  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
 /**
@@ -252,7 +252,7 @@ export class StarciteSession {
     return this.client.appendEvent(this.id, {
       type: parsed.type ?? "content",
       payload: parsed.payload ?? { text: parsed.text },
-      ...(parsed.actor ? { actor: parsed.actor } : {}),
+      actor: parsed.actor ?? toAgentActor(parsed.agent),
       producer_id: parsed.producerId,
       producer_seq: parsed.producerSeq,
       source: parsed.source ?? "agent",
@@ -555,7 +555,7 @@ export class StarciteClient {
   private request<T>(
     path: string,
     init: RequestInit,
-    schema?: z.ZodType<T>
+    schema: z.ZodType<T>
   ): Promise<T> {
     return this.requestWithBaseUrl(this.baseUrl, path, init, schema);
   }
@@ -564,7 +564,7 @@ export class StarciteClient {
     baseUrl: string,
     path: string,
     init: RequestInit,
-    schema?: z.ZodType<T>
+    schema: z.ZodType<T>
   ): Promise<T> {
     const headers = new Headers(this.headers);
 
@@ -608,24 +608,11 @@ export class StarciteClient {
     }
 
     if (response.status === 204) {
-      return undefined as T;
+      return parseResponseWithSchema(undefined, schema);
     }
 
     const responseBody = await parseSuccessfulJson(response);
-
-    if (!schema) {
-      return responseBody as T;
-    }
-
-    const parsed = schema.safeParse(responseBody);
-    if (!parsed.success) {
-      const issue = parsed.error.issues[0]?.message ?? "invalid response";
-      throw new StarciteConnectionError(
-        `Received unexpected response payload from Starcite: ${issue}`
-      );
-    }
-
-    return parsed.data;
+    return parseResponseWithSchema(responseBody, schema);
   }
 
   private async consumeFromTail<TEvent extends { seq: number }>(
@@ -691,6 +678,23 @@ async function parseSuccessfulJson(response: Response): Promise<unknown> {
       `Received invalid JSON payload from Starcite: ${rootCause}`
     );
   }
+}
+
+function parseResponseWithSchema<T>(body: unknown, schema: z.ZodType<T>): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]?.message ?? "invalid response";
+    throw new StarciteConnectionError(
+      `Received unexpected response payload from Starcite: ${issue}`
+    );
+  }
+
+  return parsed.data;
+}
+
+function toAgentActor(agent: string): string {
+  const normalized = agent.trim();
+  return normalized.startsWith("agent:") ? normalized : `agent:${normalized}`;
 }
 
 /**

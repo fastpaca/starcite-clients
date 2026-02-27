@@ -80,11 +80,11 @@ type TailConnectionEnd =
   | { reason: "caught_up" }
   | { reason: "graceful" }
   | {
-    reason: "dropped";
-    closeCode?: number;
-    closeReason?: string;
-    emittedBatches: number;
-  };
+      reason: "dropped";
+      closeCode?: number;
+      closeReason?: string;
+      emittedBatches: number;
+    };
 
 /**
  * Stable error text extraction for tail transport failures.
@@ -325,9 +325,9 @@ class TailStream {
       policy.mode === "fixed"
         ? policy.initialDelayMs
         : Math.min(
-          policy.maxDelayMs,
-          policy.initialDelayMs * policy.multiplier ** exponent
-        );
+            policy.maxDelayMs,
+            policy.initialDelayMs * policy.multiplier ** exponent
+          );
 
     if (policy.jitterRatio === 0) {
       return baseDelayMs;

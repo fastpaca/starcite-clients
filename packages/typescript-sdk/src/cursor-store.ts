@@ -39,6 +39,16 @@ function keyForSessionResolver(
   return (sessionId: string) => `${keyPrefix}:${sessionId}:lastSeq`;
 }
 
+function parseStoredCursor(raw: string): number | undefined {
+  const parsed = Number.parseInt(raw, 10);
+
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
 /**
  * Creates an in-memory cursor store (useful for workers/tests).
  */
@@ -79,7 +89,7 @@ export function createWebStorageCursorStore(
         return undefined;
       }
 
-      return Number.parseInt(raw, 10);
+      return parseStoredCursor(raw);
     },
     save(sessionId: string, cursor: number): void {
       const key = keyForSession(sessionId);
