@@ -61,6 +61,7 @@ const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
 const positiveIntegerSchema = z.coerce.number().int().positive();
 const jsonObjectSchema = z.record(z.unknown());
 const TRAILING_SLASHES_REGEX = /\/+$/;
+const DEFAULT_TAIL_BATCH_SIZE = 256;
 
 type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
 
@@ -751,6 +752,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
 
         for await (const event of session.tail({
           cursor: options.cursor ?? 0,
+          batchSize: DEFAULT_TAIL_BATCH_SIZE,
           agent: options.agent,
           follow: options.follow,
           signal: abortController.signal,

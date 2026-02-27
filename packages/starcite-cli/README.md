@@ -248,3 +248,12 @@ starcite tail ses_demo --agent drafter --limit 5 --json
 ```
 
 Press `Ctrl+C` to stop.
+
+Useful flags:
+
+- `--cursor <cursor>`: replay cursor (inclusive)
+- `--agent <agent>`: filter to one `agent:<name>`
+- `--limit <count>`: stop after N emitted events
+- `--no-follow`: stop after replay instead of following live events
+
+By default, `tail` requests batched replay frames from the API for faster catch-up.

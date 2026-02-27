@@ -130,6 +130,10 @@ export const TailEventSchema = z.object({
  * Inferred TypeScript type for {@link TailEventSchema}.
  */
 export type TailEvent = z.infer<typeof TailEventSchema>;
+/**
+ * Raw tail event batch grouped by a single WebSocket frame.
+ */
+export type TailEventBatch = TailEvent[];
 
 /**
  * Convenience tail event shape with SDK-derived fields (`agent`, `text`).
@@ -143,6 +147,10 @@ const SessionEventInternalSchema = TailEventSchema.extend({
  * Inferred TypeScript type for the SDK-level enriched tail event.
  */
 export type SessionEvent = z.infer<typeof SessionEventInternalSchema>;
+/**
+ * Enriched tail event batch grouped by a single WebSocket frame.
+ */
+export type SessionEventBatch = SessionEvent[];
 
 /**
  * High-level `session.append()` input.
@@ -181,6 +189,12 @@ export interface SessionTailOptions {
    * Starting cursor (inclusive) in the event stream.
    */
   cursor?: number;
+  /**
+   * Tail frame batch size (`1..1000`).
+   *
+   * When greater than `1`, Starcite may emit batched WebSocket frames.
+   */
+  batchSize?: number;
   /**
    * Optional filter for `agent:<name>` events.
    */

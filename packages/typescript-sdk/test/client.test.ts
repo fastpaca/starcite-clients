@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteClient } from "../src/client";
-import { StarciteConnectionError } from "../src/errors";
+import { StarciteConnectionError, StarciteError } from "../src/errors";
 import type { StarciteWebSocket } from "../src/types";
 
 class FakeWebSocket implements StarciteWebSocket {
@@ -398,6 +398,173 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("tails batched frames and appends batch_size query param", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({ cursor: 0, batchSize: 2 })
+      [Symbol.asyncIterator]();
+
+    const firstValuePromise = iterator.next();
+    const secondValuePromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await expect(firstValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 1 },
+    });
+    await expect(secondValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 2 },
+    });
+
+    const donePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(sockets[0]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=2"
+    );
+  });
+
+  it("tails raw event batches without flattening", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRawBatches({ cursor: 0, batchSize: 2 })
+      [Symbol.asyncIterator]();
+    const firstBatchPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    const firstBatch = await firstBatchPromise;
+    expect(firstBatch.done).toBe(false);
+    expect(firstBatch.value?.map((event) => event.seq)).toEqual([1, 2]);
+
+    const donePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("tails transformed event batches for batched ingestion", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailBatches({ cursor: 0, batchSize: 2 })
+      [Symbol.asyncIterator]();
+    const firstBatchPromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "Draft one" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "Draft two" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    const firstBatch = await firstBatchPromise;
+    expect(firstBatch.done).toBe(false);
+    expect(firstBatch.value).toMatchObject([
+      { seq: 1, agent: "drafter", text: "Draft one" },
+      { seq: 2, agent: "drafter", text: "Draft two" },
+    ]);
+
+    const donePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
   it("sends authorization header in websocket upgrade when apiKey is set", async () => {
     const sockets: FakeWebSocket[] = [];
     const websocketFactory = vi.fn(
@@ -500,6 +667,171 @@ describe("StarciteClient", () => {
     const donePromise = iterator.next();
     sockets[1]?.emit("close", { code: 1000 });
 
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("resumes from the latest seq in a batched frame after reconnect", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        cursor: 0,
+        batchSize: 2,
+        reconnectDelayMs: 0,
+      })
+      [Symbol.asyncIterator]();
+
+    const firstValuePromise = iterator.next();
+    const secondValuePromise = iterator.next();
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await expect(firstValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 1 },
+    });
+    await expect(secondValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 2 },
+    });
+
+    const thirdValuePromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await expect(thirdValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 3 },
+    });
+
+    const donePromise = iterator.next();
+    sockets[1]?.emit("close", { code: 1000 });
+
+    await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("resumes batched ingestion from latest observed seq after reconnect", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRawBatches({
+        cursor: 0,
+        batchSize: 2,
+        reconnectDelayMs: 0,
+      })
+      [Symbol.asyncIterator]();
+
+    const firstBatchPromise = iterator.next();
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    const firstBatch = await firstBatchPromise;
+    expect(firstBatch.done).toBe(false);
+    expect(firstBatch.value?.map((event) => event.seq)).toEqual([1, 2]);
+
+    const secondBatchPromise = iterator.next();
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    const secondBatch = await secondBatchPromise;
+    expect(secondBatch.done).toBe(false);
+    expect(secondBatch.value?.map((event) => event.seq)).toEqual([3]);
+
+    const donePromise = iterator.next();
+    sockets[1]?.emit("close", { code: 1000 });
     await expect(donePromise).resolves.toEqual({
       done: true,
       value: undefined,
@@ -615,5 +947,20 @@ describe("StarciteClient", () => {
     sockets[0]?.emit("message", { data: "not json" });
 
     await expect(nextPromise).rejects.toBeInstanceOf(StarciteConnectionError);
+  });
+
+  it("validates tail batch size bounds", async () => {
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => new FakeWebSocket(url),
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({ batchSize: 0 })
+      [Symbol.asyncIterator]();
+
+    await expect(iterator.next()).rejects.toBeInstanceOf(StarciteError);
   });
 });
