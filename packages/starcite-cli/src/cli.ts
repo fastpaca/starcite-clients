@@ -160,37 +160,20 @@ function parseConfigSetKey(value: string): ConfigSetKey {
   );
 }
 
-function parseJsonOption<T>(
-  value: string,
-  schema: z.ZodType<T>,
-  optionName: string,
-  invalidShapeMessage: string
-): T {
+function parseJsonObject(value: string, optionName: string): CliJsonObject {
   let parsed: unknown;
-
   try {
     parsed = JSON.parse(value);
   } catch {
     throw new InvalidArgumentError(`${optionName} must be valid JSON`);
   }
 
-  const result = schema.safeParse(parsed);
-
+  const result = jsonObjectSchema.safeParse(parsed);
   if (!result.success) {
-    throw new InvalidArgumentError(
-      `${optionName} must be ${invalidShapeMessage}`
-    );
+    throw new InvalidArgumentError(`${optionName} must be a JSON object`);
   }
 
   return result.data;
-}
-
-function parseJsonObject(value: string, optionName: string): CliJsonObject {
-  return parseJsonOption(value, jsonObjectSchema, optionName, "a JSON object");
-}
-
-function parseEventRefs(value: string): CliJsonObject {
-  return parseJsonObject(value, "--refs");
 }
 
 function parseSessionMetadataFilters(value: string): Record<string, string> {
@@ -344,15 +327,6 @@ function tokenScopes(token: string): Set<string> {
 function shouldAutoIssueSessionToken(token: string): boolean {
   const scopes = tokenScopes(token);
   return scopes.has("auth:issue");
-}
-
-function createClientForGlobals(
-  createClient: (baseUrl: string, apiKey?: string) => StarciteClient,
-  options: Pick<ResolvedGlobalOptions, "baseUrl" | "apiKey">
-): StarciteClient {
-  return options.apiKey
-    ? createClient(options.baseUrl, options.apiKey)
-    : createClient(options.baseUrl);
 }
 
 function resolveAppendMode(options: AppendCommandOptions): ResolvedAppendMode {
@@ -677,7 +651,9 @@ class StarciteCliApp {
           ) {
             const resolved = await resolveGlobalOptions(this);
             const { json } = resolved;
-            const client = createClientForGlobals(createClient, resolved);
+            const client = resolved.apiKey
+              ? createClient(resolved.baseUrl, resolved.apiKey)
+              : createClient(resolved.baseUrl);
 
             const metadata = options.metadata
               ? parseSessionMetadataFilters(options.metadata)
@@ -783,7 +759,9 @@ class StarciteCliApp {
       ) {
         const resolved = await resolveGlobalOptions(this);
         const { json } = resolved;
-        const client = createClientForGlobals(createClient, resolved);
+        const client = resolved.apiKey
+          ? createClient(resolved.baseUrl, resolved.apiKey)
+          : createClient(resolved.baseUrl);
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
@@ -847,7 +825,9 @@ class StarciteCliApp {
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
-        const refs = options.refs ? parseEventRefs(options.refs) : undefined;
+        const refs = options.refs
+          ? parseJsonObject(options.refs, "--refs")
+          : undefined;
         const mode = resolveAppendMode(options);
 
         const producerId = await store.resolveProducerId(options.producerId);
@@ -861,34 +841,32 @@ class StarciteCliApp {
         const response = await store.withStateLock(async () => {
           const producerSeq =
             options.producerSeq ?? (await store.readNextSeq(contextKey));
-          const appendOptions = {
-            ...options,
-            producerId,
-            producerSeq,
-          };
-
           const appendResponse =
             mode.kind === "high-level"
-              ? await appendHighLevel(
-                  session,
-                  {
-                    ...appendOptions,
-                    agent: mode.agent,
-                    text: mode.text,
-                  },
+              ? await session.append({
+                  agent: mode.agent,
+                  producerId,
+                  producerSeq,
+                  text: mode.text,
+                  type: options.type,
+                  source: options.source,
                   metadata,
-                  refs
-                )
-              : await appendRaw(
-                  session,
-                  {
-                    ...appendOptions,
-                    actor: mode.actor,
-                    payload: mode.payload,
-                  },
+                  refs,
+                  idempotencyKey: options.idempotencyKey,
+                  expectedSeq: options.expectedSeq,
+                })
+              : await session.appendRaw({
+                  type: options.type,
+                  payload: parseJsonObject(mode.payload, "--payload"),
+                  actor: mode.actor,
+                  producer_id: producerId,
+                  producer_seq: producerSeq,
+                  source: options.source,
                   metadata,
-                  refs
-                );
+                  refs,
+                  idempotency_key: options.idempotencyKey,
+                  expected_seq: options.expectedSeq,
+                });
 
           await store.bumpNextSeq(contextKey, producerSeq);
           return appendResponse;
@@ -999,64 +977,6 @@ class StarciteCliApp {
 
 export function buildProgram(deps: CliDependencies = {}): Command {
   return new StarciteCliApp(deps).buildProgram();
-}
-
-function appendHighLevel(
-  session: ReturnType<StarciteClient["session"]>,
-  options: {
-    agent: string;
-    text: string;
-    type: string;
-    source?: string;
-    producerId: string;
-    producerSeq: number;
-    idempotencyKey?: string;
-    expectedSeq?: number;
-  },
-  metadata?: CliJsonObject,
-  refs?: CliJsonObject
-) {
-  return session.append({
-    agent: options.agent,
-    producerId: options.producerId,
-    producerSeq: options.producerSeq,
-    text: options.text,
-    type: options.type,
-    source: options.source,
-    metadata,
-    refs,
-    idempotencyKey: options.idempotencyKey,
-    expectedSeq: options.expectedSeq,
-  });
-}
-
-function appendRaw(
-  session: ReturnType<StarciteClient["session"]>,
-  options: {
-    actor: string;
-    payload: string;
-    type: string;
-    source?: string;
-    producerId: string;
-    producerSeq: number;
-    idempotencyKey?: string;
-    expectedSeq?: number;
-  },
-  metadata?: CliJsonObject,
-  refs?: CliJsonObject
-) {
-  return session.appendRaw({
-    type: options.type,
-    payload: parseJsonObject(options.payload, "--payload"),
-    actor: options.actor,
-    producer_id: options.producerId,
-    producer_seq: options.producerSeq,
-    source: options.source,
-    metadata,
-    refs,
-    idempotency_key: options.idempotencyKey,
-    expected_seq: options.expectedSeq,
-  });
 }
 
 export async function run(
