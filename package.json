@@ -35,6 +35,7 @@
     "ultracite": "^7.1.5"
   },
   "workspaces": [
-    "packages/*"
+    "packages/typescript-sdk",
+    "packages/starcite-cli"
   ]
 }
