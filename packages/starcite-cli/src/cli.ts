@@ -1,9 +1,10 @@
 import {
   createStarciteClient,
-  normalizeBaseUrl,
   type SessionEvent,
+  type SessionTokenScope,
   StarciteApiError,
   type StarciteClient,
+  toApiBaseUrl,
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
 import { createConsola } from "consola";
@@ -62,6 +63,7 @@ const positiveIntegerSchema = z.coerce.number().int().positive();
 const jsonObjectSchema = z.record(z.unknown());
 const TRAILING_SLASHES_REGEX = /\/+$/;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
+const CLI_SESSION_TOKEN_PRINCIPAL_ID = "starcite-cli";
 
 type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
 
@@ -258,6 +260,93 @@ function formatTailEvent(event: SessionEvent): string {
   return `[${actorLabel}] ${JSON.stringify(event.payload)}`;
 }
 
+function parseJwtClaims(token: string): Record<string, unknown> | undefined {
+  const parts = token.split(".");
+  if (parts.length < 2) {
+    return undefined;
+  }
+
+  const payload = parts[1];
+  if (!payload) {
+    return undefined;
+  }
+
+  try {
+    const decoded = Buffer.from(payload, "base64url").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function tokenScopes(token: string): Set<string> {
+  const claims = parseJwtClaims(token);
+  if (!claims) {
+    return new Set();
+  }
+
+  const scopes = new Set<string>();
+  const scopeClaim = claims.scope;
+  if (typeof scopeClaim === "string") {
+    for (const scope of scopeClaim.split(" ")) {
+      if (scope.length > 0) {
+        scopes.add(scope);
+      }
+    }
+  }
+
+  const scopesClaim = claims.scopes;
+  if (Array.isArray(scopesClaim)) {
+    for (const scope of scopesClaim) {
+      if (typeof scope === "string" && scope.length > 0) {
+        scopes.add(scope);
+      }
+    }
+  }
+
+  return scopes;
+}
+
+function shouldAutoIssueSessionToken(token: string): boolean {
+  const scopes = tokenScopes(token);
+  if (scopes.size === 0) {
+    return true;
+  }
+
+  return scopes.has("auth:issue");
+}
+
+async function resolveSessionClient(
+  createClient: (baseUrl: string, apiKey?: string) => StarciteClient,
+  baseUrl: string,
+  apiKey: string | undefined,
+  sessionId: string,
+  scopes: SessionTokenScope[]
+): Promise<StarciteClient> {
+  if (!apiKey) {
+    return createClient(baseUrl);
+  }
+
+  if (!shouldAutoIssueSessionToken(apiKey)) {
+    return createClient(baseUrl, apiKey);
+  }
+
+  const issuerClient = createClient(baseUrl, apiKey);
+  const issued = await issuerClient.issueSessionToken({
+    session_id: sessionId,
+    principal: {
+      type: "agent",
+      id: CLI_SESSION_TOKEN_PRINCIPAL_ID,
+    },
+    scopes,
+  });
+
+  return createClient(baseUrl, issued.token);
+}
+
 export function buildProgram(deps: CliDependencies = {}): Command {
   const createClient =
     deps.createClient ??
@@ -278,7 +367,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .showHelpAfterError()
     .version(cliVersion, "-v, --version", "Print current CLI version")
     .option("-u, --base-url <url>", "Starcite API base URL")
-    .option("-k, --token <token>", "Starcite API key / service JWT")
+    .option("-k, --token <token>", "Starcite API key")
     .option(
       "--config-dir <path>",
       "Starcite CLI config directory (default: ~/.starcite)"
@@ -345,7 +434,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       logger.info(`Initialized Starcite CLI in ${store.directory}`);
       logger.info(`Endpoint set to ${endpoint}`);
       if (apiKey) {
-        logger.info("API key saved. You can now run create/append/tail.");
+        logger.info("API key saved.");
       } else {
         logger.info("API key not set. Run `starcite auth login` when ready.");
       }
@@ -658,9 +747,13 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       }
     ) {
       const { baseUrl, apiKey, json, store } = await resolveGlobalOptions(this);
-      const client = apiKey
-        ? createClient(baseUrl, apiKey)
-        : createClient(baseUrl);
+      const client = await resolveSessionClient(
+        createClient,
+        baseUrl,
+        apiKey,
+        sessionId,
+        ["session:append"]
+      );
       const session = client.session(sessionId);
 
       const metadata = options.metadata
@@ -680,7 +773,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       }
 
       const producerId = await store.resolveProducerId(options.producerId);
-      const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+      const normalizedBaseUrl = toApiBaseUrl(baseUrl);
       const contextKey = buildSeqContextKey(
         normalizedBaseUrl,
         sessionId,
@@ -735,9 +828,13 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       }
     ) {
       const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
-      const client = apiKey
-        ? createClient(baseUrl, apiKey)
-        : createClient(baseUrl);
+      const client = await resolveSessionClient(
+        createClient,
+        baseUrl,
+        apiKey,
+        sessionId,
+        ["session:read"]
+      );
       const session = client.session(sessionId);
 
       const abortController = new AbortController();

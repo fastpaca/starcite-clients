@@ -159,7 +159,10 @@ describeWebSocketIntegration(
 
         for await (const event of client.session("ses_integration").tailRaw({
           cursor: 0,
-          reconnectDelayMs: 10,
+          reconnectPolicy: {
+            mode: "fixed",
+            initialDelayMs: 10,
+          },
         })) {
           observedSeqs.push(event.seq);
         }
@@ -270,7 +273,10 @@ describeWebSocketIntegration(
 
         for await (const event of client.session("ses_stream_stress").tailRaw({
           cursor: 0,
-          reconnectDelayMs: 25,
+          reconnectPolicy: {
+            mode: "fixed",
+            initialDelayMs: 25,
+          },
         })) {
           observedSeqs.push(event.seq);
         }
@@ -410,7 +416,10 @@ describeWebSocketIntegration(
 
           for await (const event of client.session("ses_soak").tailRaw({
             cursor: 0,
-            reconnectDelayMs: 25,
+            reconnectPolicy: {
+              mode: "fixed",
+              initialDelayMs: 25,
+            },
           })) {
             observedSeqs.push(event.seq);
           }

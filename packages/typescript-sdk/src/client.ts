@@ -2,25 +2,25 @@ import type { z } from "zod";
 import {
   formatAuthorizationHeader,
   inferCreatorPrincipalFromApiKey,
+  inferIssuerAuthorityFromApiKey,
 } from "./auth";
 import {
   StarciteApiError,
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import {
-  defaultFetch,
-  defaultWebSocketFactory,
-  toWebSocketBaseUrl,
-} from "./runtime";
 import { streamTailRawEventBatches } from "./tail/stream";
-import { toSessionEvent } from "./tail/transform";
 import type {
   AppendEventRequest,
   AppendEventResponse,
   CreateSessionInput,
+  IssueSessionTokenInput,
+  IssueSessionTokenResponse,
   SessionAppendInput,
+  SessionConsumeOptions,
+  SessionConsumeRawOptions,
   SessionCreatorPrincipal,
+  SessionCursorStore,
   SessionEvent,
   SessionListOptions,
   SessionListPage,
@@ -29,6 +29,7 @@ import type {
   StarciteClientOptions,
   StarciteErrorPayload,
   StarciteWebSocket,
+  StarciteWebSocketAuthTransport,
   StarciteWebSocketConnectOptions,
   TailEvent,
 } from "./types";
@@ -36,7 +37,10 @@ import {
   AppendEventRequestSchema,
   AppendEventResponseSchema,
   CreateSessionInputSchema,
+  IssueSessionTokenInputSchema,
+  IssueSessionTokenResponseSchema,
   SessionAppendInputSchema,
+  SessionListOptionsSchema,
   SessionListPageSchema,
   SessionRecordSchema,
   StarciteErrorPayloadSchema,
@@ -46,20 +50,147 @@ const DEFAULT_BASE_URL =
   typeof process !== "undefined" && process.env.STARCITE_BASE_URL
     ? process.env.STARCITE_BASE_URL
     : "http://localhost:4000";
+const DEFAULT_AUTH_URL =
+  typeof process !== "undefined" && process.env.STARCITE_AUTH_URL
+    ? process.env.STARCITE_AUTH_URL
+    : undefined;
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
-function toError(error: unknown): Error {
+function errorMessage(error: unknown): string {
   if (error instanceof Error) {
-    return error;
+    return error.message;
   }
 
-  return new Error(typeof error === "string" ? error : "Unknown error");
+  return typeof error === "string" ? error : "Unknown error";
+}
+
+function trimString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeAbsoluteHttpUrl(value: string, context: string): string {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new StarciteError(
+      `${context} must be a valid http:// or https:// URL`
+    );
+  }
+
+  if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
+    throw new StarciteError(`${context} must use http:// or https://`);
+  }
+
+  return parsed.toString().replace(TRAILING_SLASHES_REGEX, "");
+}
+
+function resolveAuthBaseUrl(
+  explicitAuthUrl: string | undefined,
+  apiAuthorization: string | undefined
+): string | undefined {
+  const configured = trimString(explicitAuthUrl);
+  if (configured) {
+    return normalizeAbsoluteHttpUrl(configured, "authUrl");
+  }
+
+  const envConfigured = trimString(DEFAULT_AUTH_URL);
+  if (envConfigured) {
+    return normalizeAbsoluteHttpUrl(envConfigured, "STARCITE_AUTH_URL");
+  }
+
+  if (!apiAuthorization) {
+    return undefined;
+  }
+
+  const inferred = inferIssuerAuthorityFromApiKey(apiAuthorization);
+  return inferred
+    ? normalizeAbsoluteHttpUrl(inferred, "API key issuer authority")
+    : undefined;
+}
+
+function resolveWebSocketAuthTransport(
+  requested: StarciteWebSocketAuthTransport | undefined,
+  hasCustomFactory: boolean
+): "header" | "access_token" {
+  if (requested === "header" || requested === "access_token") {
+    return requested;
+  }
+
+  return hasCustomFactory ? "header" : "access_token";
+}
+
+function toWebSocketBaseUrl(apiBaseUrl: string): string {
+  if (apiBaseUrl.startsWith("https://")) {
+    return `wss://${apiBaseUrl.slice("https://".length)}`;
+  }
+
+  if (apiBaseUrl.startsWith("http://")) {
+    return `ws://${apiBaseUrl.slice("http://".length)}`;
+  }
+
+  throw new StarciteError(
+    `Invalid Starcite base URL '${apiBaseUrl}'. Use http:// or https://.`
+  );
+}
+
+function defaultWebSocketFactory(
+  url: string,
+  options: StarciteWebSocketConnectOptions = {}
+): StarciteWebSocket {
+  if (typeof WebSocket === "undefined") {
+    throw new StarciteError(
+      "WebSocket is not available in this runtime. Provide websocketFactory in StarciteClientOptions."
+    );
+  }
+
+  const headers = new Headers(options.headers);
+  let hasHeaders = false;
+
+  for (const _ of headers.keys()) {
+    hasHeaders = true;
+    break;
+  }
+
+  if (!hasHeaders) {
+    return new WebSocket(url);
+  }
+
+  const headerObject = Object.fromEntries(headers.entries());
+
+  return Reflect.construct(WebSocket, [
+    url,
+    { headers: headerObject },
+  ]) as StarciteWebSocket;
+}
+
+function toSessionEvent(event: TailEvent): SessionEvent {
+  const agent = event.actor.startsWith("agent:")
+    ? event.actor.slice("agent:".length)
+    : undefined;
+  const text =
+    typeof event.payload.text === "string" ? event.payload.text : undefined;
+
+  return {
+    ...event,
+    agent,
+    text,
+  };
+}
+
+interface ConsumeTailOptions<TEvent>
+  extends Omit<SessionTailOptions, "cursor"> {
+  cursor?: number;
+  cursorStore: SessionCursorStore;
+  handler: (event: TEvent) => void | Promise<void>;
 }
 
 /**
- * Normalizes a Starcite base URL to the `/v1` API root used by this SDK.
+ * Converts a Starcite base URL to the `/v1` API root used by this SDK.
  */
-export function normalizeBaseUrl(baseUrl: string): string {
+export function toApiBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(TRAILING_SLASHES_REGEX, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 }
@@ -83,19 +214,14 @@ export class StarciteSession {
 
   /**
    * Appends a high-level agent event to this session.
-   *
-   * Automatically prefixes `agent` as `agent:<name>` when needed.
    */
   append(input: SessionAppendInput): Promise<AppendEventResponse> {
     const parsed = SessionAppendInputSchema.parse(input);
-    const actor = parsed.agent.startsWith("agent:")
-      ? parsed.agent
-      : `agent:${parsed.agent}`;
 
     return this.client.appendEvent(this.id, {
       type: parsed.type ?? "content",
       payload: parsed.payload ?? { text: parsed.text },
-      actor,
+      ...(parsed.actor ? { actor: parsed.actor } : {}),
       producer_id: parsed.producerId,
       producer_seq: parsed.producerSeq,
       source: parsed.source ?? "agent",
@@ -140,6 +266,20 @@ export class StarciteSession {
   tailRawBatches(options: SessionTailOptions = {}): AsyncIterable<TailEvent[]> {
     return this.client.tailRawEventBatches(this.id, options);
   }
+
+  /**
+   * Durably consumes transformed events and checkpoints `event.seq` after each successful handler invocation.
+   */
+  consume(options: SessionConsumeOptions): Promise<void> {
+    return this.client.consumeEvents(this.id, options);
+  }
+
+  /**
+   * Durably consumes raw events and checkpoints `event.seq` after each successful handler invocation.
+   */
+  consumeRaw(options: SessionConsumeRawOptions): Promise<void> {
+    return this.client.consumeRawEvents(this.id, options);
+  }
 }
 
 /**
@@ -150,7 +290,9 @@ export class StarciteClient {
   readonly baseUrl: string;
 
   private readonly inferredCreatorPrincipal?: SessionCreatorPrincipal;
+  private readonly authBaseUrl?: string;
   private readonly websocketBaseUrl: string;
+  private readonly websocketAuthTransport: "header" | "access_token";
   private readonly fetchFn: typeof fetch;
   private readonly headers: Headers;
   private readonly websocketFactory: (
@@ -162,18 +304,24 @@ export class StarciteClient {
    * Creates a new client instance.
    */
   constructor(options: StarciteClientOptions = {}) {
-    this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
+    this.baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.websocketBaseUrl = toWebSocketBaseUrl(this.baseUrl);
-    this.fetchFn = options.fetch ?? defaultFetch;
+    this.fetchFn = options.fetch ?? fetch;
     this.headers = new Headers(options.headers);
+    let apiAuthorization: string | undefined;
 
     if (options.apiKey !== undefined) {
-      const authorization = formatAuthorizationHeader(options.apiKey);
-      this.headers.set("authorization", authorization);
+      apiAuthorization = formatAuthorizationHeader(options.apiKey);
+      this.headers.set("authorization", apiAuthorization);
       this.inferredCreatorPrincipal =
-        inferCreatorPrincipalFromApiKey(authorization);
+        inferCreatorPrincipalFromApiKey(apiAuthorization);
     }
 
+    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiAuthorization);
+    this.websocketAuthTransport = resolveWebSocketAuthTransport(
+      options.websocketAuthTransport,
+      options.websocketFactory !== undefined
+    );
     this.websocketFactory = options.websocketFactory ?? defaultWebSocketFactory;
   }
 
@@ -216,34 +364,19 @@ export class StarciteClient {
    * Lists sessions from the archive-backed catalog.
    */
   listSessions(options: SessionListOptions = {}): Promise<SessionListPage> {
+    const parsed = SessionListOptionsSchema.parse(options);
     const query = new URLSearchParams();
 
-    if (options.limit !== undefined) {
-      if (!Number.isInteger(options.limit) || options.limit <= 0) {
-        throw new StarciteError(
-          "listSessions() limit must be a positive integer"
-        );
-      }
-
-      query.set("limit", `${options.limit}`);
+    if (parsed.limit !== undefined) {
+      query.set("limit", `${parsed.limit}`);
     }
 
-    if (options.cursor !== undefined) {
-      if (options.cursor.trim().length === 0) {
-        throw new StarciteError("listSessions() cursor cannot be empty");
-      }
-
-      query.set("cursor", options.cursor);
+    if (parsed.cursor !== undefined) {
+      query.set("cursor", parsed.cursor);
     }
 
-    if (options.metadata !== undefined) {
-      for (const [key, value] of Object.entries(options.metadata)) {
-        if (key.trim().length === 0 || value.trim().length === 0) {
-          throw new StarciteError(
-            "listSessions() metadata filters must be non-empty strings"
-          );
-        }
-
+    if (parsed.metadata !== undefined) {
+      for (const [key, value] of Object.entries(parsed.metadata)) {
         query.set(`metadata.${key}`, value);
       }
     }
@@ -256,6 +389,42 @@ export class StarciteClient {
         method: "GET",
       },
       SessionListPageSchema
+    );
+  }
+
+  /**
+   * Mints a short-lived session token using the configured auth issuer service.
+   */
+  issueSessionToken(
+    input: IssueSessionTokenInput
+  ): Promise<IssueSessionTokenResponse> {
+    const authorization = this.headers.get("authorization");
+    if (!authorization) {
+      throw new StarciteError(
+        "issueSessionToken() requires apiKey. Set StarciteClientOptions.apiKey."
+      );
+    }
+
+    if (!this.authBaseUrl) {
+      throw new StarciteError(
+        "issueSessionToken() could not resolve auth issuer URL. Set StarciteClientOptions.authUrl, STARCITE_AUTH_URL, or use an API key JWT with an 'iss' claim."
+      );
+    }
+
+    const payload = IssueSessionTokenInputSchema.parse(input);
+
+    return this.requestWithBaseUrl(
+      this.authBaseUrl,
+      "/api/v1/session-tokens",
+      {
+        method: "POST",
+        headers: {
+          authorization,
+          "cache-control": "no-store",
+        },
+        body: JSON.stringify(payload),
+      },
+      IssueSessionTokenResponseSchema
     );
   }
 
@@ -291,6 +460,7 @@ export class StarciteClient {
       websocketBaseUrl: this.websocketBaseUrl,
       websocketFactory: this.websocketFactory,
       authorization: this.headers.get("authorization"),
+      websocketAuthTransport: this.websocketAuthTransport,
     });
   }
 
@@ -301,14 +471,7 @@ export class StarciteClient {
     sessionId: string,
     options: SessionTailOptions = {}
   ): AsyncGenerator<TailEvent> {
-    for await (const eventBatch of this.tailRawEventBatches(
-      sessionId,
-      options
-    )) {
-      for (const event of eventBatch) {
-        yield event;
-      }
-    }
+    yield* flattenBatches(this.tailRawEventBatches(sessionId, options));
   }
 
   /**
@@ -318,9 +481,10 @@ export class StarciteClient {
     sessionId: string,
     options: SessionTailOptions = {}
   ): AsyncGenerator<SessionEvent[]> {
-    for await (const rawBatch of this.tailRawEventBatches(sessionId, options)) {
-      yield rawBatch.map(toSessionEvent);
-    }
+    yield* mapBatches(
+      this.tailRawEventBatches(sessionId, options),
+      toSessionEvent
+    );
   }
 
   /**
@@ -330,14 +494,43 @@ export class StarciteClient {
     sessionId: string,
     options: SessionTailOptions = {}
   ): AsyncGenerator<SessionEvent> {
-    for await (const eventBatch of this.tailEventBatches(sessionId, options)) {
-      for (const event of eventBatch) {
-        yield event;
-      }
-    }
+    yield* flattenBatches(this.tailEventBatches(sessionId, options));
   }
 
-  private async request<T>(
+  /**
+   * Durably consumes transformed session events using a cursor store for resume-safe processing.
+   */
+  consumeEvents(
+    sessionId: string,
+    options: SessionConsumeOptions
+  ): Promise<void> {
+    return this.consumeFromTail(sessionId, options, (cursor, tailOptions) =>
+      this.tailEvents(sessionId, { ...tailOptions, cursor })
+    );
+  }
+
+  /**
+   * Durably consumes raw session events using a cursor store for resume-safe processing.
+   */
+  consumeRawEvents(
+    sessionId: string,
+    options: SessionConsumeRawOptions
+  ): Promise<void> {
+    return this.consumeFromTail(sessionId, options, (cursor, tailOptions) =>
+      this.tailRawEvents(sessionId, { ...tailOptions, cursor })
+    );
+  }
+
+  private request<T>(
+    path: string,
+    init: RequestInit,
+    schema?: z.ZodType<T>
+  ): Promise<T> {
+    return this.requestWithBaseUrl(this.baseUrl, path, init, schema);
+  }
+
+  private async requestWithBaseUrl<T>(
+    baseUrl: string,
     path: string,
     init: RequestInit,
     schema?: z.ZodType<T>
@@ -358,14 +551,14 @@ export class StarciteClient {
     let response: Response;
 
     try {
-      response = await this.fetchFn(`${this.baseUrl}${path}`, {
+      response = await this.fetchFn(`${baseUrl}${path}`, {
         ...init,
         headers,
       });
     } catch (error) {
-      const rootCause = toError(error).message;
+      const rootCause = errorMessage(error);
       throw new StarciteConnectionError(
-        `Failed to connect to Starcite at ${this.baseUrl}: ${rootCause}`
+        `Failed to connect to Starcite at ${baseUrl}: ${rootCause}`
       );
     }
 
@@ -387,7 +580,7 @@ export class StarciteClient {
       return undefined as T;
     }
 
-    const responseBody = (await response.json()) as unknown;
+    const responseBody = await parseSuccessfulJson(response);
 
     if (!schema) {
       return responseBody as T;
@@ -403,6 +596,32 @@ export class StarciteClient {
 
     return parsed.data;
   }
+
+  private async consumeFromTail<TEvent extends { seq: number }>(
+    sessionId: string,
+    options: ConsumeTailOptions<TEvent>,
+    streamFactory: (
+      cursor: number,
+      options: Omit<SessionTailOptions, "cursor">
+    ) => AsyncIterable<TEvent>
+  ): Promise<void> {
+    const {
+      cursorStore,
+      handler,
+      cursor: requestedCursor,
+      ...tailOptions
+    } = options;
+    const cursor = await resolveConsumeCursor(
+      sessionId,
+      requestedCursor,
+      cursorStore
+    );
+
+    for await (const event of streamFactory(cursor, tailOptions)) {
+      await handler(event);
+      await saveConsumeCursor(sessionId, cursorStore, event.seq);
+    }
+  }
 }
 
 async function tryParseJson(
@@ -414,5 +633,84 @@ async function tryParseJson(
     return result.success ? result.data : null;
   } catch {
     return null;
+  }
+}
+
+async function parseSuccessfulJson(response: Response): Promise<unknown> {
+  const body = await response.text();
+
+  if (body.trim().length === 0) {
+    throw new StarciteConnectionError(
+      "Received empty response payload from Starcite"
+    );
+  }
+
+  try {
+    return JSON.parse(body) as unknown;
+  } catch (error) {
+    const rootCause = errorMessage(error);
+    throw new StarciteConnectionError(
+      `Received invalid JSON payload from Starcite: ${rootCause}`
+    );
+  }
+}
+
+async function resolveConsumeCursor(
+  sessionId: string,
+  requestedCursor: number | undefined,
+  cursorStore: SessionCursorStore
+): Promise<number> {
+  if (requestedCursor !== undefined) {
+    return requestedCursor;
+  }
+
+  const storedCursor = await withCursorStoreError(sessionId, "load", () =>
+    cursorStore.load(sessionId)
+  );
+
+  return storedCursor ?? 0;
+}
+
+async function saveConsumeCursor(
+  sessionId: string,
+  cursorStore: SessionCursorStore,
+  cursor: number
+): Promise<void> {
+  await withCursorStoreError(sessionId, "save", () =>
+    cursorStore.save(sessionId, cursor)
+  );
+}
+
+async function withCursorStoreError<T>(
+  sessionId: string,
+  action: "load" | "save",
+  execute: () => Promise<T> | T
+): Promise<T> {
+  try {
+    return await execute();
+  } catch (error) {
+    const rootCause = errorMessage(error);
+    throw new StarciteError(
+      `consume() failed to ${action} cursor for session '${sessionId}': ${rootCause}`
+    );
+  }
+}
+
+async function* mapBatches<TIn, TOut>(
+  source: AsyncIterable<TIn[]>,
+  mapper: (value: TIn) => TOut
+): AsyncGenerator<TOut[]> {
+  for await (const batch of source) {
+    yield batch.map(mapper);
+  }
+}
+
+async function* flattenBatches<T>(
+  source: AsyncIterable<T[]>
+): AsyncGenerator<T> {
+  for await (const batch of source) {
+    for (const item of batch) {
+      yield item;
+    }
   }
 }

@@ -1,30 +1,48 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteClient } from "../src/client";
-import { StarciteConnectionError, StarciteError } from "../src/errors";
-import type { StarciteWebSocket } from "../src/types";
+import {
+  StarciteConnectionError,
+  StarciteError,
+  StarciteTailError,
+} from "../src/errors";
+import type {
+  SessionCursorStore,
+  StarciteWebSocket,
+  StarciteWebSocketEventMap,
+  TailLifecycleEvent,
+} from "../src/types";
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
 
-  private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+  private readonly listeners = new Map<
+    keyof StarciteWebSocketEventMap,
+    Set<(event: unknown) => void>
+  >();
 
   constructor(url: string) {
     this.url = url;
   }
 
-  addEventListener(type: string, listener: (event: unknown) => void): void {
+  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void {
     const handlers = this.listeners.get(type) ?? new Set();
-    handlers.add(listener);
+    handlers.add(listener as (event: unknown) => void);
     this.listeners.set(type, handlers);
   }
 
-  removeEventListener(type: string, listener: (event: unknown) => void): void {
+  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void {
     const handlers = this.listeners.get(type);
     if (!handlers) {
       return;
     }
 
-    handlers.delete(listener);
+    handlers.delete(listener as (event: unknown) => void);
     if (handlers.size === 0) {
       this.listeners.delete(type);
     }
@@ -34,7 +52,10 @@ class FakeWebSocket implements StarciteWebSocket {
     return;
   }
 
-  emit(type: string, event: unknown): void {
+  emit<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    event: StarciteWebSocketEventMap[TType]
+  ): void {
     const handlers = this.listeners.get(type);
     if (!handlers) {
       return;
@@ -133,11 +154,113 @@ describe("StarciteClient", () => {
       JSON.stringify({
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
-        actor: "agent:researcher",
         producer_id: "producer:researcher",
         producer_seq: 1,
         source: "agent",
       })
+    );
+  });
+
+  it("mints session tokens using API key issuer authority instead of API base URL", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ token: "jwt_session_token", expires_in: 3600 }),
+        {
+          status: 200,
+        }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey: tokenFromClaims({
+        iss: "https://starcite.ai",
+        aud: "starcite-api",
+        sub: "org:tenant-a",
+      }),
+    });
+
+    const issued = await client.issueSessionToken({
+      session_id: "ses_demo",
+      principal: { type: "user", id: "user-42" },
+      scopes: ["session:read", "session:append"],
+      ttl_seconds: 3600,
+    });
+
+    expect(issued).toEqual({ token: "jwt_session_token", expires_in: 3600 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://starcite.ai/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
+  it("uses authUrl override for session token minting", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ token: "jwt_session_token", expires_in: 900 }),
+        {
+          status: 200,
+        }
+      )
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "https://tenant-a.starcite.io",
+      authUrl: "https://auth.starcite.example",
+      fetch: fetchMock,
+      apiKey: tokenFromClaims({
+        iss: "https://ignored-auth-origin.example",
+        aud: "starcite-api",
+        sub: "org:tenant-a",
+      }),
+    });
+
+    await client.issueSessionToken({
+      session_id: "ses_demo",
+      principal: { type: "agent", id: "agent-7" },
+      scopes: ["session:read"],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://auth.starcite.example/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
+  it("fails session token minting when apiKey is missing", () => {
+    const client = new StarciteClient({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+    });
+
+    expect(() =>
+      client.issueSessionToken({
+        session_id: "ses_demo",
+        principal: { type: "user", id: "user-42" },
+        scopes: ["session:read"],
+      })
+    ).toThrowError(StarciteError);
+  });
+
+  it("wraps malformed JSON success responses as connection errors", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("not json", {
+        status: 200,
+      })
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    await expect(client.listSessions()).rejects.toBeInstanceOf(
+      StarciteConnectionError
     );
   });
 
@@ -602,6 +725,65 @@ describe("StarciteClient", () => {
     );
   });
 
+  it("supports access_token query auth for websocket tail", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const websocketFactory = vi.fn(
+      (url: string, options?: { headers?: HeadersInit }) => {
+        const headers = new Headers(options?.headers);
+        expect(headers.get("authorization")).toBeNull();
+
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      }
+    );
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: "jwt_service_key",
+      websocketFactory,
+      websocketAuthTransport: "access_token",
+    });
+
+    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(nextPromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+
+    expect(websocketFactory).toHaveBeenCalledWith(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token=jwt_service_key",
+      undefined
+    );
+  });
+
+  it("throws a token-expired connection error on close code 4001", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 4001, reason: "token_expired" });
+
+    const error = await nextPromise.catch((err) => err);
+    expect(error).toBeInstanceOf(StarciteConnectionError);
+    expect((error as Error).message).toContain("token expired");
+  });
+
   it("reconnects on abnormal close and resumes from the last observed seq", async () => {
     const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({
@@ -618,7 +800,10 @@ describe("StarciteClient", () => {
       .session("ses_tail")
       .tailRaw({
         cursor: 0,
-        reconnectDelayMs: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
       })
       [Symbol.asyncIterator]();
 
@@ -690,7 +875,10 @@ describe("StarciteClient", () => {
       .tailRaw({
         cursor: 0,
         batchSize: 2,
-        reconnectDelayMs: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
       })
       [Symbol.asyncIterator]();
 
@@ -777,7 +965,10 @@ describe("StarciteClient", () => {
       .tailRawBatches({
         cursor: 0,
         batchSize: 2,
-        reconnectDelayMs: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
       })
       [Symbol.asyncIterator]();
 
@@ -853,7 +1044,10 @@ describe("StarciteClient", () => {
     const iterator = client
       .session("ses_tail")
       .tailRaw({
-        reconnectDelayMs: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
       })
       [Symbol.asyncIterator]();
     const firstValuePromise = iterator.next();
@@ -884,6 +1078,162 @@ describe("StarciteClient", () => {
     sockets[2]?.emit("close", { code: 1000 });
 
     await expect(donePromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("fails when reconnectPolicy maxAttempts is exceeded", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 1,
+        },
+      })
+      [Symbol.asyncIterator]();
+    const firstValuePromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
+
+    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+
+    await firstValuePromise.catch((error) => {
+      const tailError = error as StarciteTailError;
+      expect(tailError.stage).toBe("retry_limit");
+      expect(tailError.sessionId).toBe("ses_tail");
+      expect(tailError.closeCode).toBe(1006);
+    });
+  });
+
+  it("supports zero reconnect attempts via reconnectPolicy", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+      })
+      [Symbol.asyncIterator]();
+    const firstValuePromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+
+    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+    await firstValuePromise.catch((error) => {
+      const tailError = error as StarciteTailError;
+      expect(tailError.stage).toBe("retry_limit");
+      expect(tailError.sessionId).toBe("ses_tail");
+      expect(tailError.attempts).toBe(1);
+      expect(tailError.closeCode).toBe(1006);
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("emits lifecycle events for dropped streams", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const lifecycleEvents: TailLifecycleEvent[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+        onLifecycleEvent: (event) => {
+          lifecycleEvents.push(event);
+        },
+      })
+      [Symbol.asyncIterator]();
+    const firstValuePromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+
+    expect(lifecycleEvents).toHaveLength(2);
+    expect(lifecycleEvents[0]).toMatchObject({
+      type: "connect_attempt",
+      sessionId: "ses_tail",
+      attempt: 1,
+      cursor: 0,
+    });
+    expect(lifecycleEvents[1]).toMatchObject({
+      type: "stream_dropped",
+      sessionId: "ses_tail",
+      attempt: 1,
+      closeCode: 1006,
+      closeReason: "deployment restart",
+    });
+  });
+
+  it("ignores lifecycle callback exceptions", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        reconnect: false,
+        onLifecycleEvent: () => {
+          throw new Error("observer failure");
+        },
+      })
+      [Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    sockets[0]?.emit("close", { code: 1000, reason: "done" });
+
+    await expect(nextPromise).resolves.toEqual({
       done: true,
       value: undefined,
     });
@@ -949,11 +1299,259 @@ describe("StarciteClient", () => {
     await expect(nextPromise).rejects.toBeInstanceOf(StarciteConnectionError);
   });
 
-  it("validates tail batch size bounds", async () => {
+  it("fails fast when the tail consumer falls behind buffered batches", async () => {
+    const sockets: FakeWebSocket[] = [];
     const client = new StarciteClient({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      websocketFactory: (url) => new FakeWebSocket(url),
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({
+        cursor: 0,
+        reconnect: false,
+        maxBufferedBatches: 1,
+      })
+      [Symbol.asyncIterator]();
+
+    const firstValuePromise = iterator.next();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await expect(firstValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 1 },
+    });
+
+    const secondValuePromise = iterator.next();
+    await expect(secondValuePromise).resolves.toMatchObject({
+      done: false,
+      value: { seq: 2 },
+    });
+
+    const overflowPromise = iterator.next();
+    await expect(overflowPromise).rejects.toBeInstanceOf(StarciteTailError);
+    await overflowPromise.catch((error) => {
+      const tailError = error as StarciteTailError;
+      expect(tailError.stage).toBe("consumer_backpressure");
+      expect(tailError.sessionId).toBe("ses_tail");
+    });
+  });
+
+  it("consume() resumes from cursor store and checkpoints each handled event", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const load = vi.fn(async () => 4);
+    const save = vi.fn(async () => undefined);
+    const cursorStore: SessionCursorStore = { load, save };
+    const handledSeqs: number[] = [];
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const consumePromise = client.session("ses_tail").consume({
+      cursorStore,
+      reconnect: false,
+      handler: (event) => {
+        handledSeqs.push(event.seq);
+      },
+    });
+
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=4"
+    );
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 5,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 5,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 6,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 6,
+      }),
+    });
+    sockets[0]?.emit("close", { code: 1000, reason: "done" });
+
+    await consumePromise;
+
+    expect(handledSeqs).toEqual([5, 6]);
+    expect(load).toHaveBeenCalledWith("ses_tail");
+    expect(save).toHaveBeenNthCalledWith(1, "ses_tail", 5);
+    expect(save).toHaveBeenNthCalledWith(2, "ses_tail", 6);
+  });
+
+  it("consumeRaw() fails when cursor persistence fails", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const load = vi.fn(async () => 0);
+    const save = vi
+      .fn(async () => undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("disk full"));
+    const cursorStore: SessionCursorStore = { load, save };
+
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const consumePromise = client.session("ses_tail").consumeRaw({
+      cursorStore,
+      reconnect: false,
+      handler: () => undefined,
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await expect(consumePromise).rejects.toBeInstanceOf(StarciteError);
+    expect(save).toHaveBeenNthCalledWith(1, "ses_tail", 1);
+    expect(save).toHaveBeenNthCalledWith(2, "ses_tail", 2);
+  });
+
+  it("consume() uses stored cursor values as-is", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const consumePromise = client.session("ses_tail").consume({
+      cursorStore: {
+        load: async () => -1,
+        save: async () => undefined,
+      },
+      handler: async () => undefined,
+    });
+
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=-1"
+    );
+
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(consumePromise).resolves.toBeUndefined();
+  });
+
+  it("does not fail fast when maxBufferedBatches is provided", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const iterator = client
+      .session("ses_tail")
+      .tailRaw({ maxBufferedBatches: 0 })
+      [Symbol.asyncIterator]();
+
+    const nextPromise = iterator.next();
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(nextPromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
+  it("does not fail fast when batchSize is provided", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = new StarciteClient({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
     });
 
     const iterator = client
@@ -961,6 +1559,15 @@ describe("StarciteClient", () => {
       .tailRaw({ batchSize: 0 })
       [Symbol.asyncIterator]();
 
-    await expect(iterator.next()).rejects.toBeInstanceOf(StarciteError);
+    const nextPromise = iterator.next();
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=0"
+    );
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(nextPromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
   });
 });

@@ -3,6 +3,7 @@ import type { SessionCreatorPrincipal } from "./types";
 import { SessionCreatorPrincipalSchema } from "./types";
 
 const BEARER_PREFIX_REGEX = /^bearer\s+/i;
+const TRAILING_SLASHES_REGEX = /\/+$/;
 const SERVICE_TOKEN_SUB_ORG_PREFIX = "org:";
 const SERVICE_TOKEN_SUB_AGENT_PREFIX = "agent:";
 const SERVICE_TOKEN_SUB_USER_PREFIX = "user:";
@@ -150,17 +151,70 @@ function parseCreatorPrincipalFromClaims(
 }
 
 export function formatAuthorizationHeader(apiKey: string): string {
-  const normalized = apiKey.trim();
+  const token = apiKey.trim();
 
-  if (normalized.length === 0) {
+  if (token.length === 0) {
     throw new StarciteError("apiKey cannot be empty");
   }
 
-  if (BEARER_PREFIX_REGEX.test(normalized)) {
-    return normalized;
+  if (BEARER_PREFIX_REGEX.test(token)) {
+    return token;
   }
 
-  return `Bearer ${normalized}`;
+  return `Bearer ${token}`;
+}
+
+/**
+ * Extracts the raw JWT token from an authorization header value.
+ */
+export function tokenFromAuthorizationHeader(
+  authorization: string
+): string | undefined {
+  const normalized = authorization.trim();
+
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  const token = normalized.replace(BEARER_PREFIX_REGEX, "").trim();
+
+  if (token.length === 0) {
+    return undefined;
+  }
+
+  if (token.includes(",") || token.includes(" ")) {
+    return undefined;
+  }
+
+  return token;
+}
+
+/**
+ * Extracts the issuer authority (protocol + host) from an API key JWT.
+ *
+ * Example:
+ * - `iss=https://starcite.ai` -> `https://starcite.ai`
+ * - `iss=https://starcite.ai/custom/path` -> `https://starcite.ai`
+ */
+export function inferIssuerAuthorityFromApiKey(
+  apiKey: string
+): string | undefined {
+  const claims = parseJwtClaims(apiKey);
+  const issuer = claims ? firstNonEmptyString(claims.iss) : undefined;
+
+  if (!issuer) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(issuer);
+    if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
+      return undefined;
+    }
+    return parsed.origin.replace(TRAILING_SLASHES_REGEX, "");
+  } catch {
+    return undefined;
+  }
 }
 
 export function inferCreatorPrincipalFromApiKey(

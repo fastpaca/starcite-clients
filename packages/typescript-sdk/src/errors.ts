@@ -44,3 +44,44 @@ export class StarciteConnectionError extends StarciteError {
     this.name = "StarciteConnectionError";
   }
 }
+
+export type StarciteTailErrorStage =
+  | "connect"
+  | "stream"
+  | "retry_limit"
+  | "consumer_backpressure";
+
+/**
+ * Thrown for tail-stream failures with structured stage/context fields.
+ */
+export class StarciteTailError extends StarciteConnectionError {
+  /** Session id tied to this tail stream. */
+  readonly sessionId: string;
+  /** Failure stage in the tail lifecycle. */
+  readonly stage: StarciteTailErrorStage;
+  /** Reconnect attempts observed before failing. */
+  readonly attempts: number;
+  /** WebSocket close code when available. */
+  readonly closeCode?: number;
+  /** WebSocket close reason when available. */
+  readonly closeReason?: string;
+
+  constructor(
+    message: string,
+    options: {
+      sessionId: string;
+      stage: StarciteTailErrorStage;
+      attempts?: number;
+      closeCode?: number;
+      closeReason?: string;
+    }
+  ) {
+    super(message);
+    this.name = "StarciteTailError";
+    this.sessionId = options.sessionId;
+    this.stage = options.stage;
+    this.attempts = options.attempts ?? 0;
+    this.closeCode = options.closeCode;
+    this.closeReason = options.closeReason;
+  }
+}

@@ -45,7 +45,6 @@ starcite init --endpoint https://<your-instance>.starcite.io --api-key <YOUR_API
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-starcite append ses_demo --agent drafter --text "Drafted section 2 with clause references."
 starcite tail ses_demo --cursor 0 --limit 1
 ```
 
@@ -67,7 +66,7 @@ starcite config set api-key <YOUR_KEY>
 ## Global Options
 
 - `-u, --base-url <url>`: Starcite API base URL (highest precedence)
-- `-k, --token <token>`: Starcite API key / service JWT (highest precedence)
+- `-k, --token <key>`: Starcite API key (highest precedence)
 - `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
 - `-v, --version`: show CLI version and exit

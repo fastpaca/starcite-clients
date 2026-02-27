@@ -32,9 +32,9 @@ npm install @starcite/sdk
 
 - Node.js 22+, Bun, or any modern runtime with `fetch` and `WebSocket`
 - Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
-- Your Starcite API key / service JWT
+- Your Starcite API key JWT (backend) and session token JWTs (frontend append/tail)
 
-The SDK normalizes the base URL to `/v1` automatically.
+The SDK appends `/v1` to the base URL automatically.
 
 ## Quick Start
 
@@ -77,8 +77,8 @@ for await (const event of session.tail({ cursor: 0 })) {
 
 ## Authentication
 
-Use your service JWT/API key once at client creation. The SDK injects
-`Authorization: Bearer <token>` for all HTTP calls and WebSocket tail upgrades.
+Use an API key JWT at client creation. The SDK injects
+`Authorization: Bearer <token>` for HTTP calls and tail upgrades.
 
 ```ts
 import { createStarciteClient } from "@starcite/sdk";
@@ -88,6 +88,29 @@ const client = createStarciteClient({
   apiKey: process.env.STARCITE_API_KEY,
 });
 ```
+
+For frontend session-scoped access, mint a short-lived session token from the
+JWT issuer authority (`iss`) rather than the Starcite API host:
+
+```ts
+const issued = await client.issueSessionToken({
+  session_id: "ses_demo",
+  principal: { type: "user", id: "user-42" },
+  scopes: ["session:read", "session:append"],
+  ttl_seconds: 3600,
+});
+
+const frontendClient = createStarciteClient({
+  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+  apiKey: issued.token,
+});
+```
+
+Auth issuer resolution order:
+
+1. `StarciteClientOptions.authUrl`
+2. `STARCITE_AUTH_URL`
+3. API key JWT `iss` authority
 
 Token refresh is not built in. If a key is revoked/rotated and requests start
 returning `401`, create a new client with the replacement key and reconnect
@@ -131,6 +154,7 @@ Raw append:
 ```ts
 await client.session("ses_demo").appendRaw({
   type: "content",
+  // Optional: if omitted, Starcite derives actor from JWT `sub`.
   actor: "agent:drafter",
   producer_id: "producer:drafter",
   producer_seq: 3,
@@ -151,9 +175,18 @@ setTimeout(() => controller.abort(), 5000);
 for await (const event of session.tail({
   cursor: 0,
   batchSize: 256,
+  maxBufferedBatches: 256,
   agent: "drafter",
   reconnect: true,
-  reconnectDelayMs: 3000,
+  reconnectPolicy: {
+    mode: "exponential",
+    initialDelayMs: 500,
+    maxDelayMs: 10_000,
+    jitterRatio: 0.2,
+  },
+  onLifecycleEvent: (event) => {
+    console.log("tail lifecycle:", event.type);
+  },
   signal: controller.signal,
 })) {
   console.log(event);
@@ -165,10 +198,22 @@ on transport failures while resuming from the last observed `seq`.
 
 - Set `reconnect: false` to disable automatic reconnect behavior.
 - By default, reconnect retries continue until the stream is aborted or closes gracefully.
-- Use `reconnectDelayMs` to control retry cadence for spotty networks.
+- Use `reconnectPolicy` to control retry mode/delay/backoff/jitter/attempt limits.
 - Use `batchSize` (`1..1000`) to request batched tail frames from the server for faster catch-up.
+- Use `maxBufferedBatches` to cap in-memory buffering and fail fast if consumers fall behind.
+- Use `onLifecycleEvent` for structured reconnect/drop/end observability.
 - `tail()` / `tailRaw()` yield one event at a time.
 - Use `tailBatches()` / `tailRawBatches()` to ingest one frame-sized array at a time.
+
+## Durable Defaults
+
+The SDK uses one durable reliability profile by default:
+
+- reconnect enabled
+- exponential backoff (`500ms` -> `15000ms`)
+- jitter (`0.2`)
+- unlimited reconnect attempts
+- `maxBufferedBatches: 1024`
 
 Batch ingestion example:
 
@@ -181,6 +226,34 @@ for await (const batch of session.tailBatches({
   applyEvents(batch);
 }
 ```
+
+## Durable Consume
+
+Use `consume()` / `consumeRaw()` when you want built-in checkpointing instead of
+manually persisting `seq` values.
+
+```ts
+import {
+  createInMemoryCursorStore,
+  createLocalStorageCursorStore,
+} from "@starcite/sdk";
+
+const cursorStore =
+  typeof window === "undefined"
+    ? createInMemoryCursorStore()
+    : createLocalStorageCursorStore();
+
+await client.session("ses_demo").consume({
+  cursorStore,
+  reconnect: true,
+  handler: async (event) => {
+    await renderOrStore(event);
+  },
+});
+```
+
+The SDK only checkpoints after `handler(...)` succeeds, which keeps resume
+behavior deterministic after crashes or process restarts.
 
 ## Browser Restart Resilience
 
@@ -201,7 +274,10 @@ if (!Number.isInteger(lastSeq) || lastSeq < 0) {
 for await (const event of client.session(sessionId).tail({
   cursor: lastSeq,
   reconnect: true,
-  reconnectDelayMs: 3000,
+  reconnectPolicy: {
+    mode: "fixed",
+    initialDelayMs: 3000,
+  },
 })) {
   // Process event first, then persist cursor when your side effects succeed.
   await renderOrStore(event);
@@ -219,6 +295,7 @@ event handler to be idempotent by `seq` to safely tolerate replays.
 import {
   StarciteApiError,
   StarciteConnectionError,
+  StarciteTailError,
   createStarciteClient,
 } from "@starcite/sdk";
 
@@ -232,6 +309,8 @@ try {
 } catch (error) {
   if (error instanceof StarciteApiError) {
     console.error(error.status, error.code, error.message);
+  } else if (error instanceof StarciteTailError) {
+    console.error(error.stage, error.sessionId, error.attempts, error.message);
   } else if (error instanceof StarciteConnectionError) {
     console.error(error.message);
   } else {
@@ -248,12 +327,15 @@ try {
   - `create(input?)`
   - `createSession(input?)`
   - `listSessions(options?)`
+  - `issueSessionToken(input)`
   - `session(id, record?)`
   - `appendEvent(sessionId, input)`
   - `tailEvents(sessionId, options?)`
   - `tailEventBatches(sessionId, options?)`
   - `tailRawEvents(sessionId, options?)`
   - `tailRawEventBatches(sessionId, options?)`
+  - `consumeEvents(sessionId, options)`
+  - `consumeRawEvents(sessionId, options)`
 - `StarciteSession`
   - `append(input)`
   - `appendRaw(input)`
@@ -261,6 +343,11 @@ try {
   - `tailBatches(options?)`
   - `tailRaw(options?)`
   - `tailRawBatches(options?)`
+  - `consume(options)`
+  - `consumeRaw(options)`
+- `createInMemoryCursorStore(initial?)`
+- `createWebStorageCursorStore(storage, options?)`
+- `createLocalStorageCursorStore(options?)`
 
 ## Local Development
 

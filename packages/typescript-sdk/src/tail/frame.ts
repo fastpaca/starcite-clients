@@ -11,23 +11,40 @@ const TailFramePayloadSchema = z.union([
   z.array(TailEventSchema).min(MIN_TAIL_BATCH_SIZE),
 ]);
 
-const TailFrameSchema = z
-  .string()
-  .transform((frame, context): unknown => {
-    try {
-      return JSON.parse(frame) as unknown;
-    } catch {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Tail frame was not valid JSON",
-      });
-      return z.NEVER;
-    }
-  })
-  .pipe(TailFramePayloadSchema);
+function toFrameText(data: unknown): string | undefined {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return new TextDecoder().decode(data);
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data);
+  }
+
+  return undefined;
+}
 
 export function parseTailFrame(data: unknown): TailEvent[] {
-  const result = TailFrameSchema.safeParse(data);
+  const frameText = toFrameText(data);
+
+  if (!frameText) {
+    throw new StarciteConnectionError(
+      "Tail frame payload must be a UTF-8 string or binary buffer"
+    );
+  }
+
+  let framePayload: unknown;
+
+  try {
+    framePayload = JSON.parse(frameText) as unknown;
+  } catch {
+    throw new StarciteConnectionError("Tail frame was not valid JSON");
+  }
+
+  const result = TailFramePayloadSchema.safeParse(framePayload);
 
   if (!result.success) {
     const reason =

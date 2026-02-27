@@ -7,6 +7,7 @@
   "scripts": {
     "clean": "bun run --workspaces --if-present clean",
     "build": "bun run --workspaces --if-present build",
+    "smoke:live": "bun run scripts/live-smoke.ts",
     "test": "bun run --workspaces --if-present test",
     "lint": "bun run lint:root && bun run lint:workspaces",
     "format": "bun run format:root && bun run format:workspaces",

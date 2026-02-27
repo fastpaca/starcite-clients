@@ -54,10 +54,16 @@ function streamEvents(events: SessionEvent[]): AsyncIterable<SessionEvent> {
   };
 }
 
+function encodeJwt(payload: Record<string, unknown>): string {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `test.${encoded}.sig`;
+}
+
 describe("starcite CLI", () => {
   const create = vi.fn();
   const session = vi.fn();
   const listSessions = vi.fn();
+  const issueSessionToken = vi.fn();
   let configDir = "";
 
   const fakeSession: FakeSession = {
@@ -73,6 +79,7 @@ describe("starcite CLI", () => {
     create.mockReset();
     session.mockReset();
     listSessions.mockReset();
+    issueSessionToken.mockReset();
     fakeSession.append.mockReset();
     fakeSession.appendRaw.mockReset();
     fakeSession.tail.mockReset();
@@ -89,6 +96,10 @@ describe("starcite CLI", () => {
         },
       ],
       next_cursor: null,
+    });
+    issueSessionToken.mockResolvedValue({
+      token: "jwt_session_token",
+      expires_in: 3600,
     });
     fakeSession.append.mockResolvedValue({
       seq: 1,
@@ -258,7 +269,7 @@ describe("starcite CLI", () => {
       idempotencyKey: undefined,
       expectedSeq: undefined,
     });
-    expect(info).toEqual(["seq=1 last_seq=1 deduped=false"]);
+    expect(info).toContain("seq=1 last_seq=1 deduped=false");
   });
 
   it("auto-generates producer id when missing", async () => {
@@ -546,6 +557,123 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       "sk_auth_123"
     );
+  });
+
+  it("append auto-mints a session token when API key has auth:issue scope", async () => {
+    const { logger, info } = makeLogger();
+    const serviceToken = encodeJwt({
+      scopes: ["session:create", "session:read", "auth:issue"],
+    });
+    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
+      expect(baseUrl).toBe("http://localhost:45187");
+      if (apiKey === serviceToken) {
+        return { issueSessionToken } as never;
+      }
+
+      return { session } as never;
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "auth", "login", "--api-key", serviceToken],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--producer-id",
+        "producer:researcher",
+        "--producer-seq",
+        "1",
+        "--text",
+        "Found 8 relevant cases...",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(issueSessionToken).toHaveBeenCalledWith({
+      session_id: "ses_123",
+      principal: {
+        type: "agent",
+        id: "starcite-cli",
+      },
+      scopes: ["session:append"],
+    });
+    expect(createClient).toHaveBeenCalledWith(
+      "http://localhost:45187",
+      serviceToken
+    );
+    expect(createClient).toHaveBeenCalledWith(
+      "http://localhost:45187",
+      "jwt_session_token"
+    );
+    expect(info).toContain("seq=1 last_seq=1 deduped=false");
+  });
+
+  it("tail auto-mints a read session token when API key has auth:issue scope", async () => {
+    const { logger, info } = makeLogger();
+    const serviceToken = encodeJwt({
+      scopes: ["session:create", "session:read", "auth:issue"],
+    });
+    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
+      expect(baseUrl).toBe("http://localhost:45187");
+      if (apiKey === serviceToken) {
+        return { issueSessionToken } as never;
+      }
+
+      return { session } as never;
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "auth", "login", "--api-key", serviceToken],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "tail", "ses_123", "--limit", "1"],
+      {
+        from: "user",
+      }
+    );
+
+    expect(issueSessionToken).toHaveBeenCalledWith({
+      session_id: "ses_123",
+      principal: {
+        type: "agent",
+        id: "starcite-cli",
+      },
+      scopes: ["session:read"],
+    });
+    expect(createClient).toHaveBeenCalledWith(
+      "http://localhost:45187",
+      serviceToken
+    );
+    expect(createClient).toHaveBeenCalledWith(
+      "http://localhost:45187",
+      "jwt_session_token"
+    );
+    expect(info).toContain("[drafter] Drafting clause 4.2...");
   });
 
   it("global --token overrides stored API key", async () => {

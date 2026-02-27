@@ -14,6 +14,51 @@ export type SessionCreatorPrincipal = z.infer<
   typeof SessionCreatorPrincipalSchema
 >;
 
+const SessionTokenScopeSchema = z.union([
+  z.literal("session:read"),
+  z.literal("session:append"),
+]);
+
+export type SessionTokenScope = z.infer<typeof SessionTokenScopeSchema>;
+
+export const SessionTokenPrincipalSchema = z.object({
+  type: CreatorTypeSchema,
+  id: z.string().min(1),
+});
+
+export type SessionTokenPrincipal = z.infer<typeof SessionTokenPrincipalSchema>;
+
+/**
+ * Request payload for minting a session token from the auth issuer service.
+ */
+export const IssueSessionTokenInputSchema = z.object({
+  session_id: z.string().min(1),
+  principal: SessionTokenPrincipalSchema,
+  scopes: z.array(SessionTokenScopeSchema).min(1),
+  ttl_seconds: z
+    .number()
+    .int()
+    .positive()
+    .max(24 * 60 * 60)
+    .optional(),
+});
+
+export type IssueSessionTokenInput = z.infer<
+  typeof IssueSessionTokenInputSchema
+>;
+
+/**
+ * Response payload returned by the auth issuer service when minting a session token.
+ */
+export const IssueSessionTokenResponseSchema = z.object({
+  token: z.string().min(1),
+  expires_in: z.number().int().positive(),
+});
+
+export type IssueSessionTokenResponse = z.infer<
+  typeof IssueSessionTokenResponseSchema
+>;
+
 /**
  * Request payload for creating a session.
  */
@@ -80,7 +125,7 @@ export type SessionListPage = z.infer<typeof SessionListPageSchema>;
 export const AppendEventRequestSchema = z.object({
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
-  actor: z.string().min(1),
+  actor: z.string().min(1).optional(),
   producer_id: z.string().min(1),
   producer_seq: z.number().int().positive(),
   source: z.string().optional(),
@@ -161,6 +206,7 @@ export type SessionEventBatch = SessionEvent[];
 export const SessionAppendInputSchema = z
   .object({
     agent: z.string().trim().min(1),
+    actor: z.string().trim().min(1).optional(),
     producerId: z.string().trim().min(1),
     producerSeq: z.number().int().positive(),
     text: z.string().optional(),
@@ -206,11 +252,9 @@ export interface SessionTailOptions {
    */
   reconnect?: boolean;
   /**
-   * Delay between reconnect attempts in milliseconds.
-   *
-   * Defaults to `3000`.
+   * Reconnect policy for transport failures.
    */
-  reconnectDelayMs?: number;
+  reconnectPolicy?: TailReconnectPolicy;
   /**
    * When `false`, exit after replaying stored events instead of streaming live.
    *
@@ -221,32 +265,187 @@ export interface SessionTailOptions {
    * Optional abort signal to close the stream.
    */
   signal?: AbortSignal;
+  /**
+   * Maximum number of tail batches buffered in-memory while the consumer is busy.
+   *
+   * Defaults to `1024`. When exceeded, the stream fails with `StarciteTailError`.
+   */
+  maxBufferedBatches?: number;
+  /**
+   * Optional lifecycle callback invoked for reconnect/drop/terminal stream state changes.
+   */
+  onLifecycleEvent?: (event: TailLifecycleEvent) => void;
+}
+
+/**
+ * Tail reconnect tuning knobs.
+ */
+export interface TailReconnectPolicy {
+  /**
+   * Reconnect mode. `fixed` retries at the same delay, `exponential` increases delay after repeated failures.
+   *
+   * Defaults to `exponential`.
+   */
+  mode?: "fixed" | "exponential";
+  /**
+   * Initial reconnect delay in milliseconds.
+   *
+   * Defaults to `500`.
+   */
+  initialDelayMs?: number;
+  /**
+   * Maximum reconnect delay in milliseconds.
+   *
+   * Defaults to `15000`.
+   */
+  maxDelayMs?: number;
+  /**
+   * Exponential growth factor applied after each failed reconnect attempt.
+   *
+   * Defaults to `2`.
+   */
+  multiplier?: number;
+  /**
+   * Optional jitter ratio (`0..1`) applied around the computed delay.
+   *
+   * Defaults to `0.2`.
+   */
+  jitterRatio?: number;
+  /**
+   * Maximum number of reconnect attempts before failing.
+   *
+   * Defaults to unlimited retries.
+   */
+  maxAttempts?: number;
+}
+
+/**
+ * Stream lifecycle event emitted by `tail*()` APIs.
+ */
+export type TailLifecycleEvent =
+  | {
+      type: "connect_attempt";
+      sessionId: string;
+      attempt: number;
+      cursor: number;
+    }
+  | {
+      type: "reconnect_scheduled";
+      sessionId: string;
+      attempt: number;
+      delayMs: number;
+      trigger: "connect_failed" | "dropped";
+      closeCode?: number;
+      closeReason?: string;
+    }
+  | {
+      type: "stream_dropped";
+      sessionId: string;
+      attempt: number;
+      closeCode?: number;
+      closeReason?: string;
+    }
+  | {
+      type: "stream_ended";
+      sessionId: string;
+      reason: "aborted" | "caught_up" | "graceful";
+    };
+
+/**
+ * Storage adapter used by `session.consume*()` to persist the last processed cursor.
+ */
+export interface SessionCursorStore {
+  /**
+   * Loads the last processed cursor for a session.
+   *
+   * Return `undefined` when no cursor has been stored yet.
+   */
+  load(sessionId: string): number | undefined | Promise<number | undefined>;
+  /**
+   * Persists the last processed cursor for a session.
+   */
+  save(sessionId: string, cursor: number): void | Promise<void>;
+}
+
+/**
+ * Durable tail consumption options with automatic cursor checkpointing.
+ */
+export interface SessionConsumeOptions
+  extends Omit<SessionTailOptions, "cursor"> {
+  /**
+   * Optional explicit starting cursor. When omitted, the SDK loads it from `cursorStore`.
+   */
+  cursor?: number;
+  /**
+   * Cursor storage adapter used for resume-safe processing.
+   */
+  cursorStore: SessionCursorStore;
+  /**
+   * Event handler. The cursor is checkpointed only after this handler succeeds.
+   */
+  handler: (event: SessionEvent) => void | Promise<void>;
+}
+
+/**
+ * Durable raw-tail consumption options with automatic cursor checkpointing.
+ */
+export interface SessionConsumeRawOptions
+  extends Omit<SessionTailOptions, "cursor"> {
+  /**
+   * Optional explicit starting cursor. When omitted, the SDK loads it from `cursorStore`.
+   */
+  cursor?: number;
+  /**
+   * Cursor storage adapter used for resume-safe processing.
+   */
+  cursorStore: SessionCursorStore;
+  /**
+   * Raw event handler. The cursor is checkpointed only after this handler succeeds.
+   */
+  handler: (event: TailEvent) => void | Promise<void>;
 }
 
 /**
  * Options for listing sessions.
  */
-export interface SessionListOptions {
-  /**
-   * Maximum rows to return. Must be a positive integer.
-   */
-  limit?: number;
-  /**
-   * Optional cursor from the previous response.
-   */
-  cursor?: string;
-  /**
-   * Optional flat metadata exact-match filters.
-   */
-  metadata?: Record<string, string>;
-}
+export const SessionListOptionsSchema = z.object({
+  limit: z.number().int().positive().optional(),
+  cursor: z.string().trim().min(1).optional(),
+  metadata: z
+    .record(z.string().trim().min(1), z.string().trim().min(1))
+    .optional(),
+});
+
+export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
 
 /**
  * Minimal WebSocket contract required by the SDK.
  */
+export interface StarciteWebSocketMessageEvent {
+  data: unknown;
+}
+
+export interface StarciteWebSocketCloseEvent {
+  code?: number;
+  reason?: string;
+}
+
+export interface StarciteWebSocketEventMap {
+  open: unknown;
+  message: StarciteWebSocketMessageEvent;
+  error: unknown;
+  close: StarciteWebSocketCloseEvent;
+}
+
 export interface StarciteWebSocket {
-  addEventListener(type: string, listener: (event: unknown) => void): void;
-  removeEventListener(type: string, listener: (event: unknown) => void): void;
+  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void;
+  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void;
   close(code?: number, reason?: string): void;
 }
 
@@ -267,6 +466,8 @@ export type StarciteWebSocketFactory = (
   url: string,
   options?: StarciteWebSocketConnectOptions
 ) => StarciteWebSocket;
+
+export type StarciteWebSocketAuthTransport = "auto" | "header" | "access_token";
 
 /**
  * Client construction options.
@@ -290,9 +491,23 @@ export interface StarciteClientOptions {
    */
   apiKey?: string;
   /**
+   * Auth issuer URL used to mint session tokens. When omitted, the SDK derives
+   * this from API key JWT `iss` (issuer authority) or `STARCITE_AUTH_URL`.
+   */
+  authUrl?: string;
+  /**
    * Custom WebSocket factory for non-browser runtimes.
    */
   websocketFactory?: StarciteWebSocketFactory;
+  /**
+   * Tail WebSocket authentication transport.
+   *
+   * - `auto` (default): use `access_token` query auth for the default factory and
+   *   header auth when a custom factory is supplied.
+   * - `header`: send `Authorization: Bearer <token>` during upgrade.
+   * - `access_token`: send token via `access_token` query parameter.
+   */
+  websocketAuthTransport?: StarciteWebSocketAuthTransport;
 }
 
 /**
