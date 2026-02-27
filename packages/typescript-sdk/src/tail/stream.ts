@@ -1,5 +1,6 @@
 import { tokenFromAuthorizationHeader } from "../auth";
 import { StarciteTailError } from "../errors";
+import { agentFromActor, errorMessage } from "../internal/primitives";
 import type {
   SessionTailOptions,
   StarciteWebSocket,
@@ -85,28 +86,6 @@ type TailConnectionEnd =
       closeReason?: string;
       emittedBatches: number;
     };
-
-/**
- * Stable error text extraction for tail transport failures.
- */
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return typeof error === "string" ? error : "Unknown error";
-}
-
-/**
- * Converts `actor` values to agent names for filter matching.
- */
-function agentFromActor(actor: string): string | undefined {
-  if (actor.startsWith("agent:")) {
-    return actor.slice("agent:".length);
-  }
-
-  return undefined;
-}
 
 /**
  * Stateful tail runner that reconnects and resumes from the latest cursor.

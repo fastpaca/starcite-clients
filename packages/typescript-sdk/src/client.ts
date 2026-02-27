@@ -9,6 +9,11 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
+import {
+  agentFromActor,
+  errorMessage,
+  toAgentActor,
+} from "./internal/primitives";
 import { streamTailRawEventBatches } from "./tail/stream";
 import type {
   AppendEventRequest,
@@ -55,17 +60,6 @@ const DEFAULT_AUTH_URL =
     ? process.env.STARCITE_AUTH_URL
     : undefined;
 const TRAILING_SLASHES_REGEX = /\/+$/;
-
-/**
- * Stable error text extraction for transport and parsing failures.
- */
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return typeof error === "string" ? error : "Unknown error";
-}
 
 /**
  * Trims a string and collapses empty values to `undefined`.
@@ -195,9 +189,7 @@ function defaultWebSocketFactory(
  * Adds SDK convenience fields (`agent`, `text`) to raw tail events.
  */
 function toSessionEvent(event: TailEvent): SessionEvent {
-  const agent = event.actor.startsWith("agent:")
-    ? event.actor.slice("agent:".length)
-    : undefined;
+  const agent = agentFromActor(event.actor);
   const text =
     typeof event.payload.text === "string" ? event.payload.text : undefined;
 
@@ -690,11 +682,6 @@ function parseResponseWithSchema<T>(body: unknown, schema: z.ZodType<T>): T {
   }
 
   return parsed.data;
-}
-
-function toAgentActor(agent: string): string {
-  const normalized = agent.trim();
-  return normalized.startsWith("agent:") ? normalized : `agent:${normalized}`;
 }
 
 /**
