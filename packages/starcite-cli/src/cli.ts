@@ -215,7 +215,8 @@ function parseSessionMetadataFilters(value: string): Record<string, string> {
 function getGlobalOptions(command: Command): GlobalOptions {
   const parsed = GlobalOptionsSchema.safeParse(command.optsWithGlobals());
   if (!parsed.success) {
-    throw new Error("Failed to parse global CLI options");
+    const issue = parsed.error.issues[0]?.message ?? "invalid global options";
+    throw new InvalidArgumentError(`Failed to parse global options: ${issue}`);
   }
 
   return parsed.data;
@@ -253,6 +254,21 @@ async function resolveGlobalOptions(
     apiKey,
     json: options.json,
     store,
+  };
+}
+
+function withResolvedGlobals<TArgs extends unknown[]>(
+  action: (
+    globals: ResolvedGlobalOptions,
+    ...args: TArgs
+  ) => Promise<void> | void
+): (...args: TArgs) => Promise<void> {
+  return async function withGlobalOptions(
+    this: Command,
+    ...args: TArgs
+  ): Promise<void> {
+    const globals = await resolveGlobalOptions(this);
+    await action(globals, ...args);
   };
 }
 
@@ -462,58 +478,65 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--endpoint <url>", "Starcite endpoint URL")
     .option("--api-key <key>", "API key to store")
     .option("-y, --yes", "Skip prompts and only use provided options")
-    .action(async function initAction(options: {
-      endpoint?: string;
-      apiKey?: string;
-      yes?: boolean;
-    }) {
-      const { baseUrl, json, store } = await resolveGlobalOptions(this);
+    .action(
+      withResolvedGlobals(
+        async (
+          { baseUrl, json, store },
+          options: {
+            endpoint?: string;
+            apiKey?: string;
+            yes?: boolean;
+          }
+        ) => {
+          const defaultEndpoint = parseEndpoint(baseUrl, "endpoint");
+          let endpoint = defaultEndpoint;
 
-      const defaultEndpoint = parseEndpoint(baseUrl, "endpoint");
-      let endpoint = defaultEndpoint;
+          if (options.endpoint) {
+            endpoint = parseEndpoint(options.endpoint, "--endpoint");
+          } else if (!options.yes) {
+            endpoint = await promptForEndpoint(prompt, defaultEndpoint);
+          }
 
-      if (options.endpoint) {
-        endpoint = parseEndpoint(options.endpoint, "--endpoint");
-      } else if (!options.yes) {
-        endpoint = await promptForEndpoint(prompt, defaultEndpoint);
-      }
+          await store.updateConfig({ baseUrl: endpoint });
 
-      await store.updateConfig({ baseUrl: endpoint });
+          let apiKey = trimString(options.apiKey);
 
-      let apiKey = trimString(options.apiKey);
+          if (!(apiKey || options.yes)) {
+            apiKey = await promptForApiKey(prompt);
+          }
 
-      if (!(apiKey || options.yes)) {
-        apiKey = await promptForApiKey(prompt);
-      }
+          if (apiKey) {
+            await store.saveApiKey(apiKey);
+            await store.updateConfig({ apiKey: undefined });
+          }
 
-      if (apiKey) {
-        await store.saveApiKey(apiKey);
-        await store.updateConfig({ apiKey: undefined });
-      }
+          if (json) {
+            logger.info(
+              JSON.stringify(
+                {
+                  configDir: store.directory,
+                  endpoint,
+                  apiKeySaved: Boolean(apiKey),
+                },
+                null,
+                2
+              )
+            );
+            return;
+          }
 
-      if (json) {
-        logger.info(
-          JSON.stringify(
-            {
-              configDir: store.directory,
-              endpoint,
-              apiKeySaved: Boolean(apiKey),
-            },
-            null,
-            2
-          )
-        );
-        return;
-      }
-
-      logger.info(`Initialized Starcite CLI in ${store.directory}`);
-      logger.info(`Endpoint set to ${endpoint}`);
-      if (apiKey) {
-        logger.info("API key saved.");
-      } else {
-        logger.info("API key not set. Run `starcite auth login` when ready.");
-      }
-    });
+          logger.info(`Initialized Starcite CLI in ${store.directory}`);
+          logger.info(`Endpoint set to ${endpoint}`);
+          if (apiKey) {
+            logger.info("API key saved.");
+          } else {
+            logger.info(
+              "API key not set. Run `starcite auth login` when ready."
+            );
+          }
+        }
+      )
+    );
 
   program
     .command("config")
@@ -523,38 +546,37 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         .description("Set a configuration value")
         .argument("<key>", "endpoint | producer-id | api-key")
         .argument("<value>", "value to store")
-        .action(async function configSetAction(key: string, value: string) {
-          const { store } = await resolveGlobalOptions(this);
-          const parsedKey = parseConfigSetKey(key);
+        .action(
+          withResolvedGlobals(async ({ store }, key: string, value: string) => {
+            const parsedKey = parseConfigSetKey(key);
 
-          if (parsedKey === "endpoint") {
-            const endpoint = parseEndpoint(value, "endpoint");
-            await store.updateConfig({ baseUrl: endpoint });
-            logger.info(`Endpoint set to ${endpoint}`);
-            return;
-          }
-
-          if (parsedKey === "producer-id") {
-            const producerId = trimString(value);
-            if (!producerId) {
-              throw new InvalidArgumentError("producer-id cannot be empty");
+            if (parsedKey === "endpoint") {
+              const endpoint = parseEndpoint(value, "endpoint");
+              await store.updateConfig({ baseUrl: endpoint });
+              logger.info(`Endpoint set to ${endpoint}`);
+              return;
             }
 
-            await store.updateConfig({ producerId });
-            logger.info(`Producer ID set to ${producerId}`);
-            return;
-          }
+            if (parsedKey === "producer-id") {
+              const producerId = trimString(value);
+              if (!producerId) {
+                throw new InvalidArgumentError("producer-id cannot be empty");
+              }
 
-          await store.saveApiKey(value);
-          await store.updateConfig({ apiKey: undefined });
-          logger.info("API key saved.");
-        })
+              await store.updateConfig({ producerId });
+              logger.info(`Producer ID set to ${producerId}`);
+              return;
+            }
+
+            await store.saveApiKey(value);
+            await store.updateConfig({ apiKey: undefined });
+            logger.info("API key saved.");
+          })
+        )
     )
     .addCommand(
-      new Command("show")
-        .description("Show current configuration")
-        .action(async function configShowAction() {
-          const { baseUrl, store } = await resolveGlobalOptions(this);
+      new Command("show").description("Show current configuration").action(
+        withResolvedGlobals(async ({ baseUrl, store }) => {
           const config = await store.readConfig();
           const apiKey = await store.readApiKey();
           const fromEnv = trimString(process.env.STARCITE_API_KEY);
@@ -580,6 +602,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
             )
           );
         })
+      )
     );
 
   program
@@ -589,37 +612,37 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       new Command("login")
         .description("Save an API key for authenticated requests")
         .option("--api-key <key>", "API key to store")
-        .action(async function authLoginAction(options: { apiKey?: string }) {
-          const { store } = await resolveGlobalOptions(this);
-          let apiKey = trimString(options.apiKey);
+        .action(
+          withResolvedGlobals(
+            async ({ store }, options: { apiKey?: string }) => {
+              let apiKey = trimString(options.apiKey);
 
-          if (!apiKey) {
-            apiKey = await promptForApiKey(prompt);
-          }
+              if (!apiKey) {
+                apiKey = await promptForApiKey(prompt);
+              }
 
-          if (!apiKey) {
-            throw new InvalidArgumentError("API key cannot be empty");
-          }
+              if (!apiKey) {
+                throw new InvalidArgumentError("API key cannot be empty");
+              }
 
-          await store.saveApiKey(apiKey);
-          await store.updateConfig({ apiKey: undefined });
-          logger.info("API key saved.");
-        })
+              await store.saveApiKey(apiKey);
+              await store.updateConfig({ apiKey: undefined });
+              logger.info("API key saved.");
+            }
+          )
+        )
     )
     .addCommand(
-      new Command("logout")
-        .description("Remove the saved API key")
-        .action(async function authLogoutAction() {
-          const { store } = await resolveGlobalOptions(this);
+      new Command("logout").description("Remove the saved API key").action(
+        withResolvedGlobals(async ({ store }) => {
           await store.clearApiKey();
           logger.info("Saved API key removed.");
         })
+      )
     )
     .addCommand(
-      new Command("status")
-        .description("Show authentication status")
-        .action(async function authStatusAction() {
-          const { store } = await resolveGlobalOptions(this);
+      new Command("status").description("Show authentication status").action(
+        withResolvedGlobals(async ({ store }) => {
           const apiKey = await store.readApiKey();
           const fromEnv = trimString(process.env.STARCITE_API_KEY);
 
@@ -635,6 +658,7 @@ export function buildProgram(deps: CliDependencies = {}): Command {
 
           logger.info("No API key configured. Run `starcite auth login`.");
         })
+      )
     );
 
   program
@@ -648,51 +672,57 @@ export function buildProgram(deps: CliDependencies = {}): Command {
         )
         .option("--cursor <cursor>", "Pagination cursor")
         .option("--metadata <json>", "Metadata filter JSON object")
-        .action(async function sessionsListAction(options: {
-          limit?: number;
-          cursor?: string;
-          metadata?: string;
-        }) {
-          const resolved = await resolveGlobalOptions(this);
-          const { json } = resolved;
-          const client = createClientForGlobals(createClient, resolved);
+        .action(
+          withResolvedGlobals(
+            async (
+              resolved,
+              options: {
+                limit?: number;
+                cursor?: string;
+                metadata?: string;
+              }
+            ) => {
+              const { json } = resolved;
+              const client = createClientForGlobals(createClient, resolved);
 
-          const metadata = options.metadata
-            ? parseSessionMetadataFilters(options.metadata)
-            : undefined;
+              const metadata = options.metadata
+                ? parseSessionMetadataFilters(options.metadata)
+                : undefined;
 
-          const cursor = options.cursor?.trim();
-          if (options.cursor !== undefined && !cursor) {
-            throw new InvalidArgumentError("--cursor must be non-empty");
-          }
+              const cursor = options.cursor?.trim();
+              if (options.cursor !== undefined && !cursor) {
+                throw new InvalidArgumentError("--cursor must be non-empty");
+              }
 
-          const page = await client.listSessions({
-            limit: options.limit,
-            cursor,
-            metadata,
-          });
+              const page = await client.listSessions({
+                limit: options.limit,
+                cursor,
+                metadata,
+              });
 
-          if (json) {
-            logger.info(JSON.stringify(page, null, 2));
-            return;
-          }
+              if (json) {
+                logger.info(JSON.stringify(page, null, 2));
+                return;
+              }
 
-          if (page.sessions.length === 0) {
-            logger.info("No sessions found.");
-            return;
-          }
+              if (page.sessions.length === 0) {
+                logger.info("No sessions found.");
+                return;
+              }
 
-          logger.info("id\ttitle\tcreated_at");
-          for (const session of page.sessions) {
-            logger.info(
-              `${session.id}\t${session.title ?? ""}\t${session.created_at}`
-            );
-          }
+              logger.info("id\ttitle\tcreated_at");
+              for (const session of page.sessions) {
+                logger.info(
+                  `${session.id}\t${session.title ?? ""}\t${session.created_at}`
+                );
+              }
 
-          if (page.next_cursor) {
-            logger.info(`next_cursor=${page.next_cursor}`);
-          }
-        })
+              if (page.next_cursor) {
+                logger.info(`next_cursor=${page.next_cursor}`);
+              }
+            }
+          )
+        )
     );
 
   program
@@ -706,43 +736,47 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       parsePort(value, "--db-port")
     )
     .option("--image <image>", "Override Starcite image")
-    .action(async function upAction(options: {
-      yes?: boolean;
-      port?: number;
-      dbPort?: number;
-      image?: string;
-    }) {
-      const { baseUrl, store } = await resolveGlobalOptions(this);
-
-      await runUpWizard({
-        baseUrl,
-        logger,
-        options,
-        prompt,
-        runCommand,
-        store,
-      });
-    });
+    .action(
+      withResolvedGlobals(
+        async (
+          { baseUrl, store },
+          options: {
+            yes?: boolean;
+            port?: number;
+            dbPort?: number;
+            image?: string;
+          }
+        ) => {
+          await runUpWizard({
+            baseUrl,
+            logger,
+            options,
+            prompt,
+            runCommand,
+            store,
+          });
+        }
+      )
+    );
 
   program
     .command("down")
     .description("Stop and remove local Starcite services")
     .option("-y, --yes", "Skip confirmation prompt")
     .option("--no-volumes", "Keep Postgres volume data")
-    .action(async function downAction(options: {
-      yes?: boolean;
-      volumes?: boolean;
-    }) {
-      const { store } = await resolveGlobalOptions(this);
-
-      await runDownWizard({
-        logger,
-        options,
-        prompt,
-        runCommand,
-        store,
-      });
-    });
+    .action(
+      withResolvedGlobals(
+        async ({ store }, options: { yes?: boolean; volumes?: boolean }) => {
+          await runDownWizard({
+            logger,
+            options,
+            prompt,
+            runCommand,
+            store,
+          });
+        }
+      )
+    );
 
   program
     .command("create")
@@ -750,33 +784,39 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--id <id>", "Session ID")
     .option("--title <title>", "Session title")
     .option("--metadata <json>", "Session metadata JSON object")
-    .action(async function createAction(options: {
-      id?: string;
-      title?: string;
-      metadata?: string;
-    }) {
-      const resolved = await resolveGlobalOptions(this);
-      const { json } = resolved;
-      const client = createClientForGlobals(createClient, resolved);
-      const metadata = options.metadata
-        ? parseJsonObject(options.metadata, "--metadata")
-        : undefined;
+    .action(
+      withResolvedGlobals(
+        async (
+          resolved,
+          options: {
+            id?: string;
+            title?: string;
+            metadata?: string;
+          }
+        ) => {
+          const { json } = resolved;
+          const client = createClientForGlobals(createClient, resolved);
+          const metadata = options.metadata
+            ? parseJsonObject(options.metadata, "--metadata")
+            : undefined;
 
-      const session = await client.create({
-        id: options.id,
-        title: options.title,
-        metadata,
-      });
+          const session = await client.create({
+            id: options.id,
+            title: options.title,
+            metadata,
+          });
 
-      if (json) {
-        logger.info(
-          JSON.stringify(session.record ?? { id: session.id }, null, 2)
-        );
-        return;
-      }
+          if (json) {
+            logger.info(
+              JSON.stringify(session.record ?? { id: session.id }, null, 2)
+            );
+            return;
+          }
 
-      logger.info(session.id);
-    });
+          logger.info(session.id);
+        }
+      )
+    );
 
   program
     .command("append <sessionId>")
@@ -802,79 +842,83 @@ export function buildProgram(deps: CliDependencies = {}): Command {
     .option("--expected-seq <seq>", "Expected sequence", (value) =>
       parseNonNegativeInteger(value, "--expected-seq")
     )
-    .action(async function appendAction(
-      sessionId: string,
-      options: AppendCommandOptions
-    ) {
-      const { baseUrl, apiKey, json, store } = await resolveGlobalOptions(this);
-      const client = await resolveSessionClient(
-        createClient,
-        baseUrl,
-        apiKey,
-        sessionId,
-        ["session:append"]
-      );
-      const session = client.session(sessionId);
+    .action(
+      withResolvedGlobals(
+        async (
+          { baseUrl, apiKey, json, store },
+          sessionId: string,
+          options: AppendCommandOptions
+        ) => {
+          const client = await resolveSessionClient(
+            createClient,
+            baseUrl,
+            apiKey,
+            sessionId,
+            ["session:append"]
+          );
+          const session = client.session(sessionId);
 
-      const metadata = options.metadata
-        ? parseJsonObject(options.metadata, "--metadata")
-        : undefined;
-      const refs = options.refs ? parseEventRefs(options.refs) : undefined;
-      const mode = resolveAppendMode(options);
+          const metadata = options.metadata
+            ? parseJsonObject(options.metadata, "--metadata")
+            : undefined;
+          const refs = options.refs ? parseEventRefs(options.refs) : undefined;
+          const mode = resolveAppendMode(options);
 
-      const producerId = await store.resolveProducerId(options.producerId);
-      const normalizedBaseUrl = toApiBaseUrl(baseUrl);
-      const contextKey = buildSeqContextKey(
-        normalizedBaseUrl,
-        sessionId,
-        producerId
-      );
+          const producerId = await store.resolveProducerId(options.producerId);
+          const normalizedBaseUrl = toApiBaseUrl(baseUrl);
+          const contextKey = buildSeqContextKey(
+            normalizedBaseUrl,
+            sessionId,
+            producerId
+          );
 
-      const response = await store.withStateLock(async () => {
-        const producerSeq =
-          options.producerSeq ?? (await store.readNextSeq(contextKey));
-        const appendOptions = {
-          ...options,
-          producerId,
-          producerSeq,
-        };
+          const response = await store.withStateLock(async () => {
+            const producerSeq =
+              options.producerSeq ?? (await store.readNextSeq(contextKey));
+            const appendOptions = {
+              ...options,
+              producerId,
+              producerSeq,
+            };
 
-        const appendResponse =
-          mode.kind === "high-level"
-            ? await appendHighLevel(
-                session,
-                {
-                  ...appendOptions,
-                  agent: mode.agent,
-                  text: mode.text,
-                },
-                metadata,
-                refs
-              )
-            : await appendRaw(
-                session,
-                {
-                  ...appendOptions,
-                  actor: mode.actor,
-                  payload: mode.payload,
-                },
-                metadata,
-                refs
-              );
+            const appendResponse =
+              mode.kind === "high-level"
+                ? await appendHighLevel(
+                    session,
+                    {
+                      ...appendOptions,
+                      agent: mode.agent,
+                      text: mode.text,
+                    },
+                    metadata,
+                    refs
+                  )
+                : await appendRaw(
+                    session,
+                    {
+                      ...appendOptions,
+                      actor: mode.actor,
+                      payload: mode.payload,
+                    },
+                    metadata,
+                    refs
+                  );
 
-        await store.bumpNextSeq(contextKey, producerSeq);
-        return appendResponse;
-      });
+            await store.bumpNextSeq(contextKey, producerSeq);
+            return appendResponse;
+          });
 
-      if (json) {
-        logger.info(JSON.stringify(response, null, 2));
-        return;
-      }
+          if (json) {
+            logger.info(JSON.stringify(response, null, 2));
+            return;
+          }
 
-      logger.info(
-        `seq=${response.seq} last_seq=${response.last_seq} deduped=${response.deduped}`
-      );
-    });
+          logger.info(
+            `seq=${response.seq} last_seq=${response.last_seq} deduped=${response.deduped}`
+          );
+        }
+      )
+    );
 
   program
     .command("tail <sessionId>")
@@ -887,59 +931,63 @@ export function buildProgram(deps: CliDependencies = {}): Command {
       parseNonNegativeInteger(value, "--limit")
     )
     .option("--no-follow", "Exit after replaying stored events")
-    .action(async function tailAction(
-      sessionId: string,
-      options: {
-        cursor?: number;
-        agent?: string;
-        limit?: number;
-        follow: boolean;
-      }
-    ) {
-      const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
-      const client = await resolveSessionClient(
-        createClient,
-        baseUrl,
-        apiKey,
-        sessionId,
-        ["session:read"]
-      );
-      const session = client.session(sessionId);
-
-      const abortController = new AbortController();
-      const onSigint = () => {
-        abortController.abort();
-      };
-
-      process.once("SIGINT", onSigint);
-
-      try {
-        let emitted = 0;
-
-        for await (const event of session.tail({
-          cursor: options.cursor ?? 0,
-          batchSize: DEFAULT_TAIL_BATCH_SIZE,
-          agent: options.agent,
-          follow: options.follow,
-          signal: abortController.signal,
-        })) {
-          if (json) {
-            logger.info(JSON.stringify(event));
-          } else {
-            logger.info(formatTailEvent(event));
+    .action(
+      withResolvedGlobals(
+        async (
+          { baseUrl, apiKey, json },
+          sessionId: string,
+          options: {
+            cursor?: number;
+            agent?: string;
+            limit?: number;
+            follow: boolean;
           }
+        ) => {
+          const client = await resolveSessionClient(
+            createClient,
+            baseUrl,
+            apiKey,
+            sessionId,
+            ["session:read"]
+          );
+          const session = client.session(sessionId);
 
-          emitted += 1;
-
-          if (options.limit !== undefined && emitted >= options.limit) {
+          const abortController = new AbortController();
+          const onSigint = () => {
             abortController.abort();
-            break;
+          };
+
+          process.once("SIGINT", onSigint);
+
+          try {
+            let emitted = 0;
+
+            for await (const event of session.tail({
+              cursor: options.cursor ?? 0,
+              batchSize: DEFAULT_TAIL_BATCH_SIZE,
+              agent: options.agent,
+              follow: options.follow,
+              signal: abortController.signal,
+            })) {
+              if (json) {
+                logger.info(JSON.stringify(event));
+              } else {
+                logger.info(formatTailEvent(event));
+              }
+
+              emitted += 1;
+
+              if (options.limit !== undefined && emitted >= options.limit) {
+                abortController.abort();
+                break;
+              }
+            }
+          } finally {
+            process.removeListener("SIGINT", onSigint);
           }
         }
-      } finally {
-        process.removeListener("SIGINT", onSigint);
-      }
-    });
+      )
+    );
 
   return program;
 }
