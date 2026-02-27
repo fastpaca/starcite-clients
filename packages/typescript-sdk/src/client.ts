@@ -56,6 +56,9 @@ const DEFAULT_AUTH_URL =
     : undefined;
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
+/**
+ * Stable error text extraction for transport and parsing failures.
+ */
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -64,11 +67,17 @@ function errorMessage(error: unknown): string {
   return typeof error === "string" ? error : "Unknown error";
 }
 
+/**
+ * Trims a string and collapses empty values to `undefined`.
+ */
 function trimString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Validates and normalizes an absolute HTTP URL used for SDK endpoints.
+ */
 function normalizeAbsoluteHttpUrl(value: string, context: string): string {
   let parsed: URL;
 
@@ -87,6 +96,10 @@ function normalizeAbsoluteHttpUrl(value: string, context: string): string {
   return parsed.toString().replace(TRAILING_SLASHES_REGEX, "");
 }
 
+/**
+ * Resolves auth issuer base URL in this order:
+ * explicit option -> env -> API key JWT issuer authority.
+ */
 function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
   apiAuthorization: string | undefined
@@ -111,6 +124,12 @@ function resolveAuthBaseUrl(
     : undefined;
 }
 
+/**
+ * Chooses websocket auth transport mode.
+ *
+ * `auto` prefers access token query auth for the default browser-compatible
+ * factory and falls back to header auth for custom transports.
+ */
 function resolveWebSocketAuthTransport(
   requested: StarciteWebSocketAuthTransport | undefined,
   hasCustomFactory: boolean
@@ -122,6 +141,9 @@ function resolveWebSocketAuthTransport(
   return hasCustomFactory ? "header" : "access_token";
 }
 
+/**
+ * Converts HTTP API base URL to its websocket equivalent.
+ */
 function toWebSocketBaseUrl(apiBaseUrl: string): string {
   if (apiBaseUrl.startsWith("https://")) {
     return `wss://${apiBaseUrl.slice("https://".length)}`;
@@ -136,6 +158,9 @@ function toWebSocketBaseUrl(apiBaseUrl: string): string {
   );
 }
 
+/**
+ * Default websocket connector used when no custom factory is provided.
+ */
 function defaultWebSocketFactory(
   url: string,
   options: StarciteWebSocketConnectOptions = {}
@@ -166,6 +191,9 @@ function defaultWebSocketFactory(
   ]) as StarciteWebSocket;
 }
 
+/**
+ * Adds SDK convenience fields (`agent`, `text`) to raw tail events.
+ */
 function toSessionEvent(event: TailEvent): SessionEvent {
   const agent = event.actor.startsWith("agent:")
     ? event.actor.slice("agent:".length)
@@ -180,6 +208,9 @@ function toSessionEvent(event: TailEvent): SessionEvent {
   };
 }
 
+/**
+ * Shared options for durable consume loops.
+ */
 interface ConsumeTailOptions<TEvent>
   extends Omit<SessionTailOptions, "cursor"> {
   cursor?: number;
@@ -624,6 +655,9 @@ export class StarciteClient {
   }
 }
 
+/**
+ * Best-effort parse for structured API error payloads.
+ */
 async function tryParseJson(
   response: Response
 ): Promise<StarciteErrorPayload | null> {
@@ -636,6 +670,10 @@ async function tryParseJson(
   }
 }
 
+/**
+ * Parses successful JSON responses and wraps malformed payloads as
+ * connection-level protocol errors.
+ */
 async function parseSuccessfulJson(response: Response): Promise<unknown> {
   const body = await response.text();
 
@@ -655,6 +693,9 @@ async function parseSuccessfulJson(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * Resolves starting cursor for consume loops (explicit cursor wins).
+ */
 async function resolveConsumeCursor(
   sessionId: string,
   requestedCursor: number | undefined,
@@ -671,6 +712,9 @@ async function resolveConsumeCursor(
   return storedCursor ?? 0;
 }
 
+/**
+ * Persists the latest processed cursor with wrapped store errors.
+ */
 async function saveConsumeCursor(
   sessionId: string,
   cursorStore: SessionCursorStore,
@@ -681,6 +725,9 @@ async function saveConsumeCursor(
   );
 }
 
+/**
+ * Adds session/action context to cursor-store adapter errors.
+ */
 async function withCursorStoreError<T>(
   sessionId: string,
   action: "load" | "save",
@@ -696,6 +743,9 @@ async function withCursorStoreError<T>(
   }
 }
 
+/**
+ * Maps each batch item while preserving frame-sized batching.
+ */
 async function* mapBatches<TIn, TOut>(
   source: AsyncIterable<TIn[]>,
   mapper: (value: TIn) => TOut
@@ -705,6 +755,9 @@ async function* mapBatches<TIn, TOut>(
   }
 }
 
+/**
+ * Flattens batched iterables into item-by-item iteration.
+ */
 async function* flattenBatches<T>(
   source: AsyncIterable<T[]>
 ): AsyncGenerator<T> {

@@ -3,7 +3,13 @@ import { StarciteConnectionError } from "../errors";
 import type { TailEvent } from "../types";
 import { TailEventSchema } from "../types";
 
+/**
+ * Minimum allowed replay batch size accepted by the API.
+ */
 export const MIN_TAIL_BATCH_SIZE = 1;
+/**
+ * Maximum allowed replay batch size accepted by the API.
+ */
 export const MAX_TAIL_BATCH_SIZE = 1000;
 
 const TailFramePayloadSchema = z.union([
@@ -11,6 +17,9 @@ const TailFramePayloadSchema = z.union([
   z.array(TailEventSchema).min(MIN_TAIL_BATCH_SIZE),
 ]);
 
+/**
+ * Converts websocket message payloads to UTF-8 text for JSON parsing.
+ */
 function toFrameText(data: unknown): string | undefined {
   if (typeof data === "string") {
     return data;
@@ -27,6 +36,9 @@ function toFrameText(data: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Parses one websocket tail frame into a normalized event batch.
+ */
 export function parseTailFrame(data: unknown): TailEvent[] {
   const frameText = toFrameText(data);
 

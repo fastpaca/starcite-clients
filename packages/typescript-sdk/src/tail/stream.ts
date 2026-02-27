@@ -12,6 +12,9 @@ import type {
 } from "../types";
 import { parseTailFrame } from "./frame";
 
+/**
+ * Idle window used for replay-only tails (`follow=false`) before auto-close.
+ */
 const CATCH_UP_IDLE_MS = 1000;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1000;
 const DEFAULT_RECONNECT_MODE: TailReconnectMode = "exponential";
@@ -30,6 +33,9 @@ type TailErrorStage =
   | "retry_limit"
   | "consumer_backpressure";
 
+/**
+ * Construction input for a durable tail stream runner.
+ */
 interface TailStreamInput {
   sessionId: string;
   options: SessionTailOptions;
@@ -51,6 +57,9 @@ interface TailReconnectPolicy {
   maxAttempts: number;
 }
 
+/**
+ * Resolved runtime options with defaults applied.
+ */
 interface TailRuntimeOptions {
   cursor: number;
   batchSize: number | undefined;
@@ -63,17 +72,23 @@ interface TailRuntimeOptions {
   onLifecycleEvent: ((event: TailLifecycleEvent) => void) | undefined;
 }
 
+/**
+ * Terminal state returned by one websocket connection attempt.
+ */
 type TailConnectionEnd =
   | { reason: "aborted" }
   | { reason: "caught_up" }
   | { reason: "graceful" }
   | {
-      reason: "dropped";
-      closeCode?: number;
-      closeReason?: string;
-      emittedBatches: number;
-    };
+    reason: "dropped";
+    closeCode?: number;
+    closeReason?: string;
+    emittedBatches: number;
+  };
 
+/**
+ * Stable error text extraction for tail transport failures.
+ */
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -82,6 +97,9 @@ function errorMessage(error: unknown): string {
   return typeof error === "string" ? error : "Unknown error";
 }
 
+/**
+ * Converts `actor` values to agent names for filter matching.
+ */
 function agentFromActor(actor: string): string | undefined {
   if (actor.startsWith("agent:")) {
     return actor.slice("agent:".length);
@@ -90,6 +108,9 @@ function agentFromActor(actor: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Stateful tail runner that reconnects and resumes from the latest cursor.
+ */
 class TailStream {
   private readonly sessionId: string;
   private readonly websocketBaseUrl: string;
@@ -178,6 +199,9 @@ class TailStream {
     }
   }
 
+  /**
+   * Applies runtime defaults and normalizes reconnect policy settings.
+   */
   private withDefaults(options: SessionTailOptions): TailRuntimeOptions {
     const follow = options.follow ?? true;
     const reconnectPolicy = options.reconnectPolicy;
@@ -213,6 +237,9 @@ class TailStream {
     };
   }
 
+  /**
+   * Builds websocket upgrade headers for header-based auth transport.
+   */
   private toWebSocketConnectOptions(
     authorization: string | null | undefined,
     transport: Exclude<StarciteWebSocketAuthTransport, "auto">
@@ -228,6 +255,9 @@ class TailStream {
     };
   }
 
+  /**
+   * Builds the session tail endpoint with cursor, batching and auth query state.
+   */
   private buildTailUrl(cursor: number, batchSize: number | undefined): string {
     const query = new URLSearchParams({
       cursor: `${cursor}`,
@@ -246,6 +276,9 @@ class TailStream {
     )}/tail?${query.toString()}`;
   }
 
+  /**
+   * Emits lifecycle callbacks and shields the stream from user callback errors.
+   */
   private emitLifecycleEvent(event: TailLifecycleEvent): void {
     if (!this.options.onLifecycleEvent) {
       return;
@@ -282,6 +315,9 @@ class TailStream {
     });
   }
 
+  /**
+   * Computes reconnect delay with optional exponential backoff + jitter.
+   */
   private reconnectDelayForAttempt(attempt: number): number {
     const policy = this.options.reconnectPolicy;
     const exponent = Math.max(0, attempt - 1);
@@ -289,9 +325,9 @@ class TailStream {
       policy.mode === "fixed"
         ? policy.initialDelayMs
         : Math.min(
-            policy.maxDelayMs,
-            policy.initialDelayMs * policy.multiplier ** exponent
-          );
+          policy.maxDelayMs,
+          policy.initialDelayMs * policy.multiplier ** exponent
+        );
 
     if (policy.jitterRatio === 0) {
       return baseDelayMs;
@@ -303,6 +339,9 @@ class TailStream {
     return min + Math.random() * (max - min);
   }
 
+  /**
+   * Returns the next reconnect attempt or throws retry-limit failure.
+   */
   private nextReconnectAttemptOrThrow(options: {
     trigger: TailReconnectTrigger;
     rootCause?: string;
@@ -349,6 +388,9 @@ class TailStream {
     return { attempt, delayMs };
   }
 
+  /**
+   * Handles failures before a websocket connection is established.
+   */
   private handleConnectFailure(rootCause: string): {
     attempt: number;
     delayMs: number;
@@ -367,6 +409,9 @@ class TailStream {
     });
   }
 
+  /**
+   * Handles abnormal stream closure and decides whether to reconnect.
+   */
   private handleDroppedConnection(
     end: Extract<TailConnectionEnd, { reason: "dropped" }>
   ): {
@@ -414,6 +459,9 @@ class TailStream {
     });
   }
 
+  /**
+   * Waits for reconnect delay while allowing abort to cut waits short.
+   */
   private async waitForDelay(ms: number): Promise<void> {
     if (ms <= 0) {
       return;
@@ -465,6 +513,9 @@ class TailStream {
     }
   }
 
+  /**
+   * Streams batches from a single websocket connection lifecycle.
+   */
   private async *streamSingleConnection(
     socket: StarciteWebSocket
   ): AsyncGenerator<TailEvent[], TailConnectionEnd> {
@@ -496,6 +547,7 @@ class TailStream {
         return;
       }
 
+      // In replay-only mode, close once no new frames arrive for a short idle window.
       clearCatchUpTimer();
       catchUpTimer = setTimeout(() => {
         closeBatches();
@@ -699,6 +751,9 @@ class TailStream {
   }
 }
 
+/**
+ * Opens a durable websocket tail stream and yields raw frame-sized batches.
+ */
 export async function* streamTailRawEventBatches(
   input: TailStreamInput
 ): AsyncGenerator<TailEvent[]> {

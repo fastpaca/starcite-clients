@@ -8,12 +8,18 @@ const SERVICE_TOKEN_SUB_ORG_PREFIX = "org:";
 const SERVICE_TOKEN_SUB_AGENT_PREFIX = "agent:";
 const SERVICE_TOKEN_SUB_USER_PREFIX = "user:";
 
+/**
+ * Returns a trimmed string only when a claim-like value is non-empty.
+ */
 function firstNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
 }
 
+/**
+ * Decodes a base64url JWT segment in both browser and Node runtimes.
+ */
 function parseJwtSegment(segment: string): string | undefined {
   const base64 = segment
     .replace(/-/g, "+")
@@ -35,6 +41,9 @@ function parseJwtSegment(segment: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Best-effort claim decoder for JWT-form API keys.
+ */
 function parseJwtClaims(apiKey: string): Record<string, unknown> | undefined {
   const token = apiKey.replace(BEARER_PREFIX_REGEX, "").trim();
   const parts = token.split(".");
@@ -59,6 +68,9 @@ function parseJwtClaims(apiKey: string): Record<string, unknown> | undefined {
   }
 }
 
+/**
+ * Reads the first non-empty string value from a list of claim aliases.
+ */
 function parseClaimStrings(
   source: Record<string, unknown>,
   keys: string[]
@@ -73,6 +85,9 @@ function parseClaimStrings(
   return undefined;
 }
 
+/**
+ * Maps `sub` prefixes like `agent:*` and `user:*` to principal identity.
+ */
 function parseActorIdentityFromSubject(
   subject: string
 ): { id: string; type: "agent" | "user" } | undefined {
@@ -87,6 +102,9 @@ function parseActorIdentityFromSubject(
   return undefined;
 }
 
+/**
+ * Derives tenant id from subject when explicit tenant claims are absent.
+ */
 function parseTenantIdFromSubject(subject: string): string {
   if (parseActorIdentityFromSubject(subject) !== undefined) {
     return "";
@@ -99,6 +117,9 @@ function parseTenantIdFromSubject(subject: string): string {
   return subject;
 }
 
+/**
+ * Produces a validated creator principal from JWT claims when possible.
+ */
 function parseCreatorPrincipalFromClaims(
   claims: Record<string, unknown>
 ): SessionCreatorPrincipal | undefined {
@@ -150,6 +171,9 @@ function parseCreatorPrincipalFromClaims(
   return result.success ? result.data : undefined;
 }
 
+/**
+ * Converts an API key or bearer token value to `Authorization` header format.
+ */
 export function formatAuthorizationHeader(apiKey: string): string {
   const token = apiKey.trim();
 
@@ -217,6 +241,9 @@ export function inferIssuerAuthorityFromApiKey(
   }
 }
 
+/**
+ * Infers `creator_principal` defaults from API key JWT claims.
+ */
 export function inferCreatorPrincipalFromApiKey(
   apiKey: string
 ): SessionCreatorPrincipal | undefined {
