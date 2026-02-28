@@ -1,9 +1,9 @@
 import { StarciteError } from "./errors";
+import { TRAILING_SLASHES_REGEX } from "./internal/primitives";
 import type { SessionCreatorPrincipal } from "./types";
 import { SessionCreatorPrincipalSchema } from "./types";
 
 const BEARER_PREFIX_REGEX = /^bearer\s+/i;
-const TRAILING_SLASHES_REGEX = /\/+$/;
 const SERVICE_TOKEN_SUB_ORG_PREFIX = "org:";
 const SERVICE_TOKEN_SUB_AGENT_PREFIX = "agent:";
 const SERVICE_TOKEN_SUB_USER_PREFIX = "user:";
@@ -105,9 +105,9 @@ function parseActorIdentityFromSubject(
 /**
  * Derives tenant id from subject when explicit tenant claims are absent.
  */
-function parseTenantIdFromSubject(subject: string): string {
+function parseTenantIdFromSubject(subject: string): string | undefined {
   if (parseActorIdentityFromSubject(subject) !== undefined) {
-    return "";
+    return undefined;
   }
 
   if (subject.startsWith(SERVICE_TOKEN_SUB_ORG_PREFIX)) {
@@ -160,7 +160,7 @@ function parseCreatorPrincipalFromClaims(
   };
 
   if (
-    principal.tenant_id.length === 0 ||
+    !principal.tenant_id ||
     principal.id.length === 0 ||
     principal.type.length === 0
   ) {

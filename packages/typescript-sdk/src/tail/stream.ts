@@ -68,6 +68,7 @@ interface TailRuntimeOptions {
   follow: boolean;
   reconnect: boolean;
   reconnectPolicy: TailReconnectPolicy;
+  catchUpIdleMs: number;
   maxBufferedBatches: number;
   signal: AbortSignal | undefined;
   onLifecycleEvent: ((event: TailLifecycleEvent) => void) | undefined;
@@ -209,6 +210,7 @@ class TailStream {
         maxAttempts:
           reconnectPolicy?.maxAttempts ?? DEFAULT_RECONNECT_MAX_ATTEMPTS,
       },
+      catchUpIdleMs: options.catchUpIdleMs ?? CATCH_UP_IDLE_MS,
       maxBufferedBatches:
         options.maxBufferedBatches ?? DEFAULT_MAX_BUFFERED_BATCHES,
       signal: options.signal,
@@ -530,7 +532,7 @@ class TailStream {
       clearCatchUpTimer();
       catchUpTimer = setTimeout(() => {
         closeBatches();
-      }, CATCH_UP_IDLE_MS);
+      }, this.options.catchUpIdleMs);
     };
 
     const emitBatch = (batch: TailEvent[]): void => {

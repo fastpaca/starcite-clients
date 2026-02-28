@@ -26,6 +26,7 @@ export type {
   CreateSessionInput,
   IssueSessionTokenInput,
   IssueSessionTokenResponse,
+  RequestOptions,
   SessionAppendInput,
   SessionConsumeOptions,
   SessionConsumeRawOptions,

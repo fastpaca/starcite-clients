@@ -10,6 +10,7 @@ import {
   StarciteError,
 } from "./errors";
 import {
+  TRAILING_SLASHES_REGEX,
   agentFromActor,
   errorMessage,
   toAgentActor,
@@ -21,6 +22,7 @@ import type {
   CreateSessionInput,
   IssueSessionTokenInput,
   IssueSessionTokenResponse,
+  RequestOptions,
   SessionAppendInput,
   SessionConsumeOptions,
   SessionConsumeRawOptions,
@@ -59,7 +61,6 @@ const DEFAULT_AUTH_URL =
   typeof process !== "undefined" && process.env.STARCITE_AUTH_URL
     ? process.env.STARCITE_AUTH_URL
     : undefined;
-const TRAILING_SLASHES_REGEX = /\/+$/;
 
 /**
  * Trims a string and collapses empty values to `undefined`.
@@ -166,19 +167,16 @@ function defaultWebSocketFactory(
   }
 
   const headers = new Headers(options.headers);
-  let hasHeaders = false;
 
-  for (const _ of headers.keys()) {
-    hasHeaders = true;
-    break;
-  }
-
-  if (!hasHeaders) {
+  if ([...headers.keys()].length === 0) {
     return new WebSocket(url);
   }
 
   const headerObject = Object.fromEntries(headers.entries());
 
+  // Reflect.construct bypasses the DOM `WebSocket(url, protocols?)` type
+  // signature so we can pass the `{ headers }` options bag accepted by
+  // Node.js and some edge runtimes.
   return Reflect.construct(WebSocket, [
     url,
     { headers: headerObject },
@@ -238,28 +236,38 @@ export class StarciteSession {
   /**
    * Appends a high-level agent event to this session.
    */
-  append(input: SessionAppendInput): Promise<AppendEventResponse> {
+  append(
+    input: SessionAppendInput,
+    options?: RequestOptions
+  ): Promise<AppendEventResponse> {
     const parsed = SessionAppendInputSchema.parse(input);
 
-    return this.client.appendEvent(this.id, {
-      type: parsed.type ?? "content",
-      payload: parsed.payload ?? { text: parsed.text },
-      actor: parsed.actor ?? toAgentActor(parsed.agent),
-      producer_id: parsed.producerId,
-      producer_seq: parsed.producerSeq,
-      source: parsed.source ?? "agent",
-      metadata: parsed.metadata,
-      refs: parsed.refs,
-      idempotency_key: parsed.idempotencyKey,
-      expected_seq: parsed.expectedSeq,
-    });
+    return this.client.appendEvent(
+      this.id,
+      {
+        type: parsed.type ?? "content",
+        payload: parsed.payload ?? { text: parsed.text },
+        actor: parsed.actor ?? toAgentActor(parsed.agent),
+        producer_id: parsed.producerId,
+        producer_seq: parsed.producerSeq,
+        source: parsed.source ?? "agent",
+        metadata: parsed.metadata,
+        refs: parsed.refs,
+        idempotency_key: parsed.idempotencyKey,
+        expected_seq: parsed.expectedSeq,
+      },
+      options
+    );
   }
 
   /**
    * Appends a raw event payload as-is.
    */
-  appendRaw(input: AppendEventRequest): Promise<AppendEventResponse> {
-    return this.client.appendEvent(this.id, input);
+  appendRaw(
+    input: AppendEventRequest,
+    options?: RequestOptions
+  ): Promise<AppendEventResponse> {
+    return this.client.appendEvent(this.id, input, options);
   }
 
   /**
@@ -358,15 +366,21 @@ export class StarciteClient {
   /**
    * Creates a new session and returns a bound `StarciteSession` helper.
    */
-  async create(input: CreateSessionInput = {}): Promise<StarciteSession> {
-    const record = await this.createSession(input);
+  async create(
+    input: CreateSessionInput = {},
+    options?: RequestOptions
+  ): Promise<StarciteSession> {
+    const record = await this.createSession(input, options);
     return this.session(record.id, record);
   }
 
   /**
    * Creates a new session and returns the raw session record.
    */
-  createSession(input: CreateSessionInput = {}): Promise<SessionRecord> {
+  createSession(
+    input: CreateSessionInput = {},
+    options?: RequestOptions
+  ): Promise<SessionRecord> {
     const payload = CreateSessionInputSchema.parse({
       ...input,
       creator_principal:
@@ -378,6 +392,7 @@ export class StarciteClient {
       {
         method: "POST",
         body: JSON.stringify(payload),
+        signal: options?.signal,
       },
       SessionRecordSchema
     );
@@ -386,7 +401,10 @@ export class StarciteClient {
   /**
    * Lists sessions from the archive-backed catalog.
    */
-  listSessions(options: SessionListOptions = {}): Promise<SessionListPage> {
+  listSessions(
+    options: SessionListOptions = {},
+    requestOptions?: RequestOptions
+  ): Promise<SessionListPage> {
     const parsed = SessionListOptionsSchema.parse(options);
     const query = new URLSearchParams();
 
@@ -410,6 +428,7 @@ export class StarciteClient {
       `/sessions${suffix}`,
       {
         method: "GET",
+        signal: requestOptions?.signal,
       },
       SessionListPageSchema
     );
@@ -419,7 +438,8 @@ export class StarciteClient {
    * Mints a short-lived session token using the configured auth issuer service.
    */
   issueSessionToken(
-    input: IssueSessionTokenInput
+    input: IssueSessionTokenInput,
+    options?: RequestOptions
   ): Promise<IssueSessionTokenResponse> {
     const authorization = this.headers.get("authorization");
     if (!authorization) {
@@ -446,6 +466,7 @@ export class StarciteClient {
           "cache-control": "no-store",
         },
         body: JSON.stringify(payload),
+        signal: options?.signal,
       },
       IssueSessionTokenResponseSchema
     );
@@ -456,7 +477,8 @@ export class StarciteClient {
    */
   appendEvent(
     sessionId: string,
-    input: AppendEventRequest
+    input: AppendEventRequest,
+    options?: RequestOptions
   ): Promise<AppendEventResponse> {
     const payload = AppendEventRequestSchema.parse(input);
 
@@ -465,6 +487,7 @@ export class StarciteClient {
       {
         method: "POST",
         body: JSON.stringify(payload),
+        signal: options?.signal,
       },
       AppendEventResponseSchema
     );
@@ -560,7 +583,7 @@ export class StarciteClient {
   ): Promise<T> {
     const headers = new Headers(this.headers);
 
-    if (!headers.has("content-type")) {
+    if (init.body !== undefined && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
 

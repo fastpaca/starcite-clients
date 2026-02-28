@@ -1,4 +1,9 @@
 /**
+ * Matches one or more trailing slashes for URL normalization.
+ */
+export const TRAILING_SLASHES_REGEX = /\/+$/;
+
+/**
  * Stable error text extraction for transport and parsing failures.
  */
 export function errorMessage(error: unknown): string {

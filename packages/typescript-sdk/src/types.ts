@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const ArbitraryObjectSchema = z.record(z.unknown());
 
-const CreatorTypeSchema = z.union([z.literal("user"), z.literal("agent")]);
+const CreatorTypeSchema = z.enum(["user", "agent"]);
 
 export const SessionCreatorPrincipalSchema = z.object({
   tenant_id: z.string().min(1),
@@ -14,10 +14,7 @@ export type SessionCreatorPrincipal = z.infer<
   typeof SessionCreatorPrincipalSchema
 >;
 
-const SessionTokenScopeSchema = z.union([
-  z.literal("session:read"),
-  z.literal("session:append"),
-]);
+const SessionTokenScopeSchema = z.enum(["session:read", "session:append"]);
 
 export type SessionTokenScope = z.infer<typeof SessionTokenScopeSchema>;
 
@@ -181,17 +178,9 @@ export type TailEvent = z.infer<typeof TailEventSchema>;
 export type TailEventBatch = TailEvent[];
 
 /**
- * Convenience tail event shape with SDK-derived fields (`agent`, `text`).
+ * SDK-level enriched tail event with convenience fields (`agent`, `text`).
  */
-const SessionEventInternalSchema = TailEventSchema.extend({
-  agent: z.string().optional(),
-  text: z.string().optional(),
-});
-
-/**
- * Inferred TypeScript type for the SDK-level enriched tail event.
- */
-export type SessionEvent = z.infer<typeof SessionEventInternalSchema>;
+export type SessionEvent = TailEvent & { agent?: string; text?: string };
 /**
  * Enriched tail event batch grouped by a single WebSocket frame.
  */
@@ -245,6 +234,12 @@ export interface SessionTailOptions {
    * Optional filter for `agent:<name>` events.
    */
   agent?: string;
+  /**
+   * Idle window in milliseconds used for replay-only tails (`follow=false`) before auto-close.
+   *
+   * Defaults to `1000`.
+   */
+  catchUpIdleMs?: number;
   /**
    * Automatically reconnect on transport failures and continue from the last observed sequence.
    *
@@ -468,6 +463,16 @@ export type StarciteWebSocketFactory = (
 ) => StarciteWebSocket;
 
 export type StarciteWebSocketAuthTransport = "auto" | "header" | "access_token";
+
+/**
+ * Options forwarded to individual HTTP requests.
+ */
+export interface RequestOptions {
+  /**
+   * Optional abort signal to cancel the request.
+   */
+  signal?: AbortSignal;
+}
 
 /**
  * Client construction options.
