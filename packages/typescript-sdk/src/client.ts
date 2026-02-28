@@ -1,6 +1,5 @@
 import {
   decodeSessionToken,
-  formatAuthorizationHeader,
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
 } from "./auth";
@@ -42,7 +41,7 @@ const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
  */
 function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
-  apiAuthorization: string | undefined
+  apiKey: string | undefined
 ): string | undefined {
   if (explicitAuthUrl) {
     return normalizeAbsoluteHttpUrl(explicitAuthUrl, "authUrl");
@@ -52,8 +51,8 @@ function resolveAuthBaseUrl(
     return normalizeAbsoluteHttpUrl(DEFAULT_AUTH_URL, "STARCITE_AUTH_URL");
   }
 
-  if (apiAuthorization) {
-    return inferIssuerAuthorityFromApiKey(apiAuthorization);
+  if (apiKey) {
+    return inferIssuerAuthorityFromApiKey(apiKey);
   }
 
   return undefined;
@@ -79,14 +78,15 @@ export class Starcite {
 
     const fetchFn = options.fetch ?? fetch;
     const headers = new Headers(options.headers);
-    let apiAuthorization: string | undefined;
+    const apiKey = options.apiKey?.trim();
+    let authorization: string | undefined;
 
-    if (options.apiKey !== undefined) {
-      apiAuthorization = formatAuthorizationHeader(options.apiKey);
-      this.inferredIdentity = inferIdentityFromApiKey(apiAuthorization);
+    if (apiKey) {
+      authorization = `Bearer ${apiKey}`;
+      this.inferredIdentity = inferIdentityFromApiKey(apiKey);
     }
 
-    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiAuthorization);
+    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiKey);
 
     const websocketAuthTransport = resolveWebSocketAuthTransport(
       options.websocketAuthTransport,
@@ -98,7 +98,7 @@ export class Starcite {
     this.transport = {
       baseUrl,
       websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
-      authorization: apiAuthorization ?? null,
+      authorization: authorization ?? null,
       fetchFn,
       headers,
       websocketFactory,
@@ -246,10 +246,9 @@ export class Starcite {
   }
 
   private buildSessionTransport(token: string): TransportConfig {
-    const authorization = formatAuthorizationHeader(token);
     return {
       ...this.transport,
-      authorization,
+      authorization: `Bearer ${token}`,
     };
   }
 

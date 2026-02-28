@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatAuthorizationHeader,
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
-  tokenFromAuthorizationHeader,
 } from "../src/auth";
-import { StarciteError } from "../src/errors";
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
   const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
@@ -13,36 +10,6 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
   );
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.N6fK2qA`;
 }
-
-describe("formatAuthorizationHeader", () => {
-  it("throws on empty string", () => {
-    expect(() => formatAuthorizationHeader("")).toThrow("apiKey cannot be empty");
-    expect(() => formatAuthorizationHeader("   ")).toThrow(
-      "apiKey cannot be empty"
-    );
-  });
-
-  it("prefixes a bare token with Bearer", () => {
-    expect(formatAuthorizationHeader("my_token")).toBe("Bearer my_token");
-  });
-
-  it("passes through an already-prefixed bearer token", () => {
-    expect(formatAuthorizationHeader("Bearer abc")).toBe("Bearer abc");
-    expect(formatAuthorizationHeader("bearer abc")).toBe("bearer abc");
-  });
-});
-
-describe("tokenFromAuthorizationHeader", () => {
-  it("throws for empty input", () => {
-    expect(() => tokenFromAuthorizationHeader("")).toThrow(StarciteError);
-    expect(() => tokenFromAuthorizationHeader("   ")).toThrow(StarciteError);
-  });
-
-  it("extracts a bearer token", () => {
-    expect(tokenFromAuthorizationHeader("Bearer my_token")).toBe("my_token");
-    expect(tokenFromAuthorizationHeader("bearer my_token")).toBe("my_token");
-  });
-});
 
 describe("inferIssuerAuthorityFromApiKey", () => {
   it("extracts issuer authority from a valid JWT", () => {

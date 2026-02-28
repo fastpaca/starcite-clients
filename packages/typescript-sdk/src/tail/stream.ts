@@ -1,4 +1,3 @@
-import { tokenFromAuthorizationHeader } from "../auth";
 import { StarciteTailError } from "../errors";
 import { agentFromActor } from "../identity";
 import { errorMessage } from "../internal/primitives";
@@ -116,9 +115,7 @@ class TailStream {
     this.websocketBaseUrl = input.websocketBaseUrl;
     this.websocketFactory = input.websocketFactory;
     this.websocketAuthTransport = input.websocketAuthTransport;
-    this.accessToken = input.authorization
-      ? tokenFromAuthorizationHeader(input.authorization)
-      : undefined;
+    this.accessToken = input.authorization?.replace(/^Bearer /i, "");
     this.websocketConnectOptions = this.toWebSocketConnectOptions(
       input.authorization,
       input.websocketAuthTransport
