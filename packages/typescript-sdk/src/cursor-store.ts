@@ -63,7 +63,9 @@ export class WebStorageCursorStore implements SessionCursorStore {
 
   load(sessionId: string): number | undefined {
     const raw = this.storage.getItem(this.keyForSession(sessionId));
-    if (raw === null) return undefined;
+    if (raw === null) {
+      return undefined;
+    }
     const parsed = Number.parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
   }

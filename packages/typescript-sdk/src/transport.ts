@@ -10,6 +10,8 @@ import type {
   StarciteWebSocketConnectOptions,
 } from "./types";
 
+const TRAILING_SLASHES_REGEX = /\/+$/;
+
 /**
  * Shared HTTP + WebSocket transport configuration.
  *
@@ -43,7 +45,7 @@ export function normalizeAbsoluteHttpUrl(
   }
 
   // Strip trailing slashes for consistent path joining.
-  return parsed.toString().replace(/\/+$/, "");
+  return parsed.toString().replace(TRAILING_SLASHES_REGEX, "");
 }
 
 /**
@@ -60,7 +62,7 @@ export function toApiBaseUrl(baseUrl: string): string {
 export function toWebSocketBaseUrl(apiBaseUrl: string): string {
   const url = new URL(apiBaseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString().replace(/\/+$/, "");
+  return url.toString().replace(TRAILING_SLASHES_REGEX, "");
 }
 
 /**

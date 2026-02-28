@@ -15,6 +15,8 @@ import type {
   TailLifecycleEvent,
 } from "../src/types";
 
+const BEARER_PREFIX_REGEX = /^Bearer /;
+
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
 
@@ -715,7 +717,7 @@ describe("Starcite", () => {
       (url: string, options?: { headers?: HeadersInit }) => {
         const headers = new Headers(options?.headers);
         // Session token auth is used for the WebSocket, not the API key
-        expect(headers.get("authorization")).toMatch(/^Bearer /);
+        expect(headers.get("authorization")).toMatch(BEARER_PREFIX_REGEX);
 
         const socket = new FakeWebSocket(url);
         sockets.push(socket);

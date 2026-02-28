@@ -1,10 +1,11 @@
 import { z } from "zod";
 import {
-  SessionCreatorPrincipalSchema,
-  SessionTokenPrincipalSchema,
+  SessionCreatorPrincipalSchema as SessionCreatorPrincipalSchemaValue,
+  SessionTokenPrincipalSchema as SessionTokenPrincipalSchemaValue,
 } from "./identity";
 
-export { SessionCreatorPrincipalSchema, SessionTokenPrincipalSchema };
+export const SessionCreatorPrincipalSchema = SessionCreatorPrincipalSchemaValue;
+export const SessionTokenPrincipalSchema = SessionTokenPrincipalSchemaValue;
 
 const ArbitraryObjectSchema = z.record(z.unknown());
 

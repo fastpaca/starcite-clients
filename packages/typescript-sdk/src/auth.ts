@@ -22,10 +22,12 @@ const SessionTokenClaimsSchema = z.object({
  * Extracts the issuer authority (protocol + host) from an API key JWT.
  */
 export function inferIssuerAuthorityFromApiKey(
-  apiKey: string,
+  apiKey: string
 ): string | undefined {
   const claims = ApiKeyClaimsSchema.parse(decodeJwt(apiKey));
-  if (!claims.iss) return undefined;
+  if (!claims.iss) {
+    return undefined;
+  }
   const url = new URL(claims.iss);
   return url.origin;
 }
@@ -34,14 +36,16 @@ export function inferIssuerAuthorityFromApiKey(
  * Infers caller identity from API key JWT claims.
  */
 export function inferIdentityFromApiKey(
-  apiKey: string,
+  apiKey: string
 ): StarciteIdentity | undefined {
   const claims = ApiKeyClaimsSchema.parse(decodeJwt(apiKey));
 
   const id = claims.principal_id ?? claims.sub;
   const tenantId = claims.tenant_id;
 
-  if (!tenantId || !id || !claims.principal_type) return undefined;
+  if (!(tenantId && id && claims.principal_type)) {
+    return undefined;
+  }
 
   return new StarciteIdentity({
     tenantId,
@@ -53,9 +57,10 @@ export function inferIdentityFromApiKey(
 /**
  * Decodes session token JWT claims and returns the session ID and identity.
  */
-export function decodeSessionToken(
-  token: string,
-): { sessionId?: string; identity: StarciteIdentity } {
+export function decodeSessionToken(token: string): {
+  sessionId?: string;
+  identity: StarciteIdentity;
+} {
   const claims = SessionTokenClaimsSchema.parse(decodeJwt(token));
 
   return {
