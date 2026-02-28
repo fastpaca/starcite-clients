@@ -4,7 +4,6 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import { errorMessage } from "./internal/primitives";
 import type {
   StarciteWebSocket,
   StarciteWebSocketAuthTransport,
@@ -155,7 +154,7 @@ export async function requestWithBaseUrl<T>(
     });
   } catch (error) {
     throw new StarciteConnectionError(
-      `Failed to connect to Starcite at ${baseUrl}: ${errorMessage(error)}`
+      `Failed to connect to Starcite at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 
@@ -188,7 +187,7 @@ export async function requestWithBaseUrl<T>(
     body = await response.json();
   } catch (error) {
     throw new StarciteConnectionError(
-      `Received invalid JSON from Starcite: ${errorMessage(error)}`
+      `Received invalid JSON from Starcite: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 

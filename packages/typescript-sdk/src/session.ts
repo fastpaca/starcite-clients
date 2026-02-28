@@ -1,7 +1,6 @@
 import { StarciteError } from "./errors";
 import type { StarciteIdentity } from "./identity";
-import { errorMessage } from "./internal/primitives";
-import { streamTailRawEventBatches } from "./tail/stream";
+import { TailStream } from "./tail/stream";
 import type { TransportConfig } from "./transport";
 import { flattenBatches, request } from "./transport";
 import type {
@@ -47,6 +46,8 @@ export class StarciteSession {
   readonly record?: SessionRecord;
 
   private readonly transport: TransportConfig;
+  private readonly producerId: string;
+  private producerSeq = 0;
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -54,26 +55,28 @@ export class StarciteSession {
     this.identity = options.identity;
     this.transport = options.transport;
     this.record = options.record;
+    this.producerId = crypto.randomUUID();
   }
 
   /**
    * Appends an event to this session.
    *
-   * The `actor` is derived from the session's identity unless explicitly overridden.
+   * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
    */
   append(
     input: SessionAppendInput,
     options?: RequestOptions
   ): Promise<AppendEventResponse> {
     const parsed = SessionAppendInputSchema.parse(input);
+    this.producerSeq += 1;
 
     return this.appendRaw(
       {
         type: parsed.type ?? "content",
         payload: parsed.payload ?? { text: parsed.text },
         actor: parsed.actor ?? this.identity.toActor(),
-        producer_id: parsed.producerId,
-        producer_seq: parsed.producerSeq,
+        producer_id: this.producerId,
+        producer_seq: this.producerSeq,
         source: parsed.source ?? "agent",
         metadata: parsed.metadata,
         refs: parsed.refs,
@@ -85,7 +88,7 @@ export class StarciteSession {
   }
 
   /**
-   * Appends a raw event payload as-is.
+   * Appends a raw event payload as-is. Caller manages all fields.
    */
   appendRaw(
     input: AppendEventRequest,
@@ -118,14 +121,14 @@ export class StarciteSession {
   async *tailBatches(
     options: SessionTailOptions = {}
   ): AsyncGenerator<TailEvent[]> {
-    yield* streamTailRawEventBatches({
+    yield* new TailStream({
       sessionId: this.id,
-      options,
+      token: this.token,
       websocketBaseUrl: this.transport.websocketBaseUrl,
       websocketFactory: this.transport.websocketFactory,
-      authorization: this.transport.authorization,
       websocketAuthTransport: this.transport.websocketAuthTransport,
-    });
+      options,
+    }).run();
   }
 
   /**
@@ -148,7 +151,7 @@ export class StarciteSession {
         cursor = (await cursorStore.load(this.id)) ?? 0;
       } catch (error) {
         throw new StarciteError(
-          `consume() failed to load cursor for session '${this.id}': ${errorMessage(error)}`
+          `consume() failed to load cursor for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
         );
       }
     }
@@ -160,7 +163,7 @@ export class StarciteSession {
         await cursorStore.save(this.id, event.seq);
       } catch (error) {
         throw new StarciteError(
-          `consume() failed to save cursor for session '${this.id}': ${errorMessage(error)}`
+          `consume() failed to save cursor for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
         );
       }
     }

@@ -4,10 +4,6 @@ import {
   SessionTokenPrincipalSchema,
 } from "./identity";
 
-export type {
-  SessionCreatorPrincipal,
-  SessionTokenPrincipal,
-} from "./identity";
 export { SessionCreatorPrincipalSchema, SessionTokenPrincipalSchema };
 
 const ArbitraryObjectSchema = z.record(z.unknown());
@@ -171,13 +167,11 @@ export type TailEventBatch = TailEvent[];
 /**
  * High-level `session.append()` input.
  *
- * The session's identity provides the `actor` automatically. You must provide
- * producer identity (`producerId`, `producerSeq`) and either `text` or `payload`.
+ * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
+ * Just provide `text` or `payload`.
  */
 export const SessionAppendInputSchema = z
   .object({
-    producerId: z.string().trim().min(1),
-    producerSeq: z.number().int().positive(),
     text: z.string().optional(),
     payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),

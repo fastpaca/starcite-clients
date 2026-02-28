@@ -85,3 +85,57 @@ export class StarciteTailError extends StarciteConnectionError {
     this.closeReason = options.closeReason;
   }
 }
+
+/**
+ * Thrown when the tail WebSocket is closed with code 4001 (token expired).
+ *
+ * Callers should re-issue a session token and reconnect from the last cursor.
+ */
+export class StarciteTokenExpiredError extends StarciteTailError {
+  constructor(
+    message: string,
+    options: {
+      sessionId: string;
+      attempts?: number;
+      closeCode?: number;
+      closeReason?: string;
+    }
+  ) {
+    super(message, { ...options, stage: "stream" });
+    this.name = "StarciteTokenExpiredError";
+  }
+}
+
+/**
+ * Thrown when the tail consumer falls behind and exceeds the buffered batch limit.
+ */
+export class StarciteBackpressureError extends StarciteTailError {
+  constructor(
+    message: string,
+    options: {
+      sessionId: string;
+      attempts?: number;
+    }
+  ) {
+    super(message, { ...options, stage: "consumer_backpressure" });
+    this.name = "StarciteBackpressureError";
+  }
+}
+
+/**
+ * Thrown when tail reconnect attempts exceed the configured limit.
+ */
+export class StarciteRetryLimitError extends StarciteTailError {
+  constructor(
+    message: string,
+    options: {
+      sessionId: string;
+      attempts: number;
+      closeCode?: number;
+      closeReason?: string;
+    }
+  ) {
+    super(message, { ...options, stage: "retry_limit" });
+    this.name = "StarciteRetryLimitError";
+  }
+}

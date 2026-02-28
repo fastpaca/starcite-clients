@@ -1,10 +1,13 @@
-import { StarciteTailError } from "../errors";
+import {
+  StarciteBackpressureError,
+  StarciteRetryLimitError,
+  StarciteTailError,
+  StarciteTokenExpiredError,
+} from "../errors";
 import { agentFromActor } from "../identity";
-import { errorMessage } from "../internal/primitives";
 import type {
   SessionTailOptions,
   StarciteWebSocket,
-  StarciteWebSocketAuthTransport,
   StarciteWebSocketCloseEvent,
   StarciteWebSocketConnectOptions,
   StarciteWebSocketMessageEvent,
@@ -13,71 +16,12 @@ import type {
 } from "../types";
 import { parseTailFrame } from "./frame";
 
-/**
- * Idle window used for replay-only tails (`follow=false`) before auto-close.
- */
-const CATCH_UP_IDLE_MS = 1000;
-const NORMAL_WEBSOCKET_CLOSE_CODE = 1000;
-const DEFAULT_RECONNECT_MODE: TailReconnectMode = "exponential";
-const DEFAULT_RECONNECT_INITIAL_DELAY_MS = 500;
-const DEFAULT_RECONNECT_MAX_DELAY_MS = 15_000;
-const DEFAULT_RECONNECT_MULTIPLIER = 2;
-const DEFAULT_RECONNECT_JITTER_RATIO = 0.2;
-const DEFAULT_RECONNECT_MAX_ATTEMPTS = Number.POSITIVE_INFINITY;
-const DEFAULT_MAX_BUFFERED_BATCHES = 1024;
-
-type TailReconnectMode = "fixed" | "exponential";
-type TailReconnectTrigger = "connect_failed" | "dropped";
-type TailErrorStage =
-  | "connect"
-  | "stream"
-  | "retry_limit"
-  | "consumer_backpressure";
-
-/**
- * Construction input for a durable tail stream runner.
- */
-interface TailStreamInput {
-  sessionId: string;
-  options: SessionTailOptions;
-  websocketBaseUrl: string;
-  websocketFactory: (
-    url: string,
-    options?: StarciteWebSocketConnectOptions
-  ) => StarciteWebSocket;
-  authorization?: string | null;
-  websocketAuthTransport: Exclude<StarciteWebSocketAuthTransport, "auto">;
-}
-
-interface TailReconnectPolicy {
-  mode: TailReconnectMode;
-  initialDelayMs: number;
-  maxDelayMs: number;
-  multiplier: number;
-  jitterRatio: number;
-  maxAttempts: number;
-}
-
-/**
- * Resolved runtime options with defaults applied.
- */
-interface TailRuntimeOptions {
-  cursor: number;
-  batchSize: number | undefined;
-  agent: string | undefined;
-  follow: boolean;
-  reconnect: boolean;
-  reconnectPolicy: TailReconnectPolicy;
-  catchUpIdleMs: number;
-  maxBufferedBatches: number;
-  signal: AbortSignal | undefined;
-  onLifecycleEvent: ((event: TailLifecycleEvent) => void) | undefined;
-}
+const NORMAL_CLOSE_CODE = 1000;
 
 /**
  * Terminal state returned by one websocket connection attempt.
  */
-type TailConnectionEnd =
+type ConnectionEnd =
   | { reason: "aborted" }
   | { reason: "caught_up" }
   | { reason: "graceful" }
@@ -88,46 +32,95 @@ type TailConnectionEnd =
       emittedBatches: number;
     };
 
+interface ResolvedReconnectPolicy {
+  mode: "fixed" | "exponential";
+  initialDelayMs: number;
+  maxDelayMs: number;
+  multiplier: number;
+  jitterRatio: number;
+  maxAttempts: number;
+}
+
 /**
  * Stateful tail runner that reconnects and resumes from the latest cursor.
  */
-class TailStream {
+export class TailStream {
   private readonly sessionId: string;
+  private readonly token: string | undefined;
   private readonly websocketBaseUrl: string;
   private readonly websocketFactory: (
     url: string,
     options?: StarciteWebSocketConnectOptions
   ) => StarciteWebSocket;
-  private readonly websocketConnectOptions:
-    | StarciteWebSocketConnectOptions
+  private readonly websocketAuthTransport: "header" | "access_token";
+
+  private readonly batchSize: number | undefined;
+  private readonly agent: string | undefined;
+  private readonly follow: boolean;
+  private readonly shouldReconnect: boolean;
+  private readonly reconnectPolicy: ResolvedReconnectPolicy;
+  private readonly catchUpIdleMs: number;
+  private readonly maxBufferedBatches: number;
+  private readonly signal: AbortSignal | undefined;
+  private readonly onLifecycleEvent:
+    | ((event: TailLifecycleEvent) => void)
     | undefined;
-  private readonly websocketAuthTransport: Exclude<
-    StarciteWebSocketAuthTransport,
-    "auto"
-  >;
-  private readonly accessToken: string | undefined;
-  private readonly options: TailRuntimeOptions;
+
   private cursor: number;
   private reconnectAttempts = 0;
 
-  constructor(input: TailStreamInput) {
+  constructor(input: {
+    sessionId: string;
+    token: string | undefined;
+    websocketBaseUrl: string;
+    websocketFactory: (
+      url: string,
+      options?: StarciteWebSocketConnectOptions
+    ) => StarciteWebSocket;
+    websocketAuthTransport: "header" | "access_token";
+    options: SessionTailOptions;
+  }) {
+    const opts = input.options;
+    const follow = opts.follow ?? true;
+    const policy = opts.reconnectPolicy;
+    const mode: "fixed" | "exponential" =
+      policy?.mode === "fixed" ? "fixed" : "exponential";
+    const initialDelayMs = policy?.initialDelayMs ?? 500;
+
     this.sessionId = input.sessionId;
+    this.token = input.token;
     this.websocketBaseUrl = input.websocketBaseUrl;
     this.websocketFactory = input.websocketFactory;
     this.websocketAuthTransport = input.websocketAuthTransport;
-    this.accessToken = input.authorization?.replace(/^Bearer /i, "");
-    this.websocketConnectOptions = this.toWebSocketConnectOptions(
-      input.authorization,
-      input.websocketAuthTransport
-    );
-    this.options = this.withDefaults(input.options);
-    this.cursor = this.options.cursor;
+
+    this.cursor = opts.cursor ?? 0;
+    this.batchSize = opts.batchSize;
+    this.agent = opts.agent?.trim();
+    this.follow = follow;
+    this.shouldReconnect = follow ? (opts.reconnect ?? true) : false;
+    this.catchUpIdleMs = opts.catchUpIdleMs ?? 1000;
+    this.maxBufferedBatches = opts.maxBufferedBatches ?? 1024;
+    this.signal = opts.signal;
+    this.onLifecycleEvent = opts.onLifecycleEvent;
+
+    this.reconnectPolicy = {
+      mode,
+      initialDelayMs,
+      maxDelayMs:
+        policy?.maxDelayMs ??
+        (mode === "fixed"
+          ? initialDelayMs
+          : Math.max(initialDelayMs, 15_000)),
+      multiplier: policy?.multiplier ?? 2,
+      jitterRatio: policy?.jitterRatio ?? 0.2,
+      maxAttempts: policy?.maxAttempts ?? Number.POSITIVE_INFINITY,
+    };
   }
 
   async *run(): AsyncGenerator<TailEvent[]> {
     while (true) {
-      if (this.options.signal?.aborted) {
-        this.emitLifecycleEvent({
+      if (this.signal?.aborted) {
+        this.onLifecycleEvent?.({
           type: "stream_ended",
           sessionId: this.sessionId,
           reason: "aborted",
@@ -135,7 +128,7 @@ class TailStream {
         return;
       }
 
-      this.emitLifecycleEvent({
+      this.onLifecycleEvent?.({
         type: "connect_attempt",
         sessionId: this.sessionId,
         attempt: this.reconnectAttempts + 1,
@@ -146,11 +139,13 @@ class TailStream {
 
       try {
         socket = this.websocketFactory(
-          this.buildTailUrl(this.cursor, this.options.batchSize),
-          this.websocketConnectOptions
+          this.buildTailUrl(),
+          this.buildConnectOptions()
         );
       } catch (error) {
-        const reconnect = this.handleConnectFailure(errorMessage(error));
+        const reconnect = this.handleConnectFailure(
+          error instanceof Error ? error.message : String(error)
+        );
         this.reconnectAttempts = reconnect.attempt;
         await this.waitForDelay(reconnect.delayMs);
         continue;
@@ -163,7 +158,7 @@ class TailStream {
         end.reason === "caught_up" ||
         end.reason === "graceful"
       ) {
-        this.emitLifecycleEvent({
+        this.onLifecycleEvent?.({
           type: "stream_ended",
           sessionId: this.sessionId,
           reason: end.reason,
@@ -177,77 +172,15 @@ class TailStream {
     }
   }
 
-  /**
-   * Applies runtime defaults and normalizes reconnect policy settings.
-   */
-  private withDefaults(options: SessionTailOptions): TailRuntimeOptions {
-    const follow = options.follow ?? true;
-    const reconnectPolicy = options.reconnectPolicy;
-    const mode: TailReconnectMode =
-      reconnectPolicy?.mode === "fixed" ? "fixed" : DEFAULT_RECONNECT_MODE;
-    const initialDelayMs =
-      reconnectPolicy?.initialDelayMs ?? DEFAULT_RECONNECT_INITIAL_DELAY_MS;
+  private buildTailUrl(): string {
+    const query = new URLSearchParams({ cursor: `${this.cursor}` });
 
-    return {
-      cursor: options.cursor ?? 0,
-      batchSize: options.batchSize,
-      agent: options.agent?.trim(),
-      follow,
-      reconnect: follow ? (options.reconnect ?? true) : false,
-      reconnectPolicy: {
-        mode,
-        initialDelayMs,
-        maxDelayMs:
-          reconnectPolicy?.maxDelayMs ??
-          (mode === "fixed"
-            ? initialDelayMs
-            : Math.max(initialDelayMs, DEFAULT_RECONNECT_MAX_DELAY_MS)),
-        multiplier: reconnectPolicy?.multiplier ?? DEFAULT_RECONNECT_MULTIPLIER,
-        jitterRatio:
-          reconnectPolicy?.jitterRatio ?? DEFAULT_RECONNECT_JITTER_RATIO,
-        maxAttempts:
-          reconnectPolicy?.maxAttempts ?? DEFAULT_RECONNECT_MAX_ATTEMPTS,
-      },
-      catchUpIdleMs: options.catchUpIdleMs ?? CATCH_UP_IDLE_MS,
-      maxBufferedBatches:
-        options.maxBufferedBatches ?? DEFAULT_MAX_BUFFERED_BATCHES,
-      signal: options.signal,
-      onLifecycleEvent: options.onLifecycleEvent,
-    };
-  }
-
-  /**
-   * Builds websocket upgrade headers for header-based auth transport.
-   */
-  private toWebSocketConnectOptions(
-    authorization: string | null | undefined,
-    transport: Exclude<StarciteWebSocketAuthTransport, "auto">
-  ): StarciteWebSocketConnectOptions | undefined {
-    if (!authorization || transport !== "header") {
-      return undefined;
+    if (this.batchSize !== undefined) {
+      query.set("batch_size", `${this.batchSize}`);
     }
 
-    return {
-      headers: {
-        authorization,
-      },
-    };
-  }
-
-  /**
-   * Builds the session tail endpoint with cursor, batching and auth query state.
-   */
-  private buildTailUrl(cursor: number, batchSize: number | undefined): string {
-    const query = new URLSearchParams({
-      cursor: `${cursor}`,
-    });
-
-    if (batchSize !== undefined) {
-      query.set("batch_size", `${batchSize}`);
-    }
-
-    if (this.websocketAuthTransport === "access_token" && this.accessToken) {
-      query.set("access_token", this.accessToken);
+    if (this.websocketAuthTransport === "access_token" && this.token) {
+      query.set("access_token", this.token);
     }
 
     return `${this.websocketBaseUrl}/sessions/${encodeURIComponent(
@@ -255,19 +188,14 @@ class TailStream {
     )}/tail?${query.toString()}`;
   }
 
-  /**
-   * Emits lifecycle callbacks and shields the stream from user callback errors.
-   */
-  private emitLifecycleEvent(event: TailLifecycleEvent): void {
-    if (!this.options.onLifecycleEvent) {
-      return;
+  private buildConnectOptions():
+    | StarciteWebSocketConnectOptions
+    | undefined {
+    if (this.websocketAuthTransport !== "header" || !this.token) {
+      return undefined;
     }
 
-    try {
-      this.options.onLifecycleEvent(event);
-    } catch {
-      return;
-    }
+    return { headers: { authorization: `Bearer ${this.token}` } };
   }
 
   private describeClose(
@@ -278,41 +206,23 @@ class TailStream {
     return reason ? `${codeText}, reason '${reason}'` : codeText;
   }
 
-  private createTailError(options: {
-    stage: TailErrorStage;
-    attempts: number;
-    message: string;
-    closeCode?: number;
-    closeReason?: string;
-  }): StarciteTailError {
-    return new StarciteTailError(options.message, {
-      sessionId: this.sessionId,
-      stage: options.stage,
-      attempts: options.attempts,
-      closeCode: options.closeCode,
-      closeReason: options.closeReason,
-    });
-  }
-
   /**
    * Computes reconnect delay with optional exponential backoff + jitter.
    */
   private reconnectDelayForAttempt(attempt: number): number {
-    const policy = this.options.reconnectPolicy;
+    const { mode, initialDelayMs, maxDelayMs, multiplier, jitterRatio } =
+      this.reconnectPolicy;
     const exponent = Math.max(0, attempt - 1);
     const baseDelayMs =
-      policy.mode === "fixed"
-        ? policy.initialDelayMs
-        : Math.min(
-            policy.maxDelayMs,
-            policy.initialDelayMs * policy.multiplier ** exponent
-          );
+      mode === "fixed"
+        ? initialDelayMs
+        : Math.min(maxDelayMs, initialDelayMs * multiplier ** exponent);
 
-    if (policy.jitterRatio === 0) {
+    if (jitterRatio === 0) {
       return baseDelayMs;
     }
 
-    const spread = baseDelayMs * policy.jitterRatio;
+    const spread = baseDelayMs * jitterRatio;
     const min = Math.max(0, baseDelayMs - spread);
     const max = baseDelayMs + spread;
     return min + Math.random() * (max - min);
@@ -321,40 +231,32 @@ class TailStream {
   /**
    * Returns the next reconnect attempt or throws retry-limit failure.
    */
-  private nextReconnectAttemptOrThrow(options: {
-    trigger: TailReconnectTrigger;
+  private nextReconnectOrThrow(options: {
+    trigger: "connect_failed" | "dropped";
     rootCause?: string;
     closeCode?: number;
     closeReason?: string;
     reconnectAttempts?: number;
   }): { attempt: number; delayMs: number } {
-    const reconnectAttempts =
-      options.reconnectAttempts ?? this.reconnectAttempts;
-    const attempt = reconnectAttempts + 1;
+    const attempts = options.reconnectAttempts ?? this.reconnectAttempts;
+    const attempt = attempts + 1;
 
-    if (attempt > this.options.reconnectPolicy.maxAttempts) {
-      if (options.trigger === "connect_failed") {
-        throw this.createTailError({
-          stage: "retry_limit",
-          attempts: attempt,
-          message: `Tail connection failed for session '${this.sessionId}' after ${this.options.reconnectPolicy.maxAttempts} reconnect attempt(s): ${options.rootCause ?? "Unknown error"}`,
-        });
-      }
+    if (attempt > this.reconnectPolicy.maxAttempts) {
+      const message =
+        options.trigger === "connect_failed"
+          ? `Tail connection failed for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s): ${options.rootCause ?? "Unknown error"}`
+          : `Tail connection dropped for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s) (${this.describeClose(options.closeCode, options.closeReason)})`;
 
-      throw this.createTailError({
-        stage: "retry_limit",
+      throw new StarciteRetryLimitError(message, {
+        sessionId: this.sessionId,
         attempts: attempt,
         closeCode: options.closeCode,
         closeReason: options.closeReason,
-        message: `Tail connection dropped for session '${this.sessionId}' after ${this.options.reconnectPolicy.maxAttempts} reconnect attempt(s) (${this.describeClose(
-          options.closeCode,
-          options.closeReason
-        )})`,
       });
     }
 
     const delayMs = this.reconnectDelayForAttempt(attempt);
-    this.emitLifecycleEvent({
+    this.onLifecycleEvent?.({
       type: "reconnect_scheduled",
       sessionId: this.sessionId,
       attempt,
@@ -367,47 +269,46 @@ class TailStream {
     return { attempt, delayMs };
   }
 
-  /**
-   * Handles failures before a websocket connection is established.
-   */
   private handleConnectFailure(rootCause: string): {
     attempt: number;
     delayMs: number;
   } {
-    if (!this.options.reconnect || this.options.signal?.aborted) {
-      throw this.createTailError({
-        stage: "connect",
-        attempts: this.reconnectAttempts,
-        message: `Tail connection failed for session '${this.sessionId}': ${rootCause}`,
-      });
+    if (!this.shouldReconnect || this.signal?.aborted) {
+      throw new StarciteTailError(
+        `Tail connection failed for session '${this.sessionId}': ${rootCause}`,
+        {
+          sessionId: this.sessionId,
+          stage: "connect",
+          attempts: this.reconnectAttempts,
+        }
+      );
     }
 
-    return this.nextReconnectAttemptOrThrow({
+    return this.nextReconnectOrThrow({
       trigger: "connect_failed",
       rootCause,
     });
   }
 
-  /**
-   * Handles abnormal stream closure and decides whether to reconnect.
-   */
   private handleDroppedConnection(
-    end: Extract<TailConnectionEnd, { reason: "dropped" }>
+    end: Extract<ConnectionEnd, { reason: "dropped" }>
   ): {
     attempt: number;
     delayMs: number;
   } {
     if (end.closeCode === 4001 || end.closeReason === "token_expired") {
-      throw this.createTailError({
-        stage: "stream",
-        attempts: this.reconnectAttempts,
-        closeCode: end.closeCode,
-        closeReason: end.closeReason,
-        message: `Tail token expired for session '${this.sessionId}'. Re-issue a session token and reconnect from the last processed cursor.`,
-      });
+      throw new StarciteTokenExpiredError(
+        `Tail token expired for session '${this.sessionId}'. Re-issue a session token and reconnect from the last processed cursor.`,
+        {
+          sessionId: this.sessionId,
+          attempts: this.reconnectAttempts,
+          closeCode: end.closeCode,
+          closeReason: end.closeReason,
+        }
+      );
     }
 
-    this.emitLifecycleEvent({
+    this.onLifecycleEvent?.({
       type: "stream_dropped",
       sessionId: this.sessionId,
       attempt: this.reconnectAttempts + 1,
@@ -415,22 +316,22 @@ class TailStream {
       closeReason: end.closeReason,
     });
 
-    if (!this.options.reconnect) {
-      throw this.createTailError({
-        stage: "stream",
-        attempts: this.reconnectAttempts,
-        closeCode: end.closeCode,
-        closeReason: end.closeReason,
-        message: `Tail connection dropped for session '${this.sessionId}' (${this.describeClose(
-          end.closeCode,
-          end.closeReason
-        )})`,
-      });
+    if (!this.shouldReconnect) {
+      throw new StarciteTailError(
+        `Tail connection dropped for session '${this.sessionId}' (${this.describeClose(end.closeCode, end.closeReason)})`,
+        {
+          sessionId: this.sessionId,
+          stage: "stream",
+          attempts: this.reconnectAttempts,
+          closeCode: end.closeCode,
+          closeReason: end.closeReason,
+        }
+      );
     }
 
     const reconnectAttempts =
       end.emittedBatches > 0 ? 0 : this.reconnectAttempts;
-    return this.nextReconnectAttemptOrThrow({
+    return this.nextReconnectOrThrow({
       trigger: "dropped",
       closeCode: end.closeCode,
       closeReason: end.closeReason,
@@ -442,38 +343,26 @@ class TailStream {
    * Waits for reconnect delay while allowing abort to cut waits short.
    */
   private waitForDelay(ms: number): Promise<void> {
-    if (ms <= 0 || this.options.signal?.aborted) {
+    if (ms <= 0 || this.signal?.aborted) {
       return Promise.resolve();
     }
 
     return new Promise<void>((resolve) => {
-      const ac = new AbortController();
+      const cleanup = new AbortController();
       const timer = setTimeout(() => {
-        ac.abort();
+        cleanup.abort();
         resolve();
       }, ms);
-      this.options.signal?.addEventListener(
+      this.signal?.addEventListener(
         "abort",
         () => {
           clearTimeout(timer);
-          ac.abort();
+          cleanup.abort();
           resolve();
         },
-        { signal: ac.signal }
+        { signal: cleanup.signal }
       );
     });
-  }
-
-  private closeSocket(
-    socket: StarciteWebSocket,
-    code: number,
-    reason: string
-  ): void {
-    try {
-      socket.close(code, reason);
-    } catch {
-      return;
-    }
   }
 
   /**
@@ -481,7 +370,7 @@ class TailStream {
    */
   private async *streamSingleConnection(
     socket: StarciteWebSocket
-  ): AsyncGenerator<TailEvent[], TailConnectionEnd> {
+  ): AsyncGenerator<TailEvent[], ConnectionEnd> {
     const bufferedBatches: TailEvent[][] = [];
     let pendingResolve:
       | ((result: IteratorResult<TailEvent[]>) => void)
@@ -492,29 +381,25 @@ class TailStream {
     let sawTransportError = false;
     let closeCode: number | undefined;
     let closeReason: string | undefined;
-    let abortRequested = false;
     let emittedBatches = 0;
     let catchUpTimer: ReturnType<typeof setTimeout> | undefined;
 
     const clearCatchUpTimer = (): void => {
-      if (!catchUpTimer) {
-        return;
+      if (catchUpTimer) {
+        clearTimeout(catchUpTimer);
+        catchUpTimer = undefined;
       }
-
-      clearTimeout(catchUpTimer);
-      catchUpTimer = undefined;
     };
 
     const scheduleCatchUpClose = (): void => {
-      if (this.options.follow) {
+      if (this.follow) {
         return;
       }
 
-      // In replay-only mode, close once no new frames arrive for a short idle window.
       clearCatchUpTimer();
       catchUpTimer = setTimeout(() => {
         closeBatches();
-      }, this.options.catchUpIdleMs);
+      }, this.catchUpIdleMs);
     };
 
     const emitBatch = (batch: TailEvent[]): void => {
@@ -530,13 +415,15 @@ class TailStream {
         return;
       }
 
-      if (bufferedBatches.length >= this.options.maxBufferedBatches) {
+      if (bufferedBatches.length >= this.maxBufferedBatches) {
         failBatches(
-          this.createTailError({
-            stage: "consumer_backpressure",
-            attempts: this.reconnectAttempts,
-            message: `Tail consumer for session '${this.sessionId}' fell behind after buffering ${this.options.maxBufferedBatches} batch(es)`,
-          })
+          new StarciteBackpressureError(
+            `Tail consumer for session '${this.sessionId}' fell behind after buffering ${this.maxBufferedBatches} batch(es)`,
+            {
+              sessionId: this.sessionId,
+              attempts: this.reconnectAttempts,
+            }
+          )
         );
         return;
       }
@@ -551,14 +438,12 @@ class TailStream {
 
       streamClosed = true;
 
-      if (!pendingResolve) {
-        return;
+      if (pendingResolve) {
+        const resolve = pendingResolve;
+        pendingResolve = undefined;
+        pendingReject = undefined;
+        resolve({ done: true, value: undefined });
       }
-
-      const resolve = pendingResolve;
-      pendingResolve = undefined;
-      pendingReject = undefined;
-      resolve({ done: true, value: undefined });
     };
 
     const failBatches = (error: unknown): void => {
@@ -568,14 +453,12 @@ class TailStream {
 
       streamError = error;
 
-      if (!pendingReject) {
-        return;
+      if (pendingReject) {
+        const reject = pendingReject;
+        pendingResolve = undefined;
+        pendingReject = undefined;
+        reject(error);
       }
-
-      const reject = pendingReject;
-      pendingResolve = undefined;
-      pendingReject = undefined;
-      reject(error);
     };
 
     const readNextBatch = async (): Promise<IteratorResult<TailEvent[]>> => {
@@ -609,8 +492,8 @@ class TailStream {
           this.cursor = Math.max(this.cursor, parsedEvent.seq);
 
           if (
-            this.options.agent &&
-            agentFromActor(parsedEvent.actor) !== this.options.agent
+            this.agent &&
+            agentFromActor(parsedEvent.actor) !== this.agent
           ) {
             continue;
           }
@@ -642,10 +525,9 @@ class TailStream {
     };
 
     const onAbort = (): void => {
-      abortRequested = true;
       clearCatchUpTimer();
       closeBatches();
-      this.closeSocket(socket, NORMAL_WEBSOCKET_CLOSE_CODE, "aborted");
+      socket.close(NORMAL_CLOSE_CODE, "aborted");
     };
 
     const onOpen = (): void => {
@@ -657,11 +539,11 @@ class TailStream {
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
 
-    if (this.options.signal) {
-      if (this.options.signal.aborted) {
+    if (this.signal) {
+      if (this.signal.aborted) {
         onAbort();
       } else {
-        this.options.signal.addEventListener("abort", onAbort, { once: true });
+        this.signal.addEventListener("abort", onAbort, { once: true });
       }
     }
 
@@ -683,23 +565,23 @@ class TailStream {
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
 
-      if (this.options.signal) {
-        this.options.signal.removeEventListener("abort", onAbort);
+      if (this.signal) {
+        this.signal.removeEventListener("abort", onAbort);
       }
 
-      this.closeSocket(socket, NORMAL_WEBSOCKET_CLOSE_CODE, "finished");
+      socket.close(NORMAL_CLOSE_CODE, "finished");
     }
 
-    if (abortRequested || this.options.signal?.aborted) {
+    if (this.signal?.aborted) {
       return { reason: "aborted" };
     }
 
-    if (!this.options.follow) {
+    if (!this.follow) {
       return { reason: "caught_up" };
     }
 
     const gracefullyClosed =
-      !sawTransportError && closeCode === NORMAL_WEBSOCKET_CLOSE_CODE;
+      !sawTransportError && closeCode === NORMAL_CLOSE_CODE;
 
     if (gracefullyClosed) {
       return { reason: "graceful" };
@@ -712,13 +594,4 @@ class TailStream {
       emittedBatches,
     };
   }
-}
-
-/**
- * Opens a durable websocket tail stream and yields raw frame-sized batches.
- */
-export async function* streamTailRawEventBatches(
-  input: TailStreamInput
-): AsyncGenerator<TailEvent[]> {
-  yield* new TailStream(input).run();
 }

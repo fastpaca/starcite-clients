@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
 import {
+  StarciteBackpressureError,
   StarciteConnectionError,
   StarciteError,
+  StarciteRetryLimitError,
   StarciteTailError,
+  StarciteTokenExpiredError,
 } from "../src/errors";
 import type {
   SessionCursorStore,
@@ -192,8 +195,6 @@ describe("Starcite", () => {
     expect(session.id).toBe("ses_1");
 
     await session.append({
-      producerId: "producer:researcher",
-      producerSeq: 1,
       text: "Found 8 relevant cases...",
     });
 
@@ -223,16 +224,17 @@ describe("Starcite", () => {
 
     const requestInit = thirdCall?.[1] as RequestInit;
     expect(requestInit.method).toBe("POST");
-    expect(requestInit.body).toBe(
-      JSON.stringify({
+    const body = JSON.parse(requestInit.body as string);
+    expect(body).toEqual(
+      expect.objectContaining({
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
         actor: "agent:researcher",
-        producer_id: "producer:researcher",
-        producer_seq: 1,
         source: "agent",
       })
     );
+    expect(body.producer_id).toEqual(expect.any(String));
+    expect(body.producer_seq).toBe(1);
   });
 
   it("validates baseUrl at client construction", () => {
@@ -787,7 +789,7 @@ describe("Starcite", () => {
     sockets[0]?.emit("close", { code: 4001, reason: "token_expired" });
 
     const error = await nextPromise.catch((err) => err);
-    expect(error).toBeInstanceOf(StarciteConnectionError);
+    expect(error).toBeInstanceOf(StarciteTokenExpiredError);
     expect((error as Error).message).toContain("token expired");
   });
 
@@ -1079,10 +1081,10 @@ describe("Starcite", () => {
     await waitForSocketCount(sockets, 2);
     sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteRetryLimitError);
 
     await firstValuePromise.catch((error) => {
-      const tailError = error as StarciteTailError;
+      const tailError = error as StarciteRetryLimitError;
       expect(tailError.stage).toBe("retry_limit");
       expect(tailError.sessionId).toBe("ses_tail");
       expect(tailError.closeCode).toBe(1006);
@@ -1108,9 +1110,9 @@ describe("Starcite", () => {
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteRetryLimitError);
     await firstValuePromise.catch((error) => {
-      const tailError = error as StarciteTailError;
+      const tailError = error as StarciteRetryLimitError;
       expect(tailError.stage).toBe("retry_limit");
       expect(tailError.sessionId).toBe("ses_tail");
       expect(tailError.attempts).toBe(1);
@@ -1159,7 +1161,7 @@ describe("Starcite", () => {
     });
   });
 
-  it("ignores lifecycle callback exceptions", async () => {
+  it("propagates lifecycle callback exceptions", async () => {
     const { starcite, sockets } = buildTailClient(fetchMock);
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
@@ -1174,12 +1176,7 @@ describe("Starcite", () => {
       [Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
-    sockets[0]?.emit("close", { code: 1000, reason: "done" });
-
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(nextPromise).rejects.toThrow("observer failure");
   });
 
   it("lists sessions with pagination and metadata filters", async () => {
@@ -1294,9 +1291,9 @@ describe("Starcite", () => {
     });
 
     const overflowPromise = iterator.next();
-    await expect(overflowPromise).rejects.toBeInstanceOf(StarciteTailError);
+    await expect(overflowPromise).rejects.toBeInstanceOf(StarciteBackpressureError);
     await overflowPromise.catch((error) => {
-      const tailError = error as StarciteTailError;
+      const tailError = error as StarciteBackpressureError;
       expect(tailError.stage).toBe("consumer_backpressure");
       expect(tailError.sessionId).toBe("ses_tail");
     });

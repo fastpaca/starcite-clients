@@ -9,14 +9,16 @@ export {
 export type { StarciteTailErrorStage } from "./errors";
 export {
   StarciteApiError,
+  StarciteBackpressureError,
   StarciteConnectionError,
   StarciteError,
+  StarciteRetryLimitError,
   StarciteTailError,
+  StarciteTokenExpiredError,
 } from "./errors";
 export { StarciteIdentity } from "./identity";
 export type { PrincipalType } from "./identity";
 export { StarciteSession } from "./session";
-export { toApiBaseUrl } from "./transport";
 export type {
   AppendEventRequest,
   AppendEventResponse,
@@ -30,7 +32,6 @@ export type {
   SessionRecord,
   SessionTailOptions,
   SessionTokenScope,
-  StarciteErrorPayload,
   StarciteOptions,
   StarciteWebSocket,
   StarciteWebSocketAuthTransport,
