@@ -38,6 +38,7 @@
     "clean": "rm -rf dist",
     "build": "tsup",
     "test": "vitest run --config vitest.config.ts",
+    "test:live": "vitest run --config vitest.config.ts test/live.api.integration.test.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts --browser.name=chromium",
     "test:browser:chromium": "vitest run --config vitest.browser.config.ts --browser.name=chromium",
     "test:browser:firefox": "vitest run --config vitest.browser.config.ts --browser.name=firefox",

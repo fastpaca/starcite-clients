@@ -1,10 +1,8 @@
 import {
-  createStarciteClient,
-  type SessionEvent,
-  type SessionTokenScope,
+  Starcite,
   StarciteApiError,
-  type StarciteClient,
-  toApiBaseUrl,
+  StarciteIdentity,
+  type TailEvent,
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
 import { createConsola } from "consola";
@@ -47,7 +45,7 @@ export interface LoggerLike {
 }
 
 interface CliDependencies {
-  createClient?: (baseUrl: string, apiKey?: string) => StarciteClient;
+  createClient?: (baseUrl: string, apiKey?: string) => Starcite;
   logger?: LoggerLike;
   prompt?: PromptAdapter;
   runCommand?: CommandRunner;
@@ -69,7 +67,7 @@ const GlobalOptionsSchema = z.object({
 });
 const TRAILING_SLASHES_REGEX = /\/+$/;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
-const CLI_SESSION_TOKEN_PRINCIPAL_ID = "starcite-cli";
+const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
 
 type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
 
@@ -264,11 +262,14 @@ async function promptForApiKey(prompt: PromptAdapter): Promise<string> {
   return trimString(answer) ?? "";
 }
 
-function formatTailEvent(event: SessionEvent): string {
-  const actorLabel = event.agent ?? event.actor;
+function formatTailEvent(event: TailEvent): string {
+  const actorLabel = event.actor.startsWith("agent:")
+    ? event.actor.slice("agent:".length)
+    : event.actor;
+  const maybeText = event.payload?.text;
 
-  if (event.text) {
-    return `[${actorLabel}] ${event.text}`;
+  if (typeof maybeText === "string") {
+    return `[${actorLabel}] ${maybeText}`;
   }
 
   return `[${actorLabel}] ${JSON.stringify(event.payload)}`;
@@ -294,6 +295,21 @@ function parseJwtClaims(token: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function tokenTenantId(token: string | undefined): string | undefined {
+  if (!token) {
+    return undefined;
+  }
+
+  const claims = parseJwtClaims(token);
+  const tenantId = claims?.tenant_id;
+  if (typeof tenantId !== "string") {
+    return undefined;
+  }
+
+  const trimmed = tenantId.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function tokenScopes(token: string): Set<string> {
@@ -369,39 +385,57 @@ function resolveAppendMode(options: AppendCommandOptions): ResolvedAppendMode {
   );
 }
 
-async function resolveSessionClient(
-  createClient: (baseUrl: string, apiKey?: string) => StarciteClient,
-  baseUrl: string,
+function toApiBaseUrlForContext(baseUrl: string): string {
+  const parsed = new URL(baseUrl);
+  if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
+    throw new InvalidArgumentError("base URL must use http:// or https://");
+  }
+
+  const normalized = parsed.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+}
+
+async function resolveSession(
+  client: Starcite,
   apiKey: string | undefined,
-  sessionId: string,
-  scopes: SessionTokenScope[]
-): Promise<StarciteClient> {
+  sessionId: string
+) {
   if (!apiKey) {
-    return createClient(baseUrl);
+    throw new InvalidArgumentError(
+      "append/tail require --token or a saved API key"
+    );
   }
 
-  if (!shouldAutoIssueSessionToken(apiKey)) {
-    return createClient(baseUrl, apiKey);
+  if (shouldAutoIssueSessionToken(apiKey)) {
+    return await client.session({
+      identity: resolveCreateIdentity(apiKey),
+      id: sessionId,
+    });
   }
 
-  const issuerClient = createClient(baseUrl, apiKey);
-  const issued = await issuerClient.issueSessionToken({
-    session_id: sessionId,
-    principal: {
-      type: "agent",
-      id: CLI_SESSION_TOKEN_PRINCIPAL_ID,
-    },
-    scopes,
+  return client.session({ token: apiKey, id: sessionId });
+}
+
+function resolveCreateIdentity(
+  apiKey: string | undefined,
+  agentId = DEFAULT_CREATE_AGENT_ID
+): StarciteIdentity {
+  const tenantId = tokenTenantId(apiKey);
+  if (!tenantId) {
+    throw new InvalidArgumentError(
+      "session identity binding requires an API key with tenant_id claims"
+    );
+  }
+
+  return new StarciteIdentity({
+    tenantId,
+    id: agentId,
+    type: "agent",
   });
-
-  return createClient(baseUrl, issued.token);
 }
 
 class StarciteCliApp {
-  private readonly createClient: (
-    baseUrl: string,
-    apiKey?: string
-  ) => StarciteClient;
+  private readonly createClient: (baseUrl: string, apiKey?: string) => Starcite;
   private readonly logger: LoggerLike;
   private readonly prompt: PromptAdapter;
   private readonly runCommand: CommandRunner;
@@ -410,7 +444,7 @@ class StarciteCliApp {
     this.createClient =
       deps.createClient ??
       ((baseUrl: string, apiKey?: string) =>
-        createStarciteClient({
+        new Starcite({
           baseUrl,
           apiKey,
         }));
@@ -766,7 +800,8 @@ class StarciteCliApp {
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
 
-        const session = await client.create({
+        const session = await client.session({
+          identity: resolveCreateIdentity(resolved.apiKey),
           id: options.id,
           title: options.title,
           metadata,
@@ -813,14 +848,9 @@ class StarciteCliApp {
       ) {
         const { baseUrl, apiKey, json, store } =
           await resolveGlobalOptions(this);
-        const client = await resolveSessionClient(
-          createClient,
-          baseUrl,
-          apiKey,
-          sessionId,
-          ["session:append"]
-        );
-        const session = client.session(sessionId);
+        const client = apiKey
+          ? createClient(baseUrl, apiKey)
+          : createClient(baseUrl);
 
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
@@ -829,33 +859,40 @@ class StarciteCliApp {
           ? parseJsonObject(options.refs, "--refs")
           : undefined;
         const mode = resolveAppendMode(options);
+        const session =
+          mode.kind === "high-level" &&
+          apiKey !== undefined &&
+          shouldAutoIssueSessionToken(apiKey)
+            ? await client.session({
+                identity: resolveCreateIdentity(apiKey, mode.agent),
+                id: sessionId,
+              })
+            : await resolveSession(client, apiKey, sessionId);
 
-        const producerId = await store.resolveProducerId(options.producerId);
-        const normalizedBaseUrl = toApiBaseUrl(baseUrl);
-        const contextKey = buildSeqContextKey(
-          normalizedBaseUrl,
-          sessionId,
-          producerId
-        );
-
-        const response = await store.withStateLock(async () => {
-          const producerSeq =
-            options.producerSeq ?? (await store.readNextSeq(contextKey));
-          const appendResponse =
-            mode.kind === "high-level"
-              ? await session.append({
-                  agent: mode.agent,
-                  producerId,
-                  producerSeq,
-                  text: mode.text,
-                  type: options.type,
-                  source: options.source,
-                  metadata,
-                  refs,
-                  idempotencyKey: options.idempotencyKey,
-                  expectedSeq: options.expectedSeq,
-                })
-              : await session.appendRaw({
+        const response =
+          mode.kind === "high-level"
+            ? await session.append({
+                type: options.type,
+                text: mode.text,
+                source: options.source,
+                metadata,
+                refs,
+                idempotencyKey: options.idempotencyKey,
+                expectedSeq: options.expectedSeq,
+              })
+            : await store.withStateLock(async () => {
+                const producerId = await store.resolveProducerId(
+                  options.producerId
+                );
+                const normalizedBaseUrl = toApiBaseUrlForContext(baseUrl);
+                const contextKey = buildSeqContextKey(
+                  normalizedBaseUrl,
+                  sessionId,
+                  producerId
+                );
+                const producerSeq =
+                  options.producerSeq ?? (await store.readNextSeq(contextKey));
+                const appendResponse = await session.appendRaw({
                   type: options.type,
                   payload: parseJsonObject(mode.payload, "--payload"),
                   actor: mode.actor,
@@ -868,9 +905,9 @@ class StarciteCliApp {
                   expected_seq: options.expectedSeq,
                 });
 
-          await store.bumpNextSeq(contextKey, producerSeq);
-          return appendResponse;
-        });
+                await store.bumpNextSeq(contextKey, producerSeq);
+                return appendResponse;
+              });
 
         if (json) {
           logger.info(JSON.stringify(response, null, 2));
@@ -904,14 +941,10 @@ class StarciteCliApp {
         }
       ) {
         const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
-        const client = await resolveSessionClient(
-          createClient,
-          baseUrl,
-          apiKey,
-          sessionId,
-          ["session:read"]
-        );
-        const session = client.session(sessionId);
+        const client = apiKey
+          ? createClient(baseUrl, apiKey)
+          : createClient(baseUrl);
+        const session = await resolveSession(client, apiKey, sessionId);
 
         const abortController = new AbortController();
         const onSigint = () => {

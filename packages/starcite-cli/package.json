@@ -32,6 +32,7 @@
     "dev": "bun run src/index.ts",
     "compile": "bun run --cwd ../typescript-sdk build && bun build --compile src/index.ts --outfile dist/starcite",
     "test": "vitest run && bun run test:dist",
+    "test:live": "vitest run test/live.api.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "bun run clean && bun run build",
     "publish:dry": "bun publish --dry-run --access public",

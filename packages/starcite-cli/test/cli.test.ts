@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionEvent } from "@starcite/sdk";
+import { StarciteIdentity, type TailEvent } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import starciteCliPackage from "../package.json";
 import { buildProgram } from "../src/cli";
@@ -41,7 +41,7 @@ function makeLogger() {
   };
 }
 
-function streamEvents(events: SessionEvent[]): AsyncIterable<SessionEvent> {
+function streamEvents(events: TailEvent[]): AsyncIterable<TailEvent> {
   return {
     [Symbol.asyncIterator]() {
       const iterator = events[Symbol.iterator]();
@@ -60,11 +60,16 @@ function encodeJwt(payload: Record<string, unknown>): string {
 }
 
 describe("starcite CLI", () => {
-  const create = vi.fn();
+  const agent = vi.fn();
   const session = vi.fn();
   const listSessions = vi.fn();
-  const issueSessionToken = vi.fn();
   let configDir = "";
+  const sessionToken = encodeJwt({
+    session_id: "ses_123",
+    tenant_id: "acme",
+    principal_id: "agent:tester",
+    principal_type: "agent",
+  });
 
   const fakeSession: FakeSession = {
     id: "ses_123",
@@ -74,18 +79,28 @@ describe("starcite CLI", () => {
     tail: vi.fn(),
   };
 
+  function createFakeClient() {
+    return { agent, session, listSessions } as never;
+  }
+
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
-    create.mockReset();
+    agent.mockReset();
     session.mockReset();
     listSessions.mockReset();
-    issueSessionToken.mockReset();
     fakeSession.append.mockReset();
     fakeSession.appendRaw.mockReset();
     fakeSession.tail.mockReset();
 
-    create.mockResolvedValue(fakeSession);
-    session.mockReturnValue(fakeSession);
+    agent.mockImplementation(
+      (options: { id: string }) =>
+        new StarciteIdentity({
+          tenantId: "acme",
+          id: options.id,
+          type: "agent",
+        })
+    );
+    session.mockResolvedValue(fakeSession);
     listSessions.mockResolvedValue({
       sessions: [
         {
@@ -97,18 +112,14 @@ describe("starcite CLI", () => {
       ],
       next_cursor: null,
     });
-    issueSessionToken.mockResolvedValue({
-      token: "jwt_session_token",
-      expires_in: 3600,
-    });
     fakeSession.append.mockResolvedValue({
       seq: 1,
       last_seq: 1,
       deduped: false,
     });
     fakeSession.appendRaw.mockResolvedValue({
-      seq: 2,
-      last_seq: 2,
+      seq: 1,
+      last_seq: 1,
       deduped: false,
     });
     fakeSession.tail.mockReturnValue(
@@ -120,8 +131,6 @@ describe("starcite CLI", () => {
           actor: "agent:drafter",
           producer_id: "producer:drafter",
           producer_seq: 1,
-          agent: "drafter",
-          text: "Drafting clause 4.2...",
         },
       ])
     );
@@ -136,21 +145,30 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "create", "--title", "Draft contract"],
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "create",
+        "--title",
+        "Draft contract",
+      ],
       {
         from: "user",
       }
     );
 
-    expect(create).toHaveBeenCalledWith({
-      id: undefined,
-      title: "Draft contract",
-      metadata: undefined,
-    });
+    const createdSessionInput = session.mock.calls[0]?.[0] as
+      | { identity: StarciteIdentity; id?: string; title?: string }
+      | undefined;
+    expect(createdSessionInput?.identity.toActor()).toBe("agent:starcite-cli");
+    expect(createdSessionInput?.id).toBeUndefined();
+    expect(createdSessionInput?.title).toBe("Draft contract");
     expect(info).toEqual(["ses_123"]);
   });
 
@@ -233,21 +251,19 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
       [
         "--config-dir",
         configDir,
+        "--token",
+        sessionToken,
         "append",
         "ses_123",
         "--agent",
         "researcher",
-        "--producer-id",
-        "producer:researcher",
-        "--producer-seq",
-        "1",
         "--text",
         "Found 8 relevant cases...",
       ],
@@ -256,13 +272,13 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(session).toHaveBeenCalledWith("ses_123");
+    expect(session).toHaveBeenCalledWith({
+      token: sessionToken,
+      id: "ses_123",
+    });
     expect(fakeSession.append).toHaveBeenCalledWith({
-      agent: "researcher",
-      producerId: "producer:researcher",
-      producerSeq: 1,
-      text: "Found 8 relevant cases...",
       type: "content",
+      text: "Found 8 relevant cases...",
       source: undefined,
       metadata: undefined,
       refs: undefined,
@@ -280,30 +296,32 @@ describe("starcite CLI", () => {
     try {
       const program = buildProgram({
         logger,
-        createClient: () => ({ create, session, listSessions }) as never,
+        createClient: () => createFakeClient(),
       });
 
       await program.parseAsync(
         [
           "--config-dir",
           configDir,
+          "--token",
+          sessionToken,
           "append",
           "ses_123",
-          "--agent",
-          "researcher",
-          "--text",
-          "Found 8 relevant cases...",
+          "--actor",
+          "agent:researcher",
+          "--payload",
+          '{"text":"Found 8 relevant cases..."}',
         ],
         {
           from: "user",
         }
       );
 
-      const firstCall = fakeSession.append.mock.calls[0]?.[0] as
-        | { producerId?: string; producerSeq?: number }
+      const firstCall = fakeSession.appendRaw.mock.calls[0]?.[0] as
+        | { producer_id?: string; producer_seq?: number }
         | undefined;
-      expect(firstCall?.producerId).toMatch(GENERATED_PRODUCER_ID_PATTERN);
-      expect(firstCall?.producerSeq).toBe(1);
+      expect(firstCall?.producer_id).toMatch(GENERATED_PRODUCER_ID_PATTERN);
+      expect(firstCall?.producer_seq).toBe(1);
     } finally {
       if (previousProducerId === undefined) {
         Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
@@ -321,19 +339,21 @@ describe("starcite CLI", () => {
     try {
       const program = buildProgram({
         logger,
-        createClient: () => ({ create, session, listSessions }) as never,
+        createClient: () => createFakeClient(),
       });
 
       await program.parseAsync(
         [
           "--config-dir",
           configDir,
+          "--token",
+          sessionToken,
           "append",
           "ses_123",
-          "--agent",
-          "researcher",
-          "--text",
-          "one",
+          "--actor",
+          "agent:researcher",
+          "--payload",
+          '{"text":"one"}',
         ],
         { from: "user" }
       );
@@ -342,27 +362,29 @@ describe("starcite CLI", () => {
         [
           "--config-dir",
           configDir,
+          "--token",
+          sessionToken,
           "append",
           "ses_123",
-          "--agent",
-          "researcher",
-          "--text",
-          "two",
+          "--actor",
+          "agent:researcher",
+          "--payload",
+          '{"text":"two"}',
         ],
         { from: "user" }
       );
 
-      const firstCall = fakeSession.append.mock.calls[0]?.[0] as
-        | { producerId?: string; producerSeq?: number }
+      const firstCall = fakeSession.appendRaw.mock.calls[0]?.[0] as
+        | { producer_id?: string; producer_seq?: number }
         | undefined;
-      const secondCall = fakeSession.append.mock.calls[1]?.[0] as
-        | { producerId?: string; producerSeq?: number }
+      const secondCall = fakeSession.appendRaw.mock.calls[1]?.[0] as
+        | { producer_id?: string; producer_seq?: number }
         | undefined;
 
-      expect(firstCall?.producerId).toMatch(GENERATED_PRODUCER_ID_PATTERN);
-      expect(secondCall?.producerId).toBe(firstCall?.producerId);
-      expect(firstCall?.producerSeq).toBe(1);
-      expect(secondCall?.producerSeq).toBe(2);
+      expect(firstCall?.producer_id).toMatch(GENERATED_PRODUCER_ID_PATTERN);
+      expect(secondCall?.producer_id).toBe(firstCall?.producer_id);
+      expect(firstCall?.producer_seq).toBe(1);
+      expect(secondCall?.producer_seq).toBe(2);
     } finally {
       if (previousProducerId === undefined) {
         Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
@@ -376,7 +398,7 @@ describe("starcite CLI", () => {
     const { logger } = makeLogger();
     const createClient = vi.fn((baseUrl: string) => {
       expect(baseUrl).toBe("http://config.local:4100");
-      return { create, session } as never;
+      return createFakeClient();
     });
 
     writeFileSync(
@@ -390,20 +412,31 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "create", "--title", "Draft contract"],
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "create",
+        "--title",
+        "Draft contract",
+      ],
       {
         from: "user",
       }
     );
 
-    expect(createClient).toHaveBeenCalledWith("http://config.local:4100");
+    expect(createClient).toHaveBeenCalledWith(
+      "http://config.local:4100",
+      sessionToken
+    );
   });
 
   it("reads base URL from toml config file", async () => {
     const { logger } = makeLogger();
     const createClient = vi.fn((baseUrl: string) => {
       expect(baseUrl).toBe("http://config-toml.local:4200");
-      return { create, session } as never;
+      return createFakeClient();
     });
 
     writeFileSync(
@@ -417,13 +450,24 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "create", "--title", "Draft contract"],
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "create",
+        "--title",
+        "Draft contract",
+      ],
       {
         from: "user",
       }
     );
 
-    expect(createClient).toHaveBeenCalledWith("http://config-toml.local:4200");
+    expect(createClient).toHaveBeenCalledWith(
+      "http://config-toml.local:4200",
+      sessionToken
+    );
   });
 
   it("uses producer id from config file", async () => {
@@ -436,30 +480,32 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
       [
         "--config-dir",
         configDir,
+        "--token",
+        sessionToken,
         "append",
         "ses_123",
-        "--agent",
-        "researcher",
-        "--text",
-        "Found 8 relevant cases...",
+        "--actor",
+        "agent:researcher",
+        "--payload",
+        '{"text":"Found 8 relevant cases..."}',
       ],
       {
         from: "user",
       }
     );
 
-    const firstCall = fakeSession.append.mock.calls[0]?.[0] as
-      | { producerId?: string; producerSeq?: number }
+    const firstCall = fakeSession.appendRaw.mock.calls[0]?.[0] as
+      | { producer_id?: string; producer_seq?: number }
       | undefined;
-    expect(firstCall?.producerId).toBe("producer:configured");
-    expect(firstCall?.producerSeq).toBe(1);
+    expect(firstCall?.producer_id).toBe("producer:configured");
+    expect(firstCall?.producer_seq).toBe(1);
   });
 
   it("init writes endpoint config and saved API key", async () => {
@@ -467,7 +513,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
@@ -502,7 +548,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
@@ -528,10 +574,19 @@ describe("starcite CLI", () => {
 
   it("auth login stores API key used by API commands", async () => {
     const { logger } = makeLogger();
+    const authToken = encodeJwt({
+      tenant_id: "acme",
+      scopes: [
+        "session:create",
+        "session:read",
+        "session:append",
+        "auth:issue",
+      ],
+    });
     const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
       expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe("sk_auth_123");
-      return { create, session } as never;
+      expect(apiKey).toBe(authToken);
+      return createFakeClient();
     });
 
     const program = buildProgram({
@@ -540,7 +595,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", "sk_auth_123"],
+      ["--config-dir", configDir, "auth", "login", "--api-key", authToken],
       {
         from: "user",
       }
@@ -555,22 +610,20 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
-      "sk_auth_123"
+      authToken
     );
   });
 
-  it("append auto-mints a session token when API key has auth:issue scope", async () => {
+  it("append uses SDK identity session binding when API key has auth:issue", async () => {
     const { logger, info } = makeLogger();
     const serviceToken = encodeJwt({
+      tenant_id: "acme",
       scopes: ["session:create", "session:read", "auth:issue"],
     });
     const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
       expect(baseUrl).toBe("http://localhost:45187");
-      if (apiKey === serviceToken) {
-        return { issueSessionToken } as never;
-      }
-
-      return { session } as never;
+      expect(apiKey).toBe(serviceToken);
+      return createFakeClient();
     });
 
     const program = buildProgram({
@@ -593,10 +646,6 @@ describe("starcite CLI", () => {
         "ses_123",
         "--agent",
         "researcher",
-        "--producer-id",
-        "producer:researcher",
-        "--producer-seq",
-        "1",
         "--text",
         "Found 8 relevant cases...",
       ],
@@ -605,21 +654,14 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(issueSessionToken).toHaveBeenCalledWith({
-      session_id: "ses_123",
-      principal: {
-        type: "agent",
-        id: "starcite-cli",
-      },
-      scopes: ["session:append"],
-    });
+    const appendSessionInput = session.mock.calls[0]?.[0] as
+      | { identity: StarciteIdentity; id: string }
+      | undefined;
+    expect(appendSessionInput?.id).toBe("ses_123");
+    expect(appendSessionInput?.identity.toActor()).toBe("agent:researcher");
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       serviceToken
-    );
-    expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      "jwt_session_token"
     );
     expect(info).toContain("seq=1 last_seq=1 deduped=false");
   });
@@ -630,7 +672,7 @@ describe("starcite CLI", () => {
     const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
       expect(baseUrl).toBe("http://localhost:45187");
       expect(apiKey).toBe(opaqueToken);
-      return { session } as never;
+      return createFakeClient();
     });
 
     const program = buildProgram({
@@ -653,10 +695,6 @@ describe("starcite CLI", () => {
         "ses_123",
         "--agent",
         "researcher",
-        "--producer-id",
-        "producer:researcher",
-        "--producer-seq",
-        "1",
         "--text",
         "Found 8 relevant cases...",
       ],
@@ -665,7 +703,10 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(issueSessionToken).not.toHaveBeenCalled();
+    expect(session).toHaveBeenCalledWith({
+      token: opaqueToken,
+      id: "ses_123",
+    });
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       opaqueToken
@@ -673,18 +714,16 @@ describe("starcite CLI", () => {
     expect(info).toContain("seq=1 last_seq=1 deduped=false");
   });
 
-  it("tail auto-mints a read session token when API key has auth:issue scope", async () => {
+  it("tail uses SDK identity session binding when API key has auth:issue", async () => {
     const { logger, info } = makeLogger();
     const serviceToken = encodeJwt({
+      tenant_id: "acme",
       scopes: ["session:create", "session:read", "auth:issue"],
     });
     const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
       expect(baseUrl).toBe("http://localhost:45187");
-      if (apiKey === serviceToken) {
-        return { issueSessionToken } as never;
-      }
-
-      return { session } as never;
+      expect(apiKey).toBe(serviceToken);
+      return createFakeClient();
     });
 
     const program = buildProgram({
@@ -706,30 +745,32 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(issueSessionToken).toHaveBeenCalledWith({
-      session_id: "ses_123",
-      principal: {
-        type: "agent",
-        id: "starcite-cli",
-      },
-      scopes: ["session:read"],
-    });
+    const tailSessionInput = session.mock.calls[0]?.[0] as
+      | { identity: StarciteIdentity; id: string }
+      | undefined;
+    expect(tailSessionInput?.identity.toActor()).toBe("agent:starcite-cli");
+    expect(tailSessionInput?.id).toBe("ses_123");
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       serviceToken
-    );
-    expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      "jwt_session_token"
     );
     expect(info).toContain("[drafter] Drafting clause 4.2...");
   });
 
   it("global --token overrides stored API key", async () => {
     const { logger } = makeLogger();
+    const overrideToken = encodeJwt({
+      tenant_id: "override-tenant",
+      scopes: [
+        "session:create",
+        "session:read",
+        "session:append",
+        "auth:issue",
+      ],
+    });
     const createClient = vi.fn((baseUrl: string, _apiKey?: string) => {
       expect(baseUrl).toBe("http://localhost:45187");
-      return { create, session } as never;
+      return createFakeClient();
     });
 
     const program = buildProgram({
@@ -749,7 +790,7 @@ describe("starcite CLI", () => {
         "--config-dir",
         configDir,
         "--token",
-        "sk_cli_override",
+        overrideToken,
         "create",
         "--title",
         "Draft contract",
@@ -761,7 +802,7 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenLastCalledWith(
       "http://localhost:45187",
-      "sk_cli_override"
+      overrideToken
     );
   });
 
@@ -788,7 +829,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
@@ -827,7 +868,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
@@ -851,16 +892,29 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "tail", "ses_123", "--limit", "1"],
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "tail",
+        "ses_123",
+        "--limit",
+        "1",
+      ],
       {
         from: "user",
       }
     );
 
+    expect(session).toHaveBeenCalledWith({
+      token: sessionToken,
+      id: "ses_123",
+    });
     expect(fakeSession.tail).toHaveBeenCalledWith({
       cursor: 0,
       batchSize: 256,
@@ -889,7 +943,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await expect(
@@ -931,7 +985,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(["--config-dir", configDir, "up"], {
@@ -984,7 +1038,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(["--config-dir", configDir, "up"], {
@@ -1046,7 +1100,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(["--config-dir", configDir, "down"], {
@@ -1107,7 +1161,7 @@ describe("starcite CLI", () => {
       logger,
       runCommand,
       prompt,
-      createClient: () => ({ create, session, listSessions }) as never,
+      createClient: () => createFakeClient(),
     });
 
     await program.parseAsync(["--config-dir", configDir, "down"], {
