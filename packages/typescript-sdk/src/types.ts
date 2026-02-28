@@ -1,29 +1,20 @@
 import { z } from "zod";
+import {
+  SessionCreatorPrincipalSchema,
+  SessionTokenPrincipalSchema,
+} from "./identity";
+
+export type {
+  SessionCreatorPrincipal,
+  SessionTokenPrincipal,
+} from "./identity";
+export { SessionCreatorPrincipalSchema, SessionTokenPrincipalSchema };
 
 const ArbitraryObjectSchema = z.record(z.unknown());
-
-const CreatorTypeSchema = z.enum(["user", "agent"]);
-
-export const SessionCreatorPrincipalSchema = z.object({
-  tenant_id: z.string().min(1),
-  id: z.string().min(1),
-  type: CreatorTypeSchema,
-});
-
-export type SessionCreatorPrincipal = z.infer<
-  typeof SessionCreatorPrincipalSchema
->;
 
 const SessionTokenScopeSchema = z.enum(["session:read", "session:append"]);
 
 export type SessionTokenScope = z.infer<typeof SessionTokenScopeSchema>;
-
-export const SessionTokenPrincipalSchema = z.object({
-  type: CreatorTypeSchema,
-  id: z.string().min(1),
-});
-
-export type SessionTokenPrincipal = z.infer<typeof SessionTokenPrincipalSchema>;
 
 /**
  * Request payload for minting a session token from the auth issuer service.
@@ -178,29 +169,19 @@ export type TailEvent = z.infer<typeof TailEventSchema>;
 export type TailEventBatch = TailEvent[];
 
 /**
- * SDK-level enriched tail event with convenience fields (`agent`, `text`).
- */
-export type SessionEvent = TailEvent & { agent?: string; text?: string };
-/**
- * Enriched tail event batch grouped by a single WebSocket frame.
- */
-export type SessionEventBatch = SessionEvent[];
-
-/**
  * High-level `session.append()` input.
  *
- * You must provide producer identity (`producerId`, `producerSeq`) and either
- * `text` or `payload`.
+ * The session's identity provides the `actor` automatically. You must provide
+ * producer identity (`producerId`, `producerSeq`) and either `text` or `payload`.
  */
 export const SessionAppendInputSchema = z
   .object({
-    agent: z.string().trim().min(1),
-    actor: z.string().trim().min(1).optional(),
     producerId: z.string().trim().min(1),
     producerSeq: z.number().int().positive(),
     text: z.string().optional(),
     payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),
+    actor: z.string().trim().min(1).optional(),
     source: z.string().optional(),
     metadata: ArbitraryObjectSchema.optional(),
     refs: ArbitraryObjectSchema.optional(),
@@ -378,25 +359,6 @@ export interface SessionConsumeOptions
   /**
    * Event handler. The cursor is checkpointed only after this handler succeeds.
    */
-  handler: (event: SessionEvent) => void | Promise<void>;
-}
-
-/**
- * Durable raw-tail consumption options with automatic cursor checkpointing.
- */
-export interface SessionConsumeRawOptions
-  extends Omit<SessionTailOptions, "cursor"> {
-  /**
-   * Optional explicit starting cursor. When omitted, the SDK loads it from `cursorStore`.
-   */
-  cursor?: number;
-  /**
-   * Cursor storage adapter used for resume-safe processing.
-   */
-  cursorStore: SessionCursorStore;
-  /**
-   * Raw event handler. The cursor is checkpointed only after this handler succeeds.
-   */
   handler: (event: TailEvent) => void | Promise<void>;
 }
 
@@ -477,7 +439,7 @@ export interface RequestOptions {
 /**
  * Client construction options.
  */
-export interface StarciteClientOptions {
+export interface StarciteOptions {
   /**
    * Base API URL. Defaults to `process.env.STARCITE_BASE_URL` or `http://localhost:4000`.
    */
@@ -518,14 +480,4 @@ export interface StarciteClientOptions {
 /**
  * Error payload shape returned by non-2xx API responses.
  */
-export const StarciteErrorPayloadSchema = z
-  .object({
-    error: z.string().optional(),
-    message: z.string().optional(),
-  })
-  .catchall(z.unknown());
-
-/**
- * Inferred TypeScript type for {@link StarciteErrorPayloadSchema}.
- */
-export type StarciteErrorPayload = z.infer<typeof StarciteErrorPayloadSchema>;
+export type StarciteErrorPayload = Record<string, unknown>;

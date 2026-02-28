@@ -25,11 +25,7 @@ function toFrameText(data: unknown): string | undefined {
     return data;
   }
 
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data);
-  }
-
-  if (ArrayBuffer.isView(data)) {
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
     return new TextDecoder().decode(data);
   }
 

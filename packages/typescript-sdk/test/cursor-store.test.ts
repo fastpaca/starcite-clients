@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  createInMemoryCursorStore,
-  createLocalStorageCursorStore,
-  createWebStorageCursorStore,
+  InMemoryCursorStore,
+  LocalStorageCursorStore,
+  WebStorageCursorStore,
 } from "../src/cursor-store";
 import { StarciteError } from "../src/errors";
 
-describe("cursor store helpers", () => {
+describe("cursor stores", () => {
   it("persists and loads cursors in memory", async () => {
-    const store = createInMemoryCursorStore({ ses_a: 3 });
+    const store = new InMemoryCursorStore({ ses_a: 3 });
 
     expect(await store.load("ses_a")).toBe(3);
     expect(await store.load("ses_b")).toBeUndefined();
@@ -19,7 +19,7 @@ describe("cursor store helpers", () => {
 
   it("uses web storage with default key format", async () => {
     const map = new Map<string, string>();
-    const store = createWebStorageCursorStore({
+    const store = new WebStorageCursorStore({
       getItem(key: string): string | null {
         return map.get(key) ?? null;
       },
@@ -35,7 +35,7 @@ describe("cursor store helpers", () => {
 
   it("supports custom key resolvers", async () => {
     const map = new Map<string, string>();
-    const store = createWebStorageCursorStore(
+    const store = new WebStorageCursorStore(
       {
         getItem(key: string): string | null {
           return map.get(key) ?? null;
@@ -56,7 +56,7 @@ describe("cursor store helpers", () => {
 
   it("ignores invalid persisted cursor values", async () => {
     const map = new Map<string, string>([["starcite:ses_bad:lastSeq", "oops"]]);
-    const store = createWebStorageCursorStore({
+    const store = new WebStorageCursorStore({
       getItem(key: string): string | null {
         return map.get(key) ?? null;
       },
@@ -77,7 +77,7 @@ describe("cursor store helpers", () => {
         configurable: true,
       });
 
-      expect(() => createLocalStorageCursorStore()).toThrow(StarciteError);
+      expect(() => new LocalStorageCursorStore()).toThrow(StarciteError);
     } finally {
       Object.defineProperty(globalThis, "localStorage", {
         value: original,

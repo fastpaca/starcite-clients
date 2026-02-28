@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   formatAuthorizationHeader,
-  inferCreatorPrincipalFromApiKey,
+  inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
   tokenFromAuthorizationHeader,
 } from "../src/auth";
+import { StarciteError } from "../src/errors";
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
   const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
@@ -32,22 +33,14 @@ describe("formatAuthorizationHeader", () => {
 });
 
 describe("tokenFromAuthorizationHeader", () => {
-  it("returns undefined for empty input", () => {
-    expect(tokenFromAuthorizationHeader("")).toBeUndefined();
-    expect(tokenFromAuthorizationHeader("   ")).toBeUndefined();
+  it("throws for empty input", () => {
+    expect(() => tokenFromAuthorizationHeader("")).toThrow(StarciteError);
+    expect(() => tokenFromAuthorizationHeader("   ")).toThrow(StarciteError);
   });
 
   it("extracts a bearer token", () => {
     expect(tokenFromAuthorizationHeader("Bearer my_token")).toBe("my_token");
     expect(tokenFromAuthorizationHeader("bearer my_token")).toBe("my_token");
-  });
-
-  it("returns undefined when token contains spaces", () => {
-    expect(tokenFromAuthorizationHeader("Bearer a b")).toBeUndefined();
-  });
-
-  it("returns undefined when token contains commas", () => {
-    expect(tokenFromAuthorizationHeader("Bearer a,b")).toBeUndefined();
   });
 });
 
@@ -57,13 +50,8 @@ describe("inferIssuerAuthorityFromApiKey", () => {
     expect(inferIssuerAuthorityFromApiKey(token)).toBe("https://starcite.ai");
   });
 
-  it("returns undefined for a non-JWT token", () => {
-    expect(inferIssuerAuthorityFromApiKey("not_a_jwt")).toBeUndefined();
-  });
-
-  it("returns undefined for a non-http protocol", () => {
-    const token = tokenFromClaims({ iss: "ftp://starcite.ai" });
-    expect(inferIssuerAuthorityFromApiKey(token)).toBeUndefined();
+  it("throws for a non-JWT token", () => {
+    expect(() => inferIssuerAuthorityFromApiKey("not_a_jwt")).toThrow();
   });
 
   it("strips path from issuer URL", () => {
@@ -72,47 +60,66 @@ describe("inferIssuerAuthorityFromApiKey", () => {
       "https://auth.example.com"
     );
   });
+
+  it("returns undefined when iss is missing", () => {
+    const token = tokenFromClaims({});
+    expect(inferIssuerAuthorityFromApiKey(token)).toBeUndefined();
+  });
 });
 
-describe("inferCreatorPrincipalFromApiKey", () => {
-  it("infers principal from org subject", () => {
-    const token = tokenFromClaims({ sub: "org:acme" });
-    const principal = inferCreatorPrincipalFromApiKey(token);
-    expect(principal).toEqual({
-      tenant_id: "acme",
-      id: "org:acme",
-      type: "user",
-    });
-  });
-
-  it("returns undefined for agent subject (no tenant)", () => {
-    const token = tokenFromClaims({ sub: "agent:planner" });
-    expect(inferCreatorPrincipalFromApiKey(token)).toBeUndefined();
-  });
-
-  it("returns undefined for user subject (no tenant)", () => {
-    const token = tokenFromClaims({ sub: "user:alice" });
-    expect(inferCreatorPrincipalFromApiKey(token)).toBeUndefined();
-  });
-
-  it("uses explicit principal claims when present", () => {
+describe("inferIdentityFromApiKey", () => {
+  it("infers identity from explicit claims", () => {
     const token = tokenFromClaims({
-      sub: "org:acme",
-      principal: {
-        principal_type: "agent",
-        principal_id: "agent:planner",
-      },
-    });
-    const principal = inferCreatorPrincipalFromApiKey(token);
-    expect(principal).toEqual({
       tenant_id: "acme",
-      id: "agent:planner",
-      type: "agent",
+      principal_id: "agent:planner",
+      principal_type: "agent",
     });
+    const identity = inferIdentityFromApiKey(token);
+    expect(identity).toBeDefined();
+    expect(identity).toEqual(
+      expect.objectContaining({
+        tenantId: "acme",
+        id: "agent:planner",
+        type: "agent",
+      })
+    );
   });
 
-  it("returns undefined when claims are missing", () => {
+  it("falls back to sub for id when principal_id is absent", () => {
+    const token = tokenFromClaims({
+      sub: "agent:planner",
+      tenant_id: "acme",
+      principal_type: "agent",
+    });
+    const identity = inferIdentityFromApiKey(token);
+    expect(identity).toBeDefined();
+    expect(identity).toEqual(
+      expect.objectContaining({
+        tenantId: "acme",
+        id: "agent:planner",
+        type: "agent",
+      })
+    );
+  });
+
+  it("returns undefined when tenant_id is missing", () => {
+    const token = tokenFromClaims({
+      principal_id: "agent:planner",
+      principal_type: "agent",
+    });
+    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+
+  it("returns undefined when principal_type is missing", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "agent:planner",
+    });
+    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+
+  it("returns undefined when claims are empty", () => {
     const token = tokenFromClaims({});
-    expect(inferCreatorPrincipalFromApiKey(token)).toBeUndefined();
+    expect(inferIdentityFromApiKey(token)).toBeUndefined();
   });
 });

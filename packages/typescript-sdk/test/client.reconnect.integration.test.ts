@@ -2,8 +2,30 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { StarciteClient } from "../src/client";
+import { Starcite } from "../src/client";
 import type { StarciteWebSocket } from "../src/types";
+
+/**
+ * Creates a minimal JWT with the given claims for test session construction.
+ */
+function tokenFromClaims(claims: Record<string, unknown>): string {
+  const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
+    "base64url"
+  );
+  return `eyJhbGciOiJIUzI1NiJ9.${payload}.N6fK2qA`;
+}
+
+function makeTailSessionToken(
+  sessionId: string,
+  principalId = "agent:drafter"
+): string {
+  return tokenFromClaims({
+    session_id: sessionId,
+    tenant_id: "test-tenant",
+    principal_id: principalId,
+    principal_type: principalId.startsWith("agent:") ? "agent" : "user",
+  });
+}
 
 function encodeTailFrame(seq: number, text: string): string {
   return JSON.stringify({
@@ -102,7 +124,7 @@ const describeWebSocketIntegration = websocketDepsAvailable
   : describe.skip;
 
 describeWebSocketIntegration(
-  "StarciteClient tail reconnect integration",
+  "Starcite tail reconnect integration",
   () => {
     it("reconnects after a yanked transport and catches up from the last seq", async () => {
       const httpServer = createServer();
@@ -149,15 +171,17 @@ describeWebSocketIntegration(
           throw new Error("Failed to resolve local test server address");
         }
 
-        const client = new StarciteClient({
+        const starcite = new Starcite({
           baseUrl: `http://127.0.0.1:${address.port}`,
           websocketFactory: (url) =>
             new NodeWebSocket(url) as unknown as StarciteWebSocket,
         });
 
+        const sessionToken = makeTailSessionToken("ses_integration");
+        const session = await starcite.session({ token: sessionToken });
         const observedSeqs: number[] = [];
 
-        for await (const event of client.session("ses_integration").tailRaw({
+        for await (const event of session.tail({
           cursor: 0,
           reconnectPolicy: {
             mode: "fixed",
@@ -263,15 +287,17 @@ describeWebSocketIntegration(
           }
         }, PRODUCER_INTERVAL_MS);
 
-        const client = new StarciteClient({
+        const starcite = new Starcite({
           baseUrl: `http://127.0.0.1:${address.port}`,
           websocketFactory: (url) =>
             new NodeWebSocket(url) as unknown as StarciteWebSocket,
         });
 
+        const sessionToken = makeTailSessionToken("ses_stream_stress");
+        const session = await starcite.session({ token: sessionToken });
         const observedSeqs: number[] = [];
 
-        for await (const event of client.session("ses_stream_stress").tailRaw({
+        for await (const event of session.tail({
           cursor: 0,
           reconnectPolicy: {
             mode: "fixed",
@@ -406,15 +432,17 @@ describeWebSocketIntegration(
             }
           }, PRODUCER_INTERVAL_MS);
 
-          const client = new StarciteClient({
+          const starcite = new Starcite({
             baseUrl: `http://127.0.0.1:${address.port}`,
             websocketFactory: (url) =>
               new NodeWebSocket(url) as unknown as StarciteWebSocket,
           });
 
+          const sessionToken = makeTailSessionToken("ses_soak");
+          const session = await starcite.session({ token: sessionToken });
           const observedSeqs: number[] = [];
 
-          for await (const event of client.session("ses_soak").tailRaw({
+          for await (const event of session.tail({
             cursor: 0,
             reconnectPolicy: {
               mode: "fixed",

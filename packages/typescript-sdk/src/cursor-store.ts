@@ -1,10 +1,10 @@
 import { StarciteError } from "./errors";
 import type { SessionCursorStore } from "./types";
 
-const DEFAULT_CURSOR_KEY_PREFIX = "starcite";
+const DEFAULT_KEY_PREFIX = "starcite";
 
 /**
- * Minimal Web Storage contract used by cursor-store helpers.
+ * Minimal Web Storage contract used by {@link WebStorageCursorStore}.
  */
 export interface StarciteWebStorage {
   getItem(key: string): string | null;
@@ -12,7 +12,7 @@ export interface StarciteWebStorage {
 }
 
 /**
- * Cursor-store key customization options.
+ * Key customization options for storage-backed cursor stores.
  */
 export interface CursorStoreOptions {
   /**
@@ -27,88 +27,62 @@ export interface CursorStoreOptions {
   keyForSession?: (sessionId: string) => string;
 }
 
-function keyForSessionResolver(
-  options: CursorStoreOptions
-): (sessionId: string) => string {
-  if (options.keyForSession) {
-    return options.keyForSession;
+/**
+ * In-memory cursor store (useful for workers/tests).
+ */
+export class InMemoryCursorStore implements SessionCursorStore {
+  private readonly cursors: Map<string, number>;
+
+  constructor(initial: Record<string, number> = {}) {
+    this.cursors = new Map(Object.entries(initial));
   }
 
-  const keyPrefix = options.keyPrefix?.trim() || DEFAULT_CURSOR_KEY_PREFIX;
-
-  return (sessionId: string) => `${keyPrefix}:${sessionId}:lastSeq`;
-}
-
-function parseStoredCursor(raw: string): number | undefined {
-  const parsed = Number.parseInt(raw, 10);
-
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    return undefined;
+  load(sessionId: string): number | undefined {
+    return this.cursors.get(sessionId);
   }
 
-  return parsed;
+  save(sessionId: string, cursor: number): void {
+    this.cursors.set(sessionId, cursor);
+  }
 }
 
 /**
- * Creates an in-memory cursor store (useful for workers/tests).
+ * Cursor store backed by a Web Storage-compatible object.
  */
-export function createInMemoryCursorStore(
-  initial: Record<string, number> = {}
-): SessionCursorStore {
-  const cursors = new Map<string, number>();
+export class WebStorageCursorStore implements SessionCursorStore {
+  private readonly storage: StarciteWebStorage;
+  private readonly keyForSession: (sessionId: string) => string;
 
-  for (const [sessionId, cursor] of Object.entries(initial)) {
-    cursors.set(sessionId, cursor);
+  constructor(storage: StarciteWebStorage, options: CursorStoreOptions = {}) {
+    this.storage = storage;
+    const prefix = options.keyPrefix?.trim() || DEFAULT_KEY_PREFIX;
+    this.keyForSession =
+      options.keyForSession ??
+      ((sessionId) => `${prefix}:${sessionId}:lastSeq`);
   }
 
-  return {
-    load(sessionId: string): number | undefined {
-      return cursors.get(sessionId);
-    },
-    save(sessionId: string, cursor: number): void {
-      cursors.set(sessionId, cursor);
-    },
-  };
+  load(sessionId: string): number | undefined {
+    const raw = this.storage.getItem(this.keyForSession(sessionId));
+    if (raw === null) return undefined;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+  }
+
+  save(sessionId: string, cursor: number): void {
+    this.storage.setItem(this.keyForSession(sessionId), `${cursor}`);
+  }
 }
 
 /**
- * Creates a cursor store backed by a Web Storage-compatible object.
+ * Cursor store backed by `globalThis.localStorage`.
  */
-export function createWebStorageCursorStore(
-  storage: StarciteWebStorage,
-  options: CursorStoreOptions = {}
-): SessionCursorStore {
-  const keyForSession = keyForSessionResolver(options);
-
-  return {
-    load(sessionId: string): number | undefined {
-      const key = keyForSession(sessionId);
-      const raw = storage.getItem(key);
-
-      if (raw === null) {
-        return undefined;
-      }
-
-      return parseStoredCursor(raw);
-    },
-    save(sessionId: string, cursor: number): void {
-      const key = keyForSession(sessionId);
-      storage.setItem(key, `${cursor}`);
-    },
-  };
-}
-
-/**
- * Creates a cursor store backed by `globalThis.localStorage`.
- */
-export function createLocalStorageCursorStore(
-  options: CursorStoreOptions = {}
-): SessionCursorStore {
-  if (typeof localStorage === "undefined") {
-    throw new StarciteError(
-      "localStorage is not available in this runtime. Use createWebStorageCursorStore(...) with a custom storage adapter."
-    );
+export class LocalStorageCursorStore extends WebStorageCursorStore {
+  constructor(options: CursorStoreOptions = {}) {
+    if (typeof localStorage === "undefined") {
+      throw new StarciteError(
+        "localStorage is not available in this runtime. Use WebStorageCursorStore with a custom storage adapter."
+      );
+    }
+    super(localStorage, options);
   }
-
-  return createWebStorageCursorStore(localStorage, options);
 }

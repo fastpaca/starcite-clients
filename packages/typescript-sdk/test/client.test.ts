@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { StarciteClient } from "../src/client";
+import { Starcite } from "../src/client";
 import {
   StarciteConnectionError,
   StarciteError,
@@ -91,7 +91,56 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.N6fK2qA`;
 }
 
-describe("StarciteClient", () => {
+/**
+ * Creates a session token with standard claims for WebSocket/tail tests.
+ * This avoids HTTP calls -- `starcite.session({ token })` decodes the JWT locally.
+ */
+function makeTailSessionToken(
+  sessionId = "ses_tail",
+  principalId = "agent:drafter"
+): string {
+  return tokenFromClaims({
+    session_id: sessionId,
+    tenant_id: "test-tenant",
+    principal_id: principalId,
+    principal_type: principalId.startsWith("agent:") ? "agent" : "user",
+  });
+}
+
+/**
+ * Creates an API key JWT with standard claims for client construction tests.
+ */
+function makeApiKey(
+  overrides: Record<string, unknown> = {}
+): string {
+  return tokenFromClaims({
+    iss: "https://starcite.ai",
+    tenant_id: "test-tenant",
+    principal_id: "user:system",
+    principal_type: "user",
+    ...overrides,
+  });
+}
+
+/**
+ * Builds a `Starcite` instance wired to a fake WebSocket factory and
+ * returns both the client and the captured sockets list.
+ */
+function buildTailClient(fetchMock: ReturnType<typeof vi.fn>) {
+  const sockets: FakeWebSocket[] = [];
+  const starcite = new Starcite({
+    baseUrl: "http://localhost:4000",
+    fetch: fetchMock,
+    websocketFactory: (url) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  return { starcite, sockets };
+}
+
+describe("Starcite", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
@@ -99,6 +148,9 @@ describe("StarciteClient", () => {
   });
 
   it("creates sessions and appends events using /v1 routes", async () => {
+    const apiKey = makeApiKey();
+
+    // session({ identity }) makes two HTTP calls: create session + mint token
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -114,27 +166,38 @@ describe("StarciteClient", () => {
         )
       )
       .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_1", "agent:researcher"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
           status: 201,
         })
       );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
+      apiKey,
     });
 
-    const session = await client.create({ title: "Draft" });
+    const identity = starcite.agent({ id: "researcher" });
+    const session = await starcite.session({ identity, title: "Draft" });
 
     expect(session.id).toBe("ses_1");
 
     await session.append({
-      agent: "researcher",
       producerId: "producer:researcher",
       producerSeq: 1,
       text: "Found 8 relevant cases...",
     });
 
+    // First call: create session
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "http://localhost:4000/v1/sessions",
@@ -143,12 +206,22 @@ describe("StarciteClient", () => {
       })
     );
 
-    const secondCall = fetchMock.mock.calls[1];
-    expect(secondCall?.[0]).toBe(
+    // Second call: mint session token (goes to auth issuer)
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://starcite.ai/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+
+    // Third call: append event
+    const thirdCall = fetchMock.mock.calls[2];
+    expect(thirdCall?.[0]).toBe(
       "http://localhost:4000/v1/sessions/ses_1/append"
     );
 
-    const requestInit = secondCall?.[1] as RequestInit;
+    const requestInit = thirdCall?.[1] as RequestInit;
     expect(requestInit.method).toBe("POST");
     expect(requestInit.body).toBe(
       JSON.stringify({
@@ -165,41 +238,36 @@ describe("StarciteClient", () => {
   it("validates baseUrl at client construction", () => {
     expect(
       () =>
-        new StarciteClient({
+        new Starcite({
           baseUrl: "localhost:4000",
           fetch: fetchMock,
         })
     ).toThrowError(StarciteError);
   });
 
-  it("mints session tokens using API key issuer authority instead of API base URL", async () => {
+  it("mints session tokens via the session() identity flow using API key issuer authority", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-a",
+    });
+
+    // session({ identity, id }) skips create (existing session) but still mints a token
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({ token: "jwt_session_token", expires_in: 3600 }),
-        {
-          status: 200,
-        }
+        { status: 200 }
       )
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
-      apiKey: tokenFromClaims({
-        iss: "https://starcite.ai",
-        aud: "starcite-api",
-        sub: "org:tenant-a",
-      }),
+      apiKey,
     });
 
-    const issued = await client.issueSessionToken({
-      session_id: "ses_demo",
-      principal: { type: "user", id: "user-42" },
-      scopes: ["session:read", "session:append"],
-      ttl_seconds: 3600,
-    });
+    const identity = starcite.user({ id: "user-42" });
+    await starcite.session({ identity, id: "ses_demo" });
 
-    expect(issued).toEqual({ token: "jwt_session_token", expires_in: 3600 });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://starcite.ai/api/v1/session-tokens",
       expect.objectContaining({
@@ -209,31 +277,27 @@ describe("StarciteClient", () => {
   });
 
   it("uses authUrl override for session token minting", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://ignored-auth-origin.example",
+      tenant_id: "tenant-a",
+    });
+
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({ token: "jwt_session_token", expires_in: 900 }),
-        {
-          status: 200,
-        }
+        { status: 200 }
       )
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       authUrl: "https://auth.starcite.example",
       fetch: fetchMock,
-      apiKey: tokenFromClaims({
-        iss: "https://ignored-auth-origin.example",
-        aud: "starcite-api",
-        sub: "org:tenant-a",
-      }),
+      apiKey,
     });
 
-    await client.issueSessionToken({
-      session_id: "ses_demo",
-      principal: { type: "agent", id: "agent-7" },
-      scopes: ["session:read"],
-    });
+    const identity = starcite.agent({ id: "agent-7" });
+    await starcite.session({ identity, id: "ses_demo" });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://auth.starcite.example/api/v1/session-tokens",
@@ -243,19 +307,19 @@ describe("StarciteClient", () => {
     );
   });
 
-  it("fails session token minting when apiKey is missing", () => {
-    const client = new StarciteClient({
+  it("fails session creation when apiKey is missing", async () => {
+    const sessionToken = makeTailSessionToken("ses_demo", "user:user-42");
+    const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
     });
 
-    expect(() =>
-      client.issueSessionToken({
-        session_id: "ses_demo",
-        principal: { type: "user", id: "user-42" },
-        scopes: ["session:read"],
-      })
-    ).toThrowError(StarciteError);
+    // session({ token }) works without apiKey
+    const session = await starcite.session({ token: sessionToken, id: "ses_demo" });
+    expect(session.id).toBe("ses_demo");
+
+    // But agent()/user() require apiKey to infer tenant
+    expect(() => starcite.agent({ id: "agent-7" })).toThrowError(StarciteError);
   });
 
   it("wraps malformed JSON success responses as connection errors", async () => {
@@ -265,12 +329,12 @@ describe("StarciteClient", () => {
       })
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
 
-    await expect(client.listSessions()).rejects.toBeInstanceOf(
+    await expect(starcite.listSessions()).rejects.toBeInstanceOf(
       StarciteConnectionError
     );
   });
@@ -279,47 +343,31 @@ describe("StarciteClient", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          id: "ses_auth",
-          title: "Auth",
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-14T00:00:00Z",
-          updated_at: "2026-02-14T00:00:00Z",
+          sessions: [],
+          next_cursor: null,
         }),
-        { status: 201 }
+        { status: 200 }
       )
     );
 
-    const client = new StarciteClient({
+    const apiKey = makeApiKey();
+
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      apiKey: "jwt_service_key",
+      apiKey,
     });
 
-    await client.create({ title: "Auth" });
+    await starcite.listSessions();
 
     const firstCall = fetchMock.mock.calls[0];
     const requestInit = firstCall?.[1] as RequestInit;
     const headers = new Headers(requestInit.headers);
 
-    expect(headers.get("authorization")).toBe("Bearer jwt_service_key");
+    expect(headers.get("authorization")).toBe(`Bearer ${apiKey}`);
   });
 
-  it("injects inferred creator_principal from JWT apiKey", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "ses_auth_claims",
-          title: "Auth",
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-14T00:00:00Z",
-          updated_at: "2026-02-14T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    );
-
+  it("injects inferred creator_principal from JWT apiKey via identity", async () => {
     const apiKey = tokenFromClaims({
       iss: "https://starcite.ai",
       aud: "starcite-api",
@@ -329,13 +377,39 @@ describe("StarciteClient", () => {
       principal_type: "user",
     });
 
-    const client = new StarciteClient({
+    // session({ identity }) calls create session + mint token
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_auth_claims",
+            title: "Auth",
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-14T00:00:00Z",
+            updated_at: "2026-02-14T00:00:00Z",
+          }),
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_auth_claims", "agent:planner"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
     });
 
-    await client.create({ title: "Auth" });
+    const identity = starcite.agent({ id: "planner" });
+    await starcite.session({ identity, title: "Auth" });
 
     const firstCall = fetchMock.mock.calls[0];
     const requestBody = JSON.parse(
@@ -343,121 +417,73 @@ describe("StarciteClient", () => {
     );
     expect(requestBody.creator_principal).toEqual({
       tenant_id: "tenant-alpha",
-      id: "user-99",
-      type: "user",
-    });
-  });
-
-  it("uses explicit creator_principal when provided", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "ses_auth_explicit",
-          title: "Auth",
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-14T00:00:00Z",
-          updated_at: "2026-02-14T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    );
-
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      apiKey: tokenFromClaims({
-        iss: "https://starcite.ai",
-        aud: "starcite-api",
-        sub: "org:tenant-alpha",
-      }),
-    });
-
-    await client.create({
-      title: "Auth",
-      creator_principal: {
-        tenant_id: "tenant-beta",
-        id: "agent-beta",
-        type: "agent",
-      },
-    });
-
-    const firstCall = fetchMock.mock.calls[0];
-    const requestBody = JSON.parse(
-      (firstCall?.[1] as RequestInit).body as string
-    );
-    expect(requestBody.creator_principal).toEqual({
-      tenant_id: "tenant-beta",
-      id: "agent-beta",
+      id: "planner",
       type: "agent",
     });
   });
 
-  it("infers actor-style creator principal from JWT subject", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "ses_auth_actor_subject",
-          title: "Auth",
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-14T00:00:00Z",
-          updated_at: "2026-02-14T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    );
+  it("identity factories produce correct principal types", () => {
+    const apiKey = makeApiKey({ tenant_id: "tenant-alpha" });
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      apiKey: tokenFromClaims({
-        iss: "https://starcite.ai",
-        aud: "starcite-api",
-        sub: "agent:foo",
-        tenant_id: "tenant-alpha",
-      }),
+      apiKey,
     });
 
-    await client.create({ title: "Auth" });
-
-    const firstCall = fetchMock.mock.calls[0];
-    const requestBody = JSON.parse(
-      (firstCall?.[1] as RequestInit).body as string
-    );
-    expect(requestBody.creator_principal).toEqual({
+    const agentIdentity = starcite.agent({ id: "planner" });
+    expect(agentIdentity.toCreatorPrincipal()).toEqual({
       tenant_id: "tenant-alpha",
-      id: "agent:foo",
+      id: "planner",
       type: "agent",
+    });
+
+    const userIdentity = starcite.user({ id: "alice" });
+    expect(userIdentity.toCreatorPrincipal()).toEqual({
+      tenant_id: "tenant-alpha",
+      id: "alice",
+      type: "user",
     });
   });
 
-  it("infers principal tenant from org-style service token subject", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "ses_org_subject",
-          title: "Auth",
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-14T00:00:00Z",
-          updated_at: "2026-02-14T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    );
-
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      apiKey: tokenFromClaims({
-        iss: "https://starcite.ai",
-        aud: "starcite-api",
-        sub: "org:tenant-alpha",
-      }),
+  it("uses explicit tenant_id from API key claims", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-alpha",
     });
 
-    await client.create({ title: "Auth" });
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_org_subject",
+            title: "Auth",
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-14T00:00:00Z",
+            updated_at: "2026-02-14T00:00:00Z",
+          }),
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_org_subject", "agent:foo"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    const identity = starcite.agent({ id: "foo" });
+    await starcite.session({ identity, title: "Auth" });
 
     const firstCall = fetchMock.mock.calls[0];
     const requestBody = JSON.parse(
@@ -465,25 +491,17 @@ describe("StarciteClient", () => {
     );
     expect(requestBody.creator_principal).toEqual({
       tenant_id: "tenant-alpha",
-      id: "org:tenant-alpha",
-      type: "user",
+      id: "foo",
+      type: "agent",
     });
   });
 
   it("tails events and filters by agent", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken("ses_tail", "agent:drafter");
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
+    const iterator = session
       .tail({ agent: "drafter", cursor: 0 })
       [Symbol.asyncIterator]();
 
@@ -516,8 +534,8 @@ describe("StarciteClient", () => {
     expect(first.done).toBe(false);
     expect(first.value).toMatchObject({
       seq: 2,
-      agent: "drafter",
-      text: "Drafting clause 4.2...",
+      actor: "agent:drafter",
+      payload: { text: "Drafting clause 4.2..." },
     });
 
     const donePromise = iterator.next();
@@ -533,20 +551,12 @@ describe("StarciteClient", () => {
   });
 
   it("tails batched frames and appends batch_size query param", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({ cursor: 0, batchSize: 2 })
+    const iterator = session
+      .tail({ cursor: 0, batchSize: 2 })
       [Symbol.asyncIterator]();
 
     const firstValuePromise = iterator.next();
@@ -594,21 +604,13 @@ describe("StarciteClient", () => {
     );
   });
 
-  it("tails raw event batches without flattening", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+  it("tails event batches without flattening", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRawBatches({ cursor: 0, batchSize: 2 })
+    const iterator = session
+      .tailBatches({ cursor: 0, batchSize: 2 })
       [Symbol.asyncIterator]();
     const firstBatchPromise = iterator.next();
 
@@ -645,20 +647,12 @@ describe("StarciteClient", () => {
     });
   });
 
-  it("tails transformed event batches for batched ingestion", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+  it("tails event batches for batched ingestion", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
+    const iterator = session
       .tailBatches({ cursor: 0, batchSize: 2 })
       [Symbol.asyncIterator]();
     const firstBatchPromise = iterator.next();
@@ -687,8 +681,8 @@ describe("StarciteClient", () => {
     const firstBatch = await firstBatchPromise;
     expect(firstBatch.done).toBe(false);
     expect(firstBatch.value).toMatchObject([
-      { seq: 1, agent: "drafter", text: "Draft one" },
-      { seq: 2, agent: "drafter", text: "Draft two" },
+      { seq: 1, actor: "agent:drafter", payload: { text: "Draft one" } },
+      { seq: 2, actor: "agent:drafter", payload: { text: "Draft two" } },
     ]);
 
     const donePromise = iterator.next();
@@ -704,7 +698,8 @@ describe("StarciteClient", () => {
     const websocketFactory = vi.fn(
       (url: string, options?: { headers?: HeadersInit }) => {
         const headers = new Headers(options?.headers);
-        expect(headers.get("authorization")).toBe("Bearer jwt_service_key");
+        // Session token auth is used for the WebSocket, not the API key
+        expect(headers.get("authorization")).toMatch(/^Bearer /);
 
         const socket = new FakeWebSocket(url);
         sockets.push(socket);
@@ -712,14 +707,17 @@ describe("StarciteClient", () => {
       }
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      apiKey: "jwt_service_key",
+      apiKey: makeApiKey(),
       websocketFactory,
     });
 
-    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const iterator = session.tail()[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
     sockets[0]?.emit("close", { code: 1000 });
@@ -749,15 +747,18 @@ describe("StarciteClient", () => {
       }
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      apiKey: "jwt_service_key",
+      apiKey: makeApiKey(),
       websocketFactory,
       websocketAuthTransport: "access_token",
     });
 
-    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const iterator = session.tail()[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
     sockets[0]?.emit("close", { code: 1000 });
@@ -768,24 +769,19 @@ describe("StarciteClient", () => {
     });
 
     expect(websocketFactory).toHaveBeenCalledWith(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token=jwt_service_key",
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token="
+      ),
       undefined
     );
   });
 
   it("throws a token-expired connection error on close code 4001", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const iterator = session.tail()[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
     sockets[0]?.emit("close", { code: 4001, reason: "token_expired" });
@@ -796,20 +792,12 @@ describe("StarciteClient", () => {
   });
 
   it("reconnects on abnormal close and resumes from the last observed seq", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         cursor: 0,
         reconnectPolicy: {
           mode: "fixed",
@@ -870,20 +858,12 @@ describe("StarciteClient", () => {
   });
 
   it("resumes from the latest seq in a batched frame after reconnect", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         cursor: 0,
         batchSize: 2,
         reconnectPolicy: {
@@ -960,20 +940,12 @@ describe("StarciteClient", () => {
   });
 
   it("resumes batched ingestion from latest observed seq after reconnect", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRawBatches({
+    const iterator = session
+      .tailBatches({
         cursor: 0,
         batchSize: 2,
         reconnectPolicy: {
@@ -1041,20 +1013,12 @@ describe("StarciteClient", () => {
   });
 
   it("keeps reconnecting until the transport recovers", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         reconnectPolicy: {
           mode: "fixed",
           initialDelayMs: 0,
@@ -1095,20 +1059,12 @@ describe("StarciteClient", () => {
   });
 
   it("fails when reconnectPolicy maxAttempts is exceeded", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         reconnect: true,
         reconnectPolicy: {
           mode: "fixed",
@@ -1134,20 +1090,12 @@ describe("StarciteClient", () => {
   });
 
   it("supports zero reconnect attempts via reconnectPolicy", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         reconnect: true,
         reconnectPolicy: {
           mode: "fixed",
@@ -1172,21 +1120,13 @@ describe("StarciteClient", () => {
   });
 
   it("emits lifecycle events for dropped streams", async () => {
-    const sockets: FakeWebSocket[] = [];
+    const { starcite, sockets } = buildTailClient(fetchMock);
     const lifecycleEvents: TailLifecycleEvent[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         reconnect: true,
         reconnectPolicy: {
           mode: "fixed",
@@ -1220,20 +1160,12 @@ describe("StarciteClient", () => {
   });
 
   it("ignores lifecycle callback exceptions", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         reconnect: false,
         onLifecycleEvent: () => {
           throw new Error("observer failure");
@@ -1268,12 +1200,12 @@ describe("StarciteClient", () => {
       )
     );
 
-    const client = new StarciteClient({
+    const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
 
-    const page = await client.listSessions({
+    const page = await starcite.listSessions({
       limit: 1,
       cursor: "ses_0",
       metadata: { tenant_id: "acme" },
@@ -1291,18 +1223,11 @@ describe("StarciteClient", () => {
   });
 
   it("raises a connection error on malformed tail data", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client.session("ses_tail").tail()[Symbol.asyncIterator]();
+    const iterator = session.tail()[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
     sockets[0]?.emit("message", { data: "not json" });
@@ -1311,20 +1236,12 @@ describe("StarciteClient", () => {
   });
 
   it("fails fast when the tail consumer falls behind buffered batches", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({
+    const iterator = session
+      .tail({
         cursor: 0,
         reconnect: false,
         maxBufferedBatches: 1,
@@ -1386,23 +1303,16 @@ describe("StarciteClient", () => {
   });
 
   it("consume() resumes from cursor store and checkpoints each handled event", async () => {
-    const sockets: FakeWebSocket[] = [];
+    const { starcite, sockets } = buildTailClient(fetchMock);
     const load = vi.fn(async () => 4);
     const save = vi.fn(async () => undefined);
     const cursorStore: SessionCursorStore = { load, save };
     const handledSeqs: number[] = [];
 
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const consumePromise = client.session("ses_tail").consume({
+    const consumePromise = session.consume({
       cursorStore,
       reconnect: false,
       handler: (event) => {
@@ -1445,8 +1355,8 @@ describe("StarciteClient", () => {
     expect(save).toHaveBeenNthCalledWith(2, "ses_tail", 6);
   });
 
-  it("consumeRaw() fails when cursor persistence fails", async () => {
-    const sockets: FakeWebSocket[] = [];
+  it("consume() fails when cursor persistence fails", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
     const load = vi.fn(async () => 0);
     const save = vi
       .fn(async () => undefined)
@@ -1454,17 +1364,10 @@ describe("StarciteClient", () => {
       .mockRejectedValueOnce(new Error("disk full"));
     const cursorStore: SessionCursorStore = { load, save };
 
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const consumePromise = client.session("ses_tail").consumeRaw({
+    const consumePromise = session.consume({
       cursorStore,
       reconnect: false,
       handler: () => undefined,
@@ -1499,18 +1402,11 @@ describe("StarciteClient", () => {
   });
 
   it("consume() uses stored cursor values as-is", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const consumePromise = client.session("ses_tail").consume({
+    const consumePromise = session.consume({
       cursorStore: {
         load: async () => -1,
         save: async () => undefined,
@@ -1528,20 +1424,12 @@ describe("StarciteClient", () => {
   });
 
   it("does not fail fast when maxBufferedBatches is provided", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({ maxBufferedBatches: 0 })
+    const iterator = session
+      .tail({ maxBufferedBatches: 0 })
       [Symbol.asyncIterator]();
 
     const nextPromise = iterator.next();
@@ -1554,20 +1442,12 @@ describe("StarciteClient", () => {
   });
 
   it("does not fail fast when batchSize is provided", async () => {
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
 
-    const iterator = client
-      .session("ses_tail")
-      .tailRaw({ batchSize: 0 })
+    const iterator = session
+      .tail({ batchSize: 0 })
       [Symbol.asyncIterator]();
 
     const nextPromise = iterator.next();

@@ -1,6 +1,7 @@
 import { tokenFromAuthorizationHeader } from "../auth";
 import { StarciteTailError } from "../errors";
-import { agentFromActor, errorMessage } from "../internal/primitives";
+import { agentFromActor } from "../identity";
+import { errorMessage } from "../internal/primitives";
 import type {
   SessionTailOptions,
   StarciteWebSocket,
@@ -276,7 +277,7 @@ class TailStream {
     code: number | undefined,
     reason: string | undefined
   ): string {
-    const codeText = `code ${typeof code === "number" ? code : "unknown"}`;
+    const codeText = `code ${code ?? "unknown"}`;
     return reason ? `${codeText}, reason '${reason}'` : codeText;
   }
 
@@ -443,42 +444,26 @@ class TailStream {
   /**
    * Waits for reconnect delay while allowing abort to cut waits short.
    */
-  private async waitForDelay(ms: number): Promise<void> {
-    if (ms <= 0) {
-      return;
+  private waitForDelay(ms: number): Promise<void> {
+    if (ms <= 0 || this.options.signal?.aborted) {
+      return Promise.resolve();
     }
 
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        this.options.signal?.removeEventListener("abort", onAbort);
+    return new Promise<void>((resolve) => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => {
+        ac.abort();
         resolve();
       }, ms);
-
-      const onAbort = (): void => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        clearTimeout(timeout);
-        this.options.signal?.removeEventListener("abort", onAbort);
-        resolve();
-      };
-
-      if (this.options.signal) {
-        if (this.options.signal.aborted) {
-          onAbort();
-          return;
-        }
-
-        this.options.signal.addEventListener("abort", onAbort, { once: true });
-      }
+      this.options.signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          ac.abort();
+          resolve();
+        },
+        { signal: ac.signal }
+      );
     });
   }
 
