@@ -238,30 +238,6 @@ async function resolveGlobalOptions(
   };
 }
 
-async function promptForEndpoint(
-  prompt: PromptAdapter,
-  defaultEndpoint: string
-): Promise<string> {
-  while (true) {
-    const answer = await prompt.input("Starcite endpoint URL", defaultEndpoint);
-
-    try {
-      return parseEndpoint(answer, "endpoint");
-    } catch {
-      // keep asking until valid
-    }
-  }
-}
-
-async function promptForApiKey(prompt: PromptAdapter): Promise<string> {
-  const message = "Paste your Starcite API key";
-  const answer = prompt.password
-    ? await prompt.password(message)
-    : await prompt.input(message, "");
-
-  return trimString(answer) ?? "";
-}
-
 function formatTailEvent(event: TailEvent): string {
   const actorLabel = event.actor.startsWith("agent:")
     ? event.actor.slice("agent:".length)
@@ -482,67 +458,6 @@ class StarciteCliApp {
       });
 
     program
-      .command("init")
-      .description("Initialize Starcite CLI config for a remote instance")
-      .option("--endpoint <url>", "Starcite endpoint URL")
-      .option("--api-key <key>", "API key to store")
-      .option("-y, --yes", "Skip prompts and only use provided options")
-      .action(async function (
-        this: Command,
-        options: {
-          endpoint?: string;
-          apiKey?: string;
-          yes?: boolean;
-        }
-      ) {
-        const { baseUrl, json, store } = await resolveGlobalOptions(this);
-        const defaultEndpoint = parseEndpoint(baseUrl, "endpoint");
-        let endpoint = defaultEndpoint;
-
-        if (options.endpoint) {
-          endpoint = parseEndpoint(options.endpoint, "--endpoint");
-        } else if (!options.yes) {
-          endpoint = await promptForEndpoint(prompt, defaultEndpoint);
-        }
-
-        await store.updateConfig({ baseUrl: endpoint });
-
-        let apiKey = trimString(options.apiKey);
-
-        if (!(apiKey || options.yes)) {
-          apiKey = await promptForApiKey(prompt);
-        }
-
-        if (apiKey) {
-          await store.saveApiKey(apiKey);
-          await store.updateConfig({ apiKey: undefined });
-        }
-
-        if (json) {
-          logger.info(
-            JSON.stringify(
-              {
-                configDir: store.directory,
-                endpoint,
-                apiKeySaved: Boolean(apiKey),
-              },
-              null,
-              2
-            )
-          );
-          return;
-        }
-
-        logger.info(`Initialized Starcite CLI in ${store.directory}`);
-        logger.info(`Endpoint set to ${endpoint}`);
-        if (apiKey) {
-          logger.info("API key saved.");
-        } else {
-          logger.info("API key not set. Run `starcite auth login` when ready.");
-        }
-      });
-
-    program
       .command("config")
       .description("Manage CLI configuration")
       .addCommand(
@@ -606,61 +521,6 @@ class StarciteCliApp {
                 2
               )
             );
-          })
-      );
-
-    program
-      .command("auth")
-      .description("Manage API key authentication")
-      .addCommand(
-        new Command("login")
-          .description("Save an API key for authenticated requests")
-          .option("--api-key <key>", "API key to store")
-          .action(async function (this: Command, options: { apiKey?: string }) {
-            const { store } = await resolveGlobalOptions(this);
-            let apiKey = trimString(options.apiKey);
-
-            if (!apiKey) {
-              apiKey = await promptForApiKey(prompt);
-            }
-
-            if (!apiKey) {
-              throw new InvalidArgumentError("API key cannot be empty");
-            }
-
-            await store.saveApiKey(apiKey);
-            await store.updateConfig({ apiKey: undefined });
-            logger.info("API key saved.");
-          })
-      )
-      .addCommand(
-        new Command("logout")
-          .description("Remove the saved API key")
-          .action(async function (this: Command) {
-            const { store } = await resolveGlobalOptions(this);
-            await store.clearApiKey();
-            logger.info("Saved API key removed.");
-          })
-      )
-      .addCommand(
-        new Command("status")
-          .description("Show authentication status")
-          .action(async function (this: Command) {
-            const { store } = await resolveGlobalOptions(this);
-            const apiKey = await store.readApiKey();
-            const fromEnv = trimString(process.env.STARCITE_API_KEY);
-
-            if (fromEnv) {
-              logger.info("Authenticated via STARCITE_API_KEY.");
-              return;
-            }
-
-            if (apiKey) {
-              logger.info("Authenticated via saved API key.");
-              return;
-            }
-
-            logger.info("No API key configured. Run `starcite auth login`.");
           })
       );
 

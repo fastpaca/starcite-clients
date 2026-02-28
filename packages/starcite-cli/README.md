@@ -41,7 +41,8 @@ For temporary usage, use `npx starcite` or `bunx starcite` instead of installing
 ## Quick Start
 
 ```bash
-starcite init --endpoint https://<your-instance>.starcite.io --api-key <YOUR_API_KEY> --yes
+starcite config set endpoint https://<your-instance>.starcite.io
+starcite config set api-key <YOUR_API_KEY>
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
@@ -49,14 +50,6 @@ starcite tail ses_demo --cursor 0 --limit 1
 ```
 
 ## Cloud Setup
-
-```bash
-starcite init
-starcite config set endpoint https://<your-instance>.starcite.io
-starcite auth login
-```
-
-Non-interactive alternative:
 
 ```bash
 starcite config set endpoint https://<your-instance>.starcite.io
@@ -120,22 +113,6 @@ Useful flags:
 - `--cursor <cursor>`: pagination cursor from previous result
 - `--metadata <json>`: flat JSON object of exact-match metadata filters
 
-### `init`
-
-Initialize config for remote usage.
-
-Behavior:
-
-- writes endpoint to `~/.starcite/config.json`
-- optionally stores API key
-- supports interactive prompts when flags are omitted
-
-Useful flags:
-
-- `--endpoint <url>`: endpoint to store
-- `--api-key <key>`: API key to save
-- `-y, --yes`: skip prompts and use provided values only
-
 ### `config`
 
 Manage local configuration.
@@ -151,18 +128,6 @@ Key aliases accepted by `config set`:
 - endpoint: `endpoint`, `base-url`, `base_url`
 - producer id: `producer-id`, `producer_id`
 - API key: `api-key`, `api_key`
-
-### `auth`
-
-Manage API key auth.
-
-```bash
-starcite auth login
-starcite auth status
-starcite auth logout
-```
-
-`auth login` supports `--api-key <key>` for non-interactive flows.
 
 ### `up`
 

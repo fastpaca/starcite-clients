@@ -508,7 +508,7 @@ describe("starcite CLI", () => {
     expect(firstCall?.producer_seq).toBe(1);
   });
 
-  it("init writes endpoint config and saved API key", async () => {
+  it("config set api-key persists saved API key", async () => {
     const { logger } = makeLogger();
 
     const program = buildProgram({
@@ -517,29 +517,16 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      [
-        "--config-dir",
-        configDir,
-        "init",
-        "--yes",
-        "--endpoint",
-        "https://cust-a.starcite.io",
-        "--api-key",
-        "sk_test_123",
-      ],
+      ["--config-dir", configDir, "config", "set", "api-key", "sk_test_123"],
       {
         from: "user",
       }
     );
 
-    const configFile = JSON.parse(
-      readFileSync(join(configDir, "config.json"), "utf8")
-    ) as { baseUrl?: string };
     const credentialsFile = JSON.parse(
       readFileSync(join(configDir, "credentials.json"), "utf8")
     ) as { apiKey?: string };
 
-    expect(configFile.baseUrl).toBe("https://cust-a.starcite.io");
     expect(credentialsFile.apiKey).toBe("sk_test_123");
   });
 
@@ -572,7 +559,7 @@ describe("starcite CLI", () => {
     expect(configFile.baseUrl).toBe("https://tenant-a.starcite.io");
   });
 
-  it("auth login stores API key used by API commands", async () => {
+  it("config set api-key stores API key used by API commands", async () => {
     const { logger } = makeLogger();
     const authToken = encodeJwt({
       tenant_id: "acme",
@@ -595,7 +582,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", authToken],
+      ["--config-dir", configDir, "config", "set", "api-key", authToken],
       {
         from: "user",
       }
@@ -632,7 +619,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", serviceToken],
+      ["--config-dir", configDir, "config", "set", "api-key", serviceToken],
       {
         from: "user",
       }
@@ -681,7 +668,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", opaqueToken],
+      ["--config-dir", configDir, "config", "set", "api-key", opaqueToken],
       {
         from: "user",
       }
@@ -732,7 +719,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", serviceToken],
+      ["--config-dir", configDir, "config", "set", "api-key", serviceToken],
       {
         from: "user",
       }
@@ -779,7 +766,7 @@ describe("starcite CLI", () => {
     });
 
     await program.parseAsync(
-      ["--config-dir", configDir, "auth", "login", "--api-key", "sk_saved_123"],
+      ["--config-dir", configDir, "config", "set", "api-key", "sk_saved_123"],
       {
         from: "user",
       }
