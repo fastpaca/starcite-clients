@@ -165,6 +165,36 @@ export type TailEvent = z.infer<typeof TailEventSchema>;
 export type TailEventBatch = TailEvent[];
 
 /**
+ * Retention options for a session's in-memory canonical log.
+ */
+export interface SessionLogOptions {
+  /**
+   * Maximum number of events retained in memory.
+   *
+   * When omitted, the log keeps all applied events for the current runtime.
+   */
+  maxEvents?: number;
+}
+
+/**
+ * Snapshot of a session's canonical in-memory log state.
+ */
+export interface SessionSnapshot {
+  /**
+   * Ordered events currently retained in memory.
+   */
+  events: TailEvent[];
+  /**
+   * Highest contiguous sequence applied to the log.
+   */
+  lastSeq: number;
+  /**
+   * Indicates whether the session is actively streaming tail updates.
+   */
+  syncing: boolean;
+}
+
+/**
  * High-level `session.append()` input.
  *
  * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
@@ -245,6 +275,17 @@ export interface SessionTailOptions {
    * Optional lifecycle callback invoked for reconnect/drop/terminal stream state changes.
    */
   onLifecycleEvent?: (event: TailLifecycleEvent) => void;
+  /**
+   * Maximum time to wait for websocket handshake/open before reconnecting or failing.
+   *
+   * Defaults to `4000`.
+   */
+  connectionTimeoutMs?: number;
+  /**
+   * Optional inactivity watchdog. When set, the stream reconnects when no messages
+   * arrive within this duration.
+   */
+  inactivityTimeoutMs?: number;
 }
 
 /**

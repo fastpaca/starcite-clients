@@ -21,6 +21,7 @@ import type {
   RequestOptions,
   SessionListOptions,
   SessionListPage,
+  SessionLogOptions,
   SessionRecord,
   StarciteOptions,
 } from "./types";
@@ -137,18 +138,31 @@ export class Starcite {
    * **With token** (frontend): wraps an existing session token. The identity
    * and session id are decoded from the JWT.
    */
-  async session(
+  session(input: {
+    token: string;
+    id?: string;
+    logOptions?: SessionLogOptions;
+  }): StarciteSession;
+  session(input: {
+    identity: StarciteIdentity;
+    id?: string;
+    title?: string;
+    metadata?: Record<string, unknown>;
+    logOptions?: SessionLogOptions;
+  }): Promise<StarciteSession>;
+  session(
     input:
+      | { token: string; id?: string; logOptions?: SessionLogOptions }
       | {
           identity: StarciteIdentity;
           id?: string;
           title?: string;
           metadata?: Record<string, unknown>;
+          logOptions?: SessionLogOptions;
         }
-      | { token: string; id?: string }
-  ): Promise<StarciteSession> {
+  ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
-      return this.sessionFromToken(input.token, input.id);
+      return this.sessionFromToken(input.token, input.id, input.logOptions);
     }
 
     return this.sessionFromIdentity(input);
@@ -196,6 +210,7 @@ export class Starcite {
     id?: string;
     title?: string;
     metadata?: Record<string, unknown>;
+    logOptions?: SessionLogOptions;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
@@ -221,12 +236,14 @@ export class Starcite {
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token),
       record,
+      logOptions: input.logOptions,
     });
   }
 
   private sessionFromToken(
     token: string,
-    explicitId?: string
+    explicitId?: string,
+    logOptions?: SessionLogOptions
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
     const sessionId = explicitId ?? decoded.sessionId;
@@ -242,6 +259,7 @@ export class Starcite {
       token,
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
+      logOptions,
     });
   }
 
@@ -301,9 +319,7 @@ export class Starcite {
   private requireTenantId(method: string): string {
     const tenantId = this.inferredIdentity?.tenantId;
     if (!tenantId) {
-      throw new StarciteError(
-        `${method} requires apiKey to determine tenant.`
-      );
+      throw new StarciteError(`${method} requires apiKey to determine tenant.`);
     }
     return tenantId;
   }

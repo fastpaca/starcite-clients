@@ -113,9 +113,7 @@ function makeTailSessionToken(
 /**
  * Creates an API key JWT with standard claims for client construction tests.
  */
-function makeApiKey(
-  overrides: Record<string, unknown> = {}
-): string {
+function makeApiKey(overrides: Record<string, unknown> = {}): string {
   return tokenFromClaims({
     iss: "https://starcite.ai",
     tenant_id: "test-tenant",
@@ -317,11 +315,27 @@ describe("Starcite", () => {
     });
 
     // session({ token }) works without apiKey
-    const session = await starcite.session({ token: sessionToken, id: "ses_demo" });
+    const session = await starcite.session({
+      token: sessionToken,
+      id: "ses_demo",
+    });
     expect(session.id).toBe("ses_demo");
 
     // But agent()/user() require apiKey to infer tenant
     expect(() => starcite.agent({ id: "agent-7" })).toThrowError(StarciteError);
+  });
+
+  it("returns session({ token }) synchronously", () => {
+    const sessionToken = makeTailSessionToken("ses_sync", "agent:syncer");
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+    });
+
+    const session = starcite.session({ token: sessionToken });
+
+    expect(session).not.toBeInstanceOf(Promise);
+    expect(session.id).toBe("ses_sync");
   });
 
   it("wraps malformed JSON success responses as connection errors", async () => {
@@ -1081,7 +1095,9 @@ describe("Starcite", () => {
     await waitForSocketCount(sockets, 2);
     sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteRetryLimitError);
+    await expect(firstValuePromise).rejects.toBeInstanceOf(
+      StarciteRetryLimitError
+    );
 
     await firstValuePromise.catch((error) => {
       const tailError = error as StarciteRetryLimitError;
@@ -1110,7 +1126,9 @@ describe("Starcite", () => {
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteRetryLimitError);
+    await expect(firstValuePromise).rejects.toBeInstanceOf(
+      StarciteRetryLimitError
+    );
     await firstValuePromise.catch((error) => {
       const tailError = error as StarciteRetryLimitError;
       expect(tailError.stage).toBe("retry_limit");
@@ -1162,7 +1180,7 @@ describe("Starcite", () => {
   });
 
   it("propagates lifecycle callback exceptions", async () => {
-    const { starcite, sockets } = buildTailClient(fetchMock);
+    const { starcite } = buildTailClient(fetchMock);
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
@@ -1291,7 +1309,9 @@ describe("Starcite", () => {
     });
 
     const overflowPromise = iterator.next();
-    await expect(overflowPromise).rejects.toBeInstanceOf(StarciteBackpressureError);
+    await expect(overflowPromise).rejects.toBeInstanceOf(
+      StarciteBackpressureError
+    );
     await overflowPromise.catch((error) => {
       const tailError = error as StarciteBackpressureError;
       expect(tailError.stage).toBe("consumer_backpressure");
@@ -1420,6 +1440,354 @@ describe("Starcite", () => {
     await expect(consumePromise).resolves.toBeUndefined();
   });
 
+  it("syncs session snapshot updates via on('event')", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+    const observedSeqs: number[] = [];
+
+    const unsubscribe = session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2]);
+    expect(session.getSnapshot()).toMatchObject({
+      lastSeq: 2,
+      syncing: true,
+    });
+    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
+      1, 2,
+    ]);
+
+    unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.getSnapshot().syncing).toBe(false);
+  });
+
+  it("deduplicates identical repeated events in session snapshot", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+    const observedSeqs: number[] = [];
+
+    const unsubscribe = session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    const repeatedEvent = {
+      seq: 1,
+      type: "content",
+      payload: { text: "first frame" },
+      actor: "agent:drafter",
+      producer_id: "producer:drafter",
+      producer_seq: 1,
+    };
+
+    sockets[0]?.emit("message", { data: JSON.stringify(repeatedEvent) });
+    sockets[0]?.emit("message", { data: JSON.stringify(repeatedEvent) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1]);
+    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([1]);
+    unsubscribe();
+  });
+
+  it("replays retained events to late session listeners", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    const firstListenerSeqs: number[] = [];
+    const secondListenerSeqs: number[] = [];
+
+    session.on("event", (event) => {
+      firstListenerSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    session.on("event", (event) => {
+      secondListenerSeqs.push(event.seq);
+    });
+
+    expect(secondListenerSeqs).toEqual([1, 2]);
+    expect(firstListenerSeqs).toEqual([1, 2]);
+    session.disconnect();
+  });
+
+  it("recovers from session log gaps by reconnecting from the last applied seq", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "gap frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toBe(
+      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2, 3]);
+    session.disconnect();
+  });
+
+  it("routes fatal live-sync failures to on('error') listeners", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", () => undefined);
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "conflict frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:other",
+        producer_seq: 99,
+      }),
+    });
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      if (syncErrors.length > 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(syncErrors).toHaveLength(1);
+    expect(syncErrors[0]).toBeInstanceOf(StarciteError);
+    expect(syncErrors[0]?.message).toContain("Session log conflict for seq 1");
+    session.disconnect();
+  });
+
+  it("applies log retention limits in session snapshot", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({
+      token: sessionToken,
+      logOptions: { maxEvents: 2 },
+    });
+
+    const unsubscribe = session.on("event", () => undefined);
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const snapshot = session.getSnapshot();
+    expect(snapshot.lastSeq).toBe(3);
+    expect(snapshot.events.map((event) => event.seq)).toEqual([2, 3]);
+    unsubscribe();
+    session.disconnect();
+  });
+
+  it("ignores duplicates that are older than retained log history", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({
+      token: makeTailSessionToken(),
+      logOptions: { maxEvents: 2 },
+    });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
+      2, 3,
+    ]);
+    expect(observedSeqs).toEqual([1, 2, 3]);
+    expect(syncErrors).toEqual([]);
+    session.disconnect();
+  });
+
   it("does not fail fast when maxBufferedBatches is provided", async () => {
     const { starcite, sockets } = buildTailClient(fetchMock);
     const sessionToken = makeTailSessionToken();
@@ -1443,9 +1811,7 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({ batchSize: 0 })
-      [Symbol.asyncIterator]();
+    const iterator = session.tail({ batchSize: 0 })[Symbol.asyncIterator]();
 
     const nextPromise = iterator.next();
     await waitForSocketCount(sockets, 1);

@@ -37,22 +37,32 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsup",
-    "test": "vitest run",
+    "test": "vitest run --config vitest.config.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts --browser.name=chromium",
+    "test:browser:chromium": "vitest run --config vitest.browser.config.ts --browser.name=chromium",
+    "test:browser:firefox": "vitest run --config vitest.browser.config.ts --browser.name=firefox",
+    "test:browser:webkit": "vitest run --config vitest.browser.config.ts --browser.name=webkit",
+    "test:browser:all": "bun run test:browser:chromium && bun run test:browser:firefox && bun run test:browser:webkit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "bun run clean && bun run build",
     "publish:dry": "bun publish --dry-run --access public",
     "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts README.md",
     "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts README.md",
-    "check": "bun run lint && bun run typecheck && bun run test"
+    "check": "bun run lint && bun run typecheck && bun run test",
+    "check:browser": "bun run typecheck && bun run test && bun run test:browser",
+    "check:browser:all": "bun run typecheck && bun run test && bun run test:browser:all"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
+    "@vitest/browser": "2.1.9",
+    "playwright": "^1.58.2",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
     "vitest": "^2.1.9",
     "ws": "^8.19.0"
   },
   "dependencies": {
+    "eventemitter3": "^5.0.1",
     "jose": "^6.1.3",
     "zod": "^3.25.76"
   }

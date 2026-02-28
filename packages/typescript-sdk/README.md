@@ -2,25 +2,7 @@
 
 TypeScript SDK for [Starcite](https://starcite.ai), built for multi-agent systems.
 
-Built for teams where multiple producers need shared, ordered context.
-
-`@starcite/sdk` helps you:
-
-- listen and monitor what multiple agents are doing,
-- keep frontend state consistent with a single ordered event source,
-- replay history and continue sessions reliably.
-
-Typical flow:
-
-1. create a session
-2. list sessions when needed
-3. append ordered events
-4. tail from a cursor over WebSocket
-
-For multi-agent systems:
-
-- a) listen and monitor all producers in real time,
-- b) keep frontend consistency by reading from the same ordered stream.
+If you need a single ordered session stream across multiple producers, this is the SDK you use.
 
 ## Install
 
@@ -28,343 +10,249 @@ For multi-agent systems:
 npm install @starcite/sdk
 ```
 
-## Requirements
+## Runtime Requirements
 
-- Node.js 22+, Bun, or any modern runtime with `fetch` and `WebSocket`
-- Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
-- Your Starcite API key JWT (backend) and session token JWTs (frontend append/tail)
+- Node.js 22+ (or Bun / modern runtime with `fetch` + `WebSocket`)
+- Starcite base URL (for example `https://<your-instance>.starcite.io`)
+- API key JWT for backend flows
+- Session token JWTs for frontend/session-scoped flows
 
-The SDK appends `/v1` to the base URL automatically.
+The SDK normalizes the API URL to `/v1` automatically.
 
-## Quick Start
+## The Core Model
+
+- `Starcite`: tenant-scoped client
+- `StarciteIdentity`: `user` or `agent` principal tied to tenant
+- `StarciteSession`: session-scoped handle for append/tail/consume/live-sync
+
+The key split:
+- backend: construct `Starcite` with `apiKey`
+- frontend: construct `Starcite` without `apiKey`, bind with `session({ token })`
+
+## How You Use This SDK
+
+This is the practical shape teams end up using in production.
+
+### A) Agent Backend (worker/service)
+
+Use the identity flow. This creates or binds a session and mints a session token.
 
 ```ts
-import { createStarciteClient } from "@starcite/sdk";
+import { InMemoryCursorStore, Starcite } from "@starcite/sdk";
 
-const client = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+const starcite = new Starcite({
+  baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
 });
 
-const session = await client.create({
-  id: "ses_demo",
-  title: "Draft contract",
-  metadata: { tenant_id: "acme" },
+const cursorStore = new InMemoryCursorStore();
+
+export async function runPlanner(prompt: string, sessionId?: string) {
+  const planner = starcite.agent({ id: "planner" });
+
+  const session = await starcite.session({
+    identity: planner,
+    id: sessionId,
+    title: "Planning session",
+    metadata: { workflow: "planner" },
+  });
+
+  await session.append({ text: `Planning started: ${prompt}` });
+
+  await session.consume({
+    cursorStore,
+    reconnectPolicy: { mode: "fixed", initialDelayMs: 500, maxAttempts: 20 },
+    handler: async (event) => {
+      if (event.type === "content") {
+        // Your business logic here.
+      }
+    },
+  });
+
+  await session.append({ text: "Planning complete." });
+
+  return {
+    sessionId: session.id,
+    sessionToken: session.token, // hand off to UI when needed
+  };
+}
+```
+
+### B) User Frontend (browser)
+
+Do not use API keys in browser code. Your backend mints a session token and sends it to the UI.
+
+```ts
+import { Starcite } from "@starcite/sdk";
+
+const starcite = new Starcite({
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
+});
+
+const { token, sessionId } = await fetch("/api/chat/session", {
+  method: "POST",
+}).then((res) => res.json());
+
+const session = starcite.session({ token, id: sessionId });
+
+const stopEvents = session.on("event", (event) => {
+  // Replay + live events from canonical ordered session log.
+  renderEvent(event);
+});
+
+session.on("error", (error) => {
+  console.error("Session live-sync error", error);
 });
 
 await session.append({
-  agent: "researcher",
-  producerId: "producer:researcher",
-  producerSeq: 1,
-  text: "Found 8 relevant cases.",
+  text: "Can you summarize the last 3 updates?",
+  source: "user",
 });
 
-await session.append({
-  agent: "drafter",
-  producerId: "producer:drafter",
-  producerSeq: 1,
-  text: "Drafted clause 4.2 with references.",
-});
-
-for await (const event of session.tail({ cursor: 0 })) {
-  const actor = event.agent ?? event.actor;
-  const text =
-    event.text ?? (typeof event.payload.text === "string" ? event.payload.text : "");
-
-  console.log(`[${actor}] ${text}`);
-}
+// cleanup on unmount/navigation
+stopEvents();
+session.disconnect();
 ```
 
-## Authentication
+### C) Admin Panel (ops/audit)
 
-Use an API key JWT at client creation. The SDK injects
-`Authorization: Bearer <token>` for HTTP calls and tail upgrades.
+Typical split:
+1. Backend lists sessions using API key.
+2. Backend mints an admin viewer token for a selected session.
+3. Frontend binds with `session({ token, id })` and tails/replays safely.
+
+Backend:
 
 ```ts
-import { createStarciteClient } from "@starcite/sdk";
+import { Starcite } from "@starcite/sdk";
 
-const client = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
+const starcite = new Starcite({
+  baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
-});
-```
-
-For frontend session-scoped access, mint a short-lived session token from the
-JWT issuer authority (`iss`) rather than the Starcite API host:
-
-```ts
-const issued = await client.issueSessionToken({
-  session_id: "ses_demo",
-  principal: { type: "user", id: "user-42" },
-  scopes: ["session:read", "session:append"],
-  ttl_seconds: 3600,
+  authUrl: process.env.STARCITE_AUTH_URL,
 });
 
-const frontendClient = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
-  apiKey: issued.token,
-});
-```
-
-Auth issuer resolution order:
-
-1. `StarciteClientOptions.authUrl`
-2. `STARCITE_AUTH_URL`
-3. API key JWT `iss` authority
-
-Token refresh is not built in. If a key is revoked/rotated and requests start
-returning `401`, create a new client with the replacement key and reconnect
-tails from your last processed cursor.
-
-## List Sessions
-
-```ts
-const page = await client.listSessions({
-  limit: 20,
-  metadata: { tenant_id: "acme" },
-});
-
-for (const session of page.sessions) {
-  console.log(session.id, session.title, session.created_at);
+export async function listSessionsForAdmin() {
+  return await starcite.listSessions({ limit: 50 });
 }
 
-console.log("next cursor:", page.next_cursor);
-```
+export async function mintAdminViewerToken(sessionId: string) {
+  const response = await fetch(
+    `${process.env.STARCITE_AUTH_URL}/api/v1/session-tokens`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.STARCITE_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        principal: { type: "user", id: "admin:dashboard" },
+        scopes: ["session:read"],
+      }),
+    }
+  );
 
-## Append Modes
-
-Every append requires producer identity fields:
-
-- `producerId`: stable producer identifier (for example `producer:drafter`)
-- `producerSeq`: per-producer positive sequence number (1, 2, 3, ...)
-
-High-level append:
-
-```ts
-await client.session("ses_demo").append({
-  agent: "drafter",
-  producerId: "producer:drafter",
-  producerSeq: 1,
-  text: "Reviewing clause 4.2...",
-});
-```
-
-Raw append:
-
-```ts
-await client.session("ses_demo").appendRaw({
-  type: "content",
-  // Optional: if omitted, Starcite derives actor from JWT `sub`.
-  actor: "agent:drafter",
-  producer_id: "producer:drafter",
-  producer_seq: 3,
-  payload: { text: "Reviewing clause 4.2..." },
-  idempotency_key: "req-123",
-  expected_seq: 3,
-});
-```
-
-## Tail Options
-
-```ts
-const session = client.session("ses_demo");
-const controller = new AbortController();
-
-setTimeout(() => controller.abort(), 5000);
-
-for await (const event of session.tail({
-  cursor: 0,
-  batchSize: 256,
-  maxBufferedBatches: 256,
-  agent: "drafter",
-  reconnect: true,
-  reconnectPolicy: {
-    mode: "exponential",
-    initialDelayMs: 500,
-    maxDelayMs: 10_000,
-    jitterRatio: 0.2,
-  },
-  onLifecycleEvent: (event) => {
-    console.log("tail lifecycle:", event.type);
-  },
-  signal: controller.signal,
-})) {
-  console.log(event);
-}
-```
-
-`tail()` replays `seq > cursor`, streams live events, and automatically reconnects
-on transport failures while resuming from the last observed `seq`.
-
-- Set `reconnect: false` to disable automatic reconnect behavior.
-- By default, reconnect retries continue until the stream is aborted or closes gracefully.
-- Use `reconnectPolicy` to control retry mode/delay/backoff/jitter/attempt limits.
-- Use `batchSize` (`1..1000`) to request batched tail frames from the server for faster catch-up.
-- Use `maxBufferedBatches` to cap in-memory buffering and fail fast if consumers fall behind.
-- Use `onLifecycleEvent` for structured reconnect/drop/end observability.
-- `tail()` / `tailRaw()` yield one event at a time.
-- Use `tailBatches()` / `tailRawBatches()` to ingest one frame-sized array at a time.
-
-## Durable Defaults
-
-The SDK uses one durable reliability profile by default:
-
-- reconnect enabled
-- exponential backoff (`500ms` -> `15000ms`)
-- jitter (`0.2`)
-- unlimited reconnect attempts
-- `maxBufferedBatches: 1024`
-
-Batch ingestion example:
-
-```ts
-for await (const batch of session.tailBatches({
-  cursor: 0,
-  batchSize: 256,
-})) {
-  // Apply one state update per received frame.
-  applyEvents(batch);
-}
-```
-
-## Durable Consume
-
-Use `consume()` / `consumeRaw()` when you want built-in checkpointing instead of
-manually persisting `seq` values.
-
-```ts
-import {
-  createInMemoryCursorStore,
-  createLocalStorageCursorStore,
-} from "@starcite/sdk";
-
-const cursorStore =
-  typeof window === "undefined"
-    ? createInMemoryCursorStore()
-    : createLocalStorageCursorStore();
-
-await client.session("ses_demo").consume({
-  cursorStore,
-  reconnect: true,
-  handler: async (event) => {
-    await renderOrStore(event);
-  },
-});
-```
-
-The SDK only checkpoints after `handler(...)` succeeds, which keeps resume
-behavior deterministic after crashes or process restarts.
-
-## Browser Restart Resilience
-
-`tail()` reconnects robustly for transport failures, but browser refresh/crash
-resets in-memory state. Persist your last processed `seq` and restart from it.
-
-```ts
-const sessionId = "ses_demo";
-const cursorKey = `starcite:${sessionId}:lastSeq`;
-
-const rawCursor = localStorage.getItem(cursorKey) ?? "0";
-let lastSeq = Number.parseInt(rawCursor, 10);
-
-if (!Number.isInteger(lastSeq) || lastSeq < 0) {
-  lastSeq = 0;
-}
-
-for await (const event of client.session(sessionId).tail({
-  cursor: lastSeq,
-  reconnect: true,
-  reconnectPolicy: {
-    mode: "fixed",
-    initialDelayMs: 3000,
-  },
-})) {
-  // Process event first, then persist cursor when your side effects succeed.
-  await renderOrStore(event);
-  lastSeq = event.seq;
-  localStorage.setItem(cursorKey, `${lastSeq}`);
-}
-```
-
-This pattern protects against missed events across browser restarts. Design your
-event handler to be idempotent by `seq` to safely tolerate replays.
-
-## Error Handling
-
-```ts
-import {
-  StarciteApiError,
-  StarciteConnectionError,
-  StarciteTailError,
-  createStarciteClient,
-} from "@starcite/sdk";
-
-const client = createStarciteClient({
-  baseUrl: process.env.STARCITE_BASE_URL ?? "https://<your-instance>.starcite.io",
-  apiKey: process.env.STARCITE_API_KEY,
-});
-
-try {
-  await client.create();
-} catch (error) {
-  if (error instanceof StarciteApiError) {
-    console.error(error.status, error.code, error.message);
-  } else if (error instanceof StarciteTailError) {
-    console.error(error.stage, error.sessionId, error.attempts, error.message);
-  } else if (error instanceof StarciteConnectionError) {
-    console.error(error.message);
-  } else {
-    throw error;
+  if (!response.ok) {
+    throw new Error(`Failed to mint admin token: ${response.status}`);
   }
+
+  return (await response.json()) as { token: string; expires_in: number };
 }
 ```
 
-## API Surface
+Frontend admin inspector:
 
-- `createStarciteClient(options?)`
-- `starcite` (default client instance)
-- `StarciteClient`
-  - `create(input?)`
-  - `createSession(input?)`
-  - `listSessions(options?)`
-  - `issueSessionToken(input)`
-  - `session(id, record?)`
-  - `appendEvent(sessionId, input)`
-  - `tailEvents(sessionId, options?)`
-  - `tailEventBatches(sessionId, options?)`
-  - `tailRawEvents(sessionId, options?)`
-  - `tailRawEventBatches(sessionId, options?)`
-  - `consumeEvents(sessionId, options)`
-  - `consumeRawEvents(sessionId, options)`
-- `StarciteSession`
-  - `append(input)`
-  - `appendRaw(input)`
-  - `tail(options?)`
-  - `tailBatches(options?)`
-  - `tailRaw(options?)`
-  - `tailRawBatches(options?)`
-  - `consume(options)`
-  - `consumeRaw(options)`
-- `createInMemoryCursorStore(initial?)`
-- `createWebStorageCursorStore(storage, options?)`
-- `createLocalStorageCursorStore(options?)`
+```ts
+import { Starcite } from "@starcite/sdk";
+
+const starcite = new Starcite({
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
+});
+
+export async function inspectSession(sessionId: string) {
+  const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
+    (res) => res.json()
+  );
+
+  const session = starcite.session({ token, id: sessionId });
+
+  const stop = session.on("event", (event) => {
+    appendAuditRow(event);
+  });
+
+  session.on("error", (error) => {
+    showBanner(`Stream error: ${error.message}`);
+  });
+
+  return () => {
+    stop();
+    session.disconnect();
+  };
+}
+```
+
+## Session APIs (Current)
+
+`Starcite`:
+- `new Starcite(options?)`
+- `user({ id })`
+- `agent({ id })`
+- `session({ token, id?, logOptions? }) => StarciteSession` (sync)
+- `session({ identity, id?, title?, metadata?, logOptions? }) => Promise<StarciteSession>`
+- `listSessions(options?, requestOptions?)`
+
+`StarciteSession`:
+- `append(input, options?)`
+- `appendRaw(input, options?)`
+- `tail(options?)`
+- `tailBatches(options?)`
+- `consume(options)`
+- `on("event" | "error", listener)` / `off(...)`
+- `getSnapshot()`
+- `setLogOptions({ maxEvents })`
+- `disconnect()` / `close()`
+
+## Tail Reliability Controls
+
+`SessionTailOptions` supports:
+- `cursor`, `batchSize`, `agent`
+- `follow`, `reconnect`, `reconnectPolicy`
+- `connectionTimeoutMs`, `inactivityTimeoutMs`
+- `maxBufferedBatches`
+- `signal`
+- `onLifecycleEvent`
+
+This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
+
+## Cursor Stores
+
+For durable processing/checkpointing with `consume()`:
+
+- `InMemoryCursorStore`
+- `WebStorageCursorStore`
+- `LocalStorageCursorStore`
+- or bring your own via `SessionCursorStore`
+
+## Error Types You Should Handle
+
+- `StarciteApiError` for non-2xx responses
+- `StarciteConnectionError` for transport/JSON issues
+- `StarciteTailError` for streaming failures
+- `StarciteTokenExpiredError` when close code `4001` is observed
+- `StarciteRetryLimitError` when reconnect budget is exhausted
+- `StarciteBackpressureError` when consumer buffering limits are exceeded
 
 ## Local Development
 
 ```bash
 bun install
 bun run --cwd packages/typescript-sdk build
-bun run --cwd packages/typescript-sdk test
-```
-
-Optional reconnect soak test (runs ~40s, disabled by default):
-
-```bash
-STARCITE_SDK_RUN_SOAK=1 bun run --cwd packages/typescript-sdk test -- test/client.reconnect.integration.test.ts
+bun run --cwd packages/typescript-sdk check
+bun run --cwd packages/typescript-sdk check:browser:all
 ```
 
 ## Links
 
-- Product docs and examples: https://starcite.ai
-- API contract: https://github.com/fastpaca/starcite/blob/main/docs/api/rest.md
-- WebSocket tail docs: https://github.com/fastpaca/starcite/blob/main/docs/api/websocket.md
+- Product: https://starcite.ai
+- Repository: https://github.com/fastpaca/starcite-clients

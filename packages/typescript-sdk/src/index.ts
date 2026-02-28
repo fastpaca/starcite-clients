@@ -16,9 +16,10 @@ export {
   StarciteTailError,
   StarciteTokenExpiredError,
 } from "./errors";
-export { StarciteIdentity } from "./identity";
 export type { PrincipalType } from "./identity";
+export { StarciteIdentity } from "./identity";
 export { StarciteSession } from "./session";
+export { SessionLogConflictError, SessionLogGapError } from "./session-log";
 export type {
   AppendEventRequest,
   AppendEventResponse,
@@ -29,7 +30,9 @@ export type {
   SessionListItem,
   SessionListOptions,
   SessionListPage,
+  SessionLogOptions,
   SessionRecord,
+  SessionSnapshot,
   SessionTailOptions,
   SessionTokenScope,
   StarciteOptions,
