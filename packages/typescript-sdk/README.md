@@ -205,8 +205,8 @@ export async function inspectSession(sessionId: string) {
 `StarciteSession`:
 - `append(input, options?)`
 - `appendRaw(input, options?)`
-- `tail(options?)`
-- `tailBatches(options?)`
+- `tail(onEvent, options?) => Promise<void>`
+- `tailBatches(onBatch, options?) => Promise<void>`
 - `consume(options)`
 - `on("event" | "error", listener)` / `off(...)`
 - `getSnapshot()`

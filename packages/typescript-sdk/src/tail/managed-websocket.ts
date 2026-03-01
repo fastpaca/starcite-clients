@@ -22,7 +22,7 @@ interface ReconnectPolicy {
   maxAttempts: number;
 }
 
-interface ManagedWebSocketEvents {
+export interface ManagedWebSocketEvents {
   connect_attempt: (event: { attempt: number }) => void;
   connect_failed: (event: { attempt: number; rootCause: string }) => void;
   reconnect_scheduled: (event: {
@@ -57,7 +57,9 @@ interface ManagedWebSocketEvents {
 }
 
 export interface ManagedWebSocketOptions {
-  url: () => string | Promise<string>;
+  // Re-evaluated for each connect attempt so reconnects use the latest cursor
+  // held by `TailStream`, without `TailStream` managing reconnect internals.
+  url: () => string;
   websocketFactory: StarciteWebSocketFactory;
   connectOptions?: StarciteWebSocketConnectOptions;
   signal?: AbortSignal;
@@ -82,129 +84,38 @@ interface FinalState {
   graceful: boolean;
 }
 
-type AttemptPreparationResult =
-  | { kind: "ready"; attempt: number; socket: StarciteWebSocket }
-  | { kind: "continue" }
-  | { kind: "break" };
-
 /**
  * Managed websocket loop with reconnect + timeout controls.
  *
+ * `waitForClose()` returns one shared completion promise for all callers.
+ * Connect/drop/retry decisions are emitted as lifecycle events.
+ * Listener exceptions are treated as fatal (fail-fast over silent corruption).
+ *
  * This powers `TailStream` so transport behavior is centralized in one place.
  */
-export class ManagedWebSocket {
+export class ManagedWebSocket extends EventEmitter<ManagedWebSocketEvents> {
   private readonly options: ManagedWebSocketOptions;
-  private readonly events = new EventEmitter<ManagedWebSocketEvents>();
   private socket: StarciteWebSocket | undefined;
+  private cancelReconnectWait: (() => void) | undefined;
+  // Set while a socket run is active so `close()` can synchronously settle it.
   private forceCloseSocket:
     | ((code: number, reason: string, aborted?: boolean) => void)
     | undefined;
   private started = false;
   private closed = false;
+  // Tracks reconnect attempts for backoff and retry-limit accounting.
   private reconnectAttempts = 0;
+  // Shared deferred completion for all callers of waitForClose(), even late ones.
   private readonly donePromise: Promise<void>;
+  // Set to `undefined` after resolution so finish() remains idempotent.
   private resolveDone: (() => void) | undefined;
 
   constructor(options: ManagedWebSocketOptions) {
+    super();
     this.options = options;
     this.donePromise = new Promise<void>((resolve) => {
       this.resolveDone = resolve;
     });
-  }
-
-  onConnectAttempt(listener: (event: { attempt: number }) => void): () => void {
-    this.events.on("connect_attempt", listener);
-    return () => {
-      this.events.off("connect_attempt", listener);
-    };
-  }
-
-  onConnectFailed(
-    listener: (event: { attempt: number; rootCause: string }) => void
-  ): () => void {
-    this.events.on("connect_failed", listener);
-    return () => {
-      this.events.off("connect_failed", listener);
-    };
-  }
-
-  onReconnectScheduled(
-    listener: (event: {
-      attempt: number;
-      delayMs: number;
-      trigger: ConnectTrigger;
-      closeCode?: number;
-      closeReason?: string;
-      rootCause?: string;
-    }) => void
-  ): () => void {
-    this.events.on("reconnect_scheduled", listener);
-    return () => {
-      this.events.off("reconnect_scheduled", listener);
-    };
-  }
-
-  onDropped(
-    listener: (event: {
-      attempt: number;
-      closeCode?: number;
-      closeReason?: string;
-    }) => void
-  ): () => void {
-    this.events.on("dropped", listener);
-    return () => {
-      this.events.off("dropped", listener);
-    };
-  }
-
-  onRetryLimit(
-    listener: (event: {
-      attempt: number;
-      trigger: ConnectTrigger;
-      closeCode?: number;
-      closeReason?: string;
-      rootCause?: string;
-    }) => void
-  ): () => void {
-    this.events.on("retry_limit", listener);
-    return () => {
-      this.events.off("retry_limit", listener);
-    };
-  }
-
-  onOpen(listener: () => void): () => void {
-    this.events.on("open", listener);
-    return () => {
-      this.events.off("open", listener);
-    };
-  }
-
-  onMessage(listener: (data: unknown) => void): () => void {
-    this.events.on("message", listener);
-    return () => {
-      this.events.off("message", listener);
-    };
-  }
-
-  onFatal(listener: (error: unknown) => void): () => void {
-    this.events.on("fatal", listener);
-    return () => {
-      this.events.off("fatal", listener);
-    };
-  }
-
-  onClosed(
-    listener: (event: {
-      closeCode?: number;
-      closeReason?: string;
-      aborted: boolean;
-      graceful: boolean;
-    }) => void
-  ): () => void {
-    this.events.on("closed", listener);
-    return () => {
-      this.events.off("closed", listener);
-    };
   }
 
   close(code = NORMAL_CLOSE_CODE, reason = "closed"): void {
@@ -213,6 +124,9 @@ export class ManagedWebSocket {
     }
 
     this.closed = true;
+    this.cancelReconnectWait?.();
+    this.cancelReconnectWait = undefined;
+
     if (!this.started) {
       this.finish({
         closeCode: code,
@@ -231,10 +145,12 @@ export class ManagedWebSocket {
   }
 
   resetReconnectAttempts(): void {
+    // Called by `TailStream` once useful data has been consumed.
     this.reconnectAttempts = 0;
   }
 
   waitForClose(): Promise<void> {
+    // Construction is side-effect free; transport starts when someone awaits closure.
     this.start();
     return this.donePromise;
   }
@@ -246,7 +162,7 @@ export class ManagedWebSocket {
 
     this.started = true;
     this.run().catch((error) => {
-      this.emitOrFatal("fatal", error);
+      this.emitSafe("fatal", error);
       this.finish({
         closeCode: undefined,
         closeReason: "run failed",
@@ -264,20 +180,51 @@ export class ManagedWebSocket {
       graceful: false,
     };
 
+    // Keep running attempts until a terminal condition wins:
+    // graceful close, abort/explicit close, retry limit, or fatal listener error.
     while (!this.closed) {
-      const maybePrepared = this.prepareAttempt(finalState);
-      const prepared =
-        maybePrepared instanceof Promise ? await maybePrepared : maybePrepared;
-      if (prepared.kind === "continue") {
-        continue;
-      }
-      if (prepared.kind === "break") {
+      if (this.options.signal?.aborted) {
+        this.closed = true;
+        finalState.aborted = true;
         break;
       }
 
-      const result = await this.runSocket(prepared.socket);
+      const attempt = this.reconnectAttempts + 1;
+      // Lifecycle listeners can intentionally stop the run by throwing.
+      if (!this.emitSafe("connect_attempt", { attempt })) {
+        this.closed = true;
+        break;
+      }
+      if (this.closed) {
+        break;
+      }
+
+      let socket: StarciteWebSocket;
+      try {
+        // Resolve URL per attempt so reconnect uses latest producer cursor state.
+        const url = this.options.url();
+        socket = this.options.websocketFactory(
+          url,
+          this.options.connectOptions
+        );
+      } catch (error) {
+        // Connect failures use the same retry policy path as dropped sockets.
+        const shouldContinue = await this.handleConnectFailure(attempt, error);
+        if (shouldContinue) {
+          continue;
+        }
+        break;
+      }
+
+      if (this.closed) {
+        // Close was requested between socket creation and run loop registration.
+        closeQuietly(socket, NORMAL_CLOSE_CODE, "closed");
+        break;
+      }
+
+      const result = await this.runSocket(socket);
       const shouldContinue = await this.handleSocketResult(
-        prepared.attempt,
+        attempt,
         result,
         finalState
       );
@@ -291,129 +238,21 @@ export class ManagedWebSocket {
     this.finish(finalState);
   }
 
-  private prepareAttempt(
-    finalState: FinalState
-  ): AttemptPreparationResult | Promise<AttemptPreparationResult> {
-    if (this.options.signal?.aborted) {
-      this.closed = true;
-      finalState.aborted = true;
-      return { kind: "break" };
-    }
-
-    const attempt = this.reconnectAttempts + 1;
-    if (!this.beginAttempt(attempt)) {
-      return { kind: "break" };
-    }
-
-    const maybeUrlResult = this.resolveUrlForAttempt(attempt);
-    if (maybeUrlResult instanceof Promise) {
-      return maybeUrlResult.then((urlResult) =>
-        this.prepareSocketForAttempt(attempt, urlResult)
-      );
-    }
-
-    return this.prepareSocketForAttempt(attempt, maybeUrlResult);
-  }
-
-  private prepareSocketForAttempt(
+  private async handleConnectFailure(
     attempt: number,
-    urlResult: { kind: "ready"; url: string } | { kind: "continue" | "break" }
-  ): AttemptPreparationResult | Promise<AttemptPreparationResult> {
-    if (urlResult.kind !== "ready") {
-      return urlResult;
-    }
-
-    if (this.closed) {
-      return { kind: "break" };
-    }
-
-    const maybeSocketResult = this.createSocketForAttempt(
-      attempt,
-      urlResult.url
-    );
-    if (maybeSocketResult instanceof Promise) {
-      return maybeSocketResult.then((socketResult) =>
-        this.finalizeAttemptPreparation(socketResult)
-      );
-    }
-
-    return this.finalizeAttemptPreparation(maybeSocketResult);
-  }
-
-  private finalizeAttemptPreparation(
-    prepared: AttemptPreparationResult
-  ): AttemptPreparationResult {
-    if (prepared.kind !== "ready") {
-      return prepared;
-    }
-
-    if (this.closed) {
-      closeQuietly(prepared.socket, NORMAL_CLOSE_CODE, "closed");
-      return { kind: "break" };
-    }
-
-    return prepared;
-  }
-
-  private beginAttempt(attempt: number): boolean {
-    if (!this.emitOrFatal("connect_attempt", { attempt })) {
+    error: unknown
+  ): Promise<boolean> {
+    const rootCause = toErrorMessage(error);
+    if (!this.emitSafe("connect_failed", { attempt, rootCause })) {
       this.closed = true;
       return false;
     }
 
-    return !this.closed;
-  }
-
-  private resolveUrlForAttempt(
-    attempt: number
-  ):
-    | { kind: "ready"; url: string }
-    | Promise<{ kind: "ready"; url: string } | { kind: "continue" | "break" }> {
-    try {
-      const providedUrl = this.options.url();
-      if (providedUrl instanceof Promise) {
-        return providedUrl
-          .then((url) => ({ kind: "ready", url }) as const)
-          .catch((error) => this.handleConnectFailure(attempt, error));
-      }
-
-      return { kind: "ready", url: providedUrl };
-    } catch (error) {
-      return this.handleConnectFailure(attempt, error);
-    }
-  }
-
-  private createSocketForAttempt(
-    attempt: number,
-    url: string
-  ): AttemptPreparationResult | Promise<AttemptPreparationResult> {
-    try {
-      const socket = this.options.websocketFactory(
-        url,
-        this.options.connectOptions
-      );
-      return { kind: "ready", attempt, socket };
-    } catch (error) {
-      return this.handleConnectFailure(attempt, error);
-    }
-  }
-
-  private async handleConnectFailure(
-    attempt: number,
-    error: unknown
-  ): Promise<{ kind: "continue" | "break" }> {
-    const rootCause = toErrorMessage(error);
-    if (!this.emitOrFatal("connect_failed", { attempt, rootCause })) {
-      this.closed = true;
-      return { kind: "break" };
-    }
-
-    const shouldContinue = await this.scheduleReconnect({
+    return await this.scheduleReconnect({
       attempt,
       trigger: "connect_failed",
       rootCause,
     });
-    return { kind: shouldContinue ? "continue" : "break" };
   }
 
   private async handleSocketResult(
@@ -421,6 +260,7 @@ export class ManagedWebSocket {
     result: SocketRunResult,
     finalState: FinalState
   ): Promise<boolean> {
+    // Preserve terminal metadata so `TailStream` can classify why the stream ended.
     finalState.closeCode = result.closeCode;
     finalState.closeReason = result.closeReason;
     finalState.aborted =
@@ -429,7 +269,8 @@ export class ManagedWebSocket {
       !result.sawTransportError && result.closeCode === NORMAL_CLOSE_CODE;
 
     if (result.listenerError !== undefined) {
-      this.emitOrFatal("fatal", result.listenerError);
+      // Listener failures are fatal to avoid continuing with inconsistent consumer state.
+      this.emitSafe("fatal", result.listenerError);
       this.closed = true;
       return false;
     }
@@ -439,7 +280,7 @@ export class ManagedWebSocket {
     }
 
     if (
-      !this.emitOrFatal("dropped", {
+      !this.emitSafe("dropped", {
         attempt,
         closeCode: result.closeCode,
         closeReason: result.closeReason,
@@ -464,6 +305,7 @@ export class ManagedWebSocket {
     closeReason?: string;
     rootCause?: string;
   }): Promise<boolean> {
+    // Single policy gate for retries so connect and dropped failures behave identically.
     if (
       !this.options.shouldReconnect ||
       this.closed ||
@@ -474,7 +316,7 @@ export class ManagedWebSocket {
     }
 
     if (input.attempt > this.options.reconnectPolicy.maxAttempts) {
-      this.emitOrFatal("retry_limit", {
+      this.emitSafe("retry_limit", {
         attempt: input.attempt,
         trigger: input.trigger,
         closeCode: input.closeCode,
@@ -490,7 +332,7 @@ export class ManagedWebSocket {
       this.options.reconnectPolicy
     );
     if (
-      !this.emitOrFatal("reconnect_scheduled", {
+      !this.emitSafe("reconnect_scheduled", {
         attempt: input.attempt,
         delayMs,
         trigger: input.trigger,
@@ -504,11 +346,18 @@ export class ManagedWebSocket {
     }
 
     this.reconnectAttempts = input.attempt;
-    await waitForDelay(delayMs, this.options.signal);
+    const reconnectWait = waitForDelay(delayMs, this.options.signal);
+    this.cancelReconnectWait = reconnectWait.cancel;
+    await reconnectWait.promise;
+    if (this.cancelReconnectWait === reconnectWait.cancel) {
+      this.cancelReconnectWait = undefined;
+    }
+
     return !(this.closed || (this.options.signal?.aborted ?? false));
   }
 
   private runSocket(socket: StarciteWebSocket): Promise<SocketRunResult> {
+    // Owns one socket lifetime and resolves to a classified outcome.
     return new Promise((resolve) => {
       this.socket = socket;
       let settled = false;
@@ -610,7 +459,7 @@ export class ManagedWebSocket {
         socketOpen = true;
         clearTimeout(connectionTimeout);
         armInactivityTimeout();
-        if (!this.emitOrFatal("open", undefined)) {
+        if (!this.emitSafe("open")) {
           listenerError = new Error("Managed websocket open listener failed");
           closeAndSettle(NORMAL_CLOSE_CODE, "listener failed");
         }
@@ -618,7 +467,7 @@ export class ManagedWebSocket {
 
       const onMessage = (event: StarciteWebSocketMessageEvent): void => {
         armInactivityTimeout();
-        if (!this.emitOrFatal("message", event.data)) {
+        if (!this.emitSafe("message", event.data)) {
           listenerError = new Error(
             "Managed websocket message listener failed"
           );
@@ -627,6 +476,7 @@ export class ManagedWebSocket {
       };
 
       const onError = (_event: StarciteWebSocketEventMap["error"]): void => {
+        // Browsers may dispatch `error` before `close`; mark transport as non-graceful.
         sawTransportError = true;
       };
 
@@ -637,6 +487,7 @@ export class ManagedWebSocket {
       };
 
       const onAbort = (): void => {
+        // Abort is treated as local shutdown and ends reconnect attempts immediately.
         this.closed = true;
         closeAndSettle(NORMAL_CLOSE_CODE, "aborted", true);
       };
@@ -654,11 +505,13 @@ export class ManagedWebSocket {
     });
   }
 
-  private emitOrFatal(
+  private emitSafe(
     eventName: keyof ManagedWebSocketEvents,
     payload?: unknown
   ): boolean {
-    const emitter = this.events as unknown as EventEmitter<
+    // Keep this cast local: EventEmitter3's generic typing does not model
+    // dynamic keyed payload tuples well for this usage.
+    const emitter = this as unknown as EventEmitter<
       Record<string, (...args: unknown[]) => void>
     >;
 
@@ -687,8 +540,9 @@ export class ManagedWebSocket {
       return;
     }
 
-    this.events.emit("closed", event);
-    this.events.removeAllListeners();
+    // Emit final state before cleanup so `TailStream` can observe close reason.
+    this.emit("closed", event);
+    this.removeAllListeners();
     const resolve = this.resolveDone;
     this.resolveDone = undefined;
     resolve();
@@ -716,24 +570,51 @@ function reconnectDelayForAttempt(
 function waitForDelay(
   ms: number,
   signal: AbortSignal | undefined
-): Promise<void> {
+): { promise: Promise<void>; cancel: () => void } {
   if (ms <= 0 || signal?.aborted) {
-    return Promise.resolve();
+    return {
+      promise: Promise.resolve(),
+      cancel: () => undefined,
+    };
   }
 
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+  let resolvePromise: (() => void) | undefined;
 
-    const onAbort = (): void => {
+  const onAbort = (): void => {
+    finish();
+  };
+
+  const finish = (): void => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    if (timer) {
       clearTimeout(timer);
-      resolve();
-    };
+      timer = undefined;
+    }
+    signal?.removeEventListener("abort", onAbort);
+    resolvePromise?.();
+    resolvePromise = undefined;
+  };
 
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+
+    // Reconnect backoff is abortable so shutdown does not wait out timers.
+    timer = setTimeout(() => {
+      finish();
+    }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+
+  return {
+    promise,
+    cancel: finish,
+  };
 }
 
 function closeQuietly(

@@ -5,9 +5,11 @@ import {
   StarciteTokenExpiredError,
 } from "../../src/errors";
 import type {
+  SessionTailOptions,
   StarciteWebSocketCloseEvent,
   StarciteWebSocketEventMap,
   StarciteWebSocketMessageEvent,
+  TailEvent,
 } from "../../src/types";
 
 const BASE64_URL_PADDING_REGEX = /=+$/;
@@ -121,6 +123,54 @@ async function waitForCondition(
   throw new Error(failureMessage);
 }
 
+async function waitForValues<T>(
+  values: T[],
+  expectedCount: number
+): Promise<void> {
+  await waitForCondition(
+    () => values.length >= expectedCount,
+    `Timed out waiting for ${expectedCount} value(s); saw ${values.length}`
+  );
+}
+
+function startTail(
+  session: {
+    tail: (
+      onEvent: (event: TailEvent) => void | Promise<void>,
+      options?: SessionTailOptions
+    ) => Promise<void>;
+  },
+  options: SessionTailOptions = {}
+): { events: TailEvent[]; done: Promise<void> } {
+  const events: TailEvent[] = [];
+
+  return {
+    events,
+    done: session.tail((event) => {
+      events.push(event);
+    }, options),
+  };
+}
+
+function startTailBatches(
+  session: {
+    tailBatches: (
+      onBatch: (batch: TailEvent[]) => void | Promise<void>,
+      options?: SessionTailOptions
+    ) => Promise<void>;
+  },
+  options: SessionTailOptions = {}
+): { batches: TailEvent[][]; done: Promise<void> } {
+  const batches: TailEvent[][] = [];
+
+  return {
+    batches,
+    done: session.tailBatches((batch) => {
+      batches.push(batch);
+    }, options),
+  };
+}
+
 function base64UrlEncode(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let binary = "";
@@ -181,8 +231,7 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_access", "agent:planner"),
     });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const firstValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session);
     await waitForSocketCount(1);
 
     const socket = FakeBrowserWebSocket.instances[0];
@@ -202,17 +251,11 @@ describe("Browser Multi-Agent Workflows", () => {
       })
     );
 
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1, actor: "agent:planner" },
-    });
+    await waitForValues(events, 1);
+    expect(events[0]).toMatchObject({ seq: 1, actor: "agent:planner" });
 
-    const donePromise = iterator.next();
     socket?.emitClose({ code: 1000, reason: "done" });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("runs concurrent agent-filtered tails for multi-agent browser workflows", async () => {
@@ -224,15 +267,8 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_multi", "agent:coordinator"),
     });
 
-    const plannerIterator = session
-      .tail({ agent: "planner" })
-      [Symbol.asyncIterator]();
-    const drafterIterator = session
-      .tail({ agent: "drafter" })
-      [Symbol.asyncIterator]();
-
-    const plannerNext = plannerIterator.next();
-    const drafterNext = drafterIterator.next();
+    const plannerTail = startTail(session, { agent: "planner" });
+    const drafterTail = startTail(session, { agent: "drafter" });
 
     await waitForSocketCount(2);
     const plannerSocket = FakeBrowserWebSocket.instances[0];
@@ -260,14 +296,21 @@ describe("Browser Multi-Agent Workflows", () => {
     plannerSocket?.emitMessage(mixedFrame);
     drafterSocket?.emitMessage(mixedFrame);
 
-    await expect(plannerNext).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1, actor: "agent:planner" },
+    await waitForValues(plannerTail.events, 1);
+    await waitForValues(drafterTail.events, 1);
+    expect(plannerTail.events[0]).toMatchObject({
+      seq: 1,
+      actor: "agent:planner",
     });
-    await expect(drafterNext).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2, actor: "agent:drafter" },
+    expect(drafterTail.events[0]).toMatchObject({
+      seq: 2,
+      actor: "agent:drafter",
     });
+
+    plannerSocket?.emitClose({ code: 1000, reason: "planner done" });
+    drafterSocket?.emitClose({ code: 1000, reason: "drafter done" });
+    await expect(plannerTail.done).resolves.toBeUndefined();
+    await expect(drafterTail.done).resolves.toBeUndefined();
   });
 
   it("replays retained events to late browser subscribers without opening extra sockets", async () => {
@@ -387,8 +430,7 @@ describe("Browser Multi-Agent Workflows", () => {
     });
     const session = starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session);
     await waitForCondition(
       () => sockets.length >= 1,
       "Timed out waiting for explicit access_token websocket socket"
@@ -399,10 +441,7 @@ describe("Browser Multi-Agent Workflows", () => {
     expect(connectOptionsSeen[0]).toBeUndefined();
 
     socket?.emitClose({ code: 1000, reason: "done" });
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("reconnects browser tails and resumes from the latest observed cursor", async () => {
@@ -414,17 +453,13 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_reconnect", "agent:planner"),
     });
 
-    const iterator = session
-      .tail({
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 1,
-        },
-      })
-      [Symbol.asyncIterator]();
-
-    const firstValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 1,
+      },
+    });
     await waitForSocketCount(1);
     const firstSocket = FakeBrowserWebSocket.instances[0];
 
@@ -438,17 +473,14 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 1,
       })
     );
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
 
     firstSocket?.emitClose({ code: 1006, reason: "dropped" });
     await waitForSocketCount(2);
     const secondSocket = FakeBrowserWebSocket.instances[1];
     expect(secondSocket?.url).toContain("cursor=1");
 
-    const secondValuePromise = iterator.next();
     secondSocket?.emitMessage(
       JSON.stringify({
         seq: 2,
@@ -459,17 +491,11 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 2,
       })
     );
-    await expect(secondValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2 },
-    });
+    await waitForValues(events, 2);
+    expect(events[1]?.seq).toBe(2);
 
-    const donePromise = iterator.next();
     secondSocket?.emitClose({ code: 1000, reason: "done" });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("raises token-expired errors for browser tails on close code 4001", async () => {
@@ -481,14 +507,13 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_expired", "agent:planner"),
     });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const rejection = iterator.next().catch((error) => error);
+    const { done: tailDone } = startTail(session);
     await waitForSocketCount(1);
 
     const socket = FakeBrowserWebSocket.instances[0];
     socket?.emitClose({ code: 4001, reason: "token_expired" });
 
-    const error = await rejection;
+    const error = await tailDone.catch((failure) => failure);
     expect(error).toBeInstanceOf(StarciteTokenExpiredError);
     expect((error as StarciteTokenExpiredError).closeCode).toBe(4001);
     expect((error as StarciteTokenExpiredError).closeReason).toBe(
@@ -509,18 +534,16 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_connect_retry_limit", "agent:planner"),
     });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 0,
+      },
+    });
 
-    const error = await iterator.next().catch((failure) => failure);
+    const error = await tailDone.catch((failure) => failure);
     expect(error).toBeInstanceOf(StarciteRetryLimitError);
     expect((error as StarciteRetryLimitError).stage).toBe("retry_limit");
     expect((error as StarciteRetryLimitError).attempts).toBe(1);
@@ -535,23 +558,20 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_drop_retry_limit", "agent:planner"),
     });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const rejection = iterator.next().catch((error) => error);
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 0,
+      },
+    });
 
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
     socket?.emitClose({ code: 1006, reason: "network gone" });
 
-    const error = await rejection;
+    const error = await tailDone.catch((failure) => failure);
     expect(error).toBeInstanceOf(StarciteRetryLimitError);
     expect((error as StarciteRetryLimitError).closeCode).toBe(1006);
     expect((error as StarciteRetryLimitError).closeReason).toBe("network gone");
@@ -567,24 +587,21 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_error_then_close", "agent:planner"),
     });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const rejection = iterator.next().catch((error) => error);
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 0,
+      },
+    });
 
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
     socket?.emitError();
     socket?.emitClose({ code: 1000, reason: "normal close" });
 
-    const error = await rejection;
+    const error = await tailDone.catch((failure) => failure);
     expect(error).toBeInstanceOf(StarciteRetryLimitError);
     expect((error as StarciteRetryLimitError).closeCode).toBe(1000);
     expect((error as StarciteRetryLimitError).closeReason).toBe("normal close");
@@ -605,16 +622,14 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_lifecycle", "agent:planner"),
     });
 
-    const iterator = session
-      .tail({
-        reconnect: false,
-        onLifecycleEvent: () => {
-          throw new Error("lifecycle observer failed");
-        },
-      })
-      [Symbol.asyncIterator]();
+    const { done: tailDone } = startTail(session, {
+      reconnect: false,
+      onLifecycleEvent: () => {
+        throw new Error("lifecycle observer failed");
+      },
+    });
 
-    await expect(iterator.next()).rejects.toThrow("lifecycle observer failed");
+    await expect(tailDone).rejects.toThrow("lifecycle observer failed");
     expect(sockets).toHaveLength(0);
   });
 
@@ -627,29 +642,22 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_isolated", "agent:coordinator"),
     });
 
-    const plannerIterator = session
-      .tail({
-        agent: "planner",
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 1,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const drafterIterator = session
-      .tail({
-        agent: "drafter",
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 1,
-        },
-      })
-      [Symbol.asyncIterator]();
-
-    const plannerFirst = plannerIterator.next();
-    const drafterFirst = drafterIterator.next();
+    const plannerTail = startTail(session, {
+      agent: "planner",
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 1,
+      },
+    });
+    const drafterTail = startTail(session, {
+      agent: "drafter",
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 1,
+      },
+    });
     await waitForSocketCount(2);
 
     const plannerSocket = FakeBrowserWebSocket.instances[0];
@@ -676,17 +684,16 @@ describe("Browser Multi-Agent Workflows", () => {
       })
     );
 
-    await expect(plannerFirst).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1, actor: "agent:planner" },
+    await waitForValues(plannerTail.events, 1);
+    await waitForValues(drafterTail.events, 1);
+    expect(plannerTail.events[0]).toMatchObject({
+      seq: 1,
+      actor: "agent:planner",
     });
-    await expect(drafterFirst).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2, actor: "agent:drafter" },
+    expect(drafterTail.events[0]).toMatchObject({
+      seq: 2,
+      actor: "agent:drafter",
     });
-
-    const plannerSecond = plannerIterator.next();
-    const drafterSecond = drafterIterator.next();
 
     plannerSocket?.emitClose({ code: 1006, reason: "planner dropped" });
     await waitForSocketCount(3);
@@ -703,9 +710,10 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 2,
       })
     );
-    await expect(drafterSecond).resolves.toMatchObject({
-      done: false,
-      value: { seq: 3, actor: "agent:drafter" },
+    await waitForValues(drafterTail.events, 2);
+    expect(drafterTail.events[1]).toMatchObject({
+      seq: 3,
+      actor: "agent:drafter",
     });
 
     plannerReconnectSocket?.emitMessage(
@@ -718,24 +726,17 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 2,
       })
     );
-    await expect(plannerSecond).resolves.toMatchObject({
-      done: false,
-      value: { seq: 4, actor: "agent:planner" },
+    await waitForValues(plannerTail.events, 2);
+    expect(plannerTail.events[1]).toMatchObject({
+      seq: 4,
+      actor: "agent:planner",
     });
 
-    const plannerDone = plannerIterator.next();
     plannerReconnectSocket?.emitClose({ code: 1000, reason: "planner done" });
-    await expect(plannerDone).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(plannerTail.done).resolves.toBeUndefined();
 
-    const drafterDone = drafterIterator.next();
     drafterSocket?.emitClose({ code: 1000, reason: "drafter done" });
-    await expect(drafterDone).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(drafterTail.done).resolves.toBeUndefined();
   });
 
   it("keeps browser live-sync isolated across concurrent sessions", async () => {
@@ -969,8 +970,7 @@ describe("Browser Multi-Agent Workflows", () => {
     });
     const session = starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { events, done: tailDone } = startTail(session);
     await waitForCondition(
       () => sockets.length >= 1,
       "Timed out waiting for custom websocket factory call"
@@ -995,10 +995,11 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 1,
       })
     );
-    await expect(nextPromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
+
+    socket?.emitClose({ code: 1000, reason: "done" });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("closes browser live-sync sockets when disconnect() is called", async () => {
@@ -1071,10 +1072,10 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_batches", "agent:coordinator"),
     });
 
-    const iterator = session
-      .tailBatches({ agent: "planner", batchSize: 2 })
-      [Symbol.asyncIterator]();
-    const batchPromise = iterator.next();
+    const { batches, done: tailDone } = startTailBatches(session, {
+      agent: "planner",
+      batchSize: 2,
+    });
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
     expect(socket?.url).toContain("batch_size=2");
@@ -1100,16 +1101,10 @@ describe("Browser Multi-Agent Workflows", () => {
       ])
     );
 
-    await expect(batchPromise).resolves.toMatchObject({
-      done: false,
-      value: [{ seq: 1, actor: "agent:planner" }],
-    });
+    await waitForValues(batches, 1);
+    expect(batches[0]).toMatchObject([{ seq: 1, actor: "agent:planner" }]);
 
-    const donePromise = iterator.next();
     socket?.emitClose({ code: 1000, reason: "done" });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 });

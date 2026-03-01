@@ -80,7 +80,7 @@ async function waitForSocketCount(
 
 function buildManaged(
   options: {
-    url?: () => string | Promise<string>;
+    url?: () => string;
     websocketFactory?: (url: string) => StarciteWebSocket;
     signal?: AbortSignal;
     shouldReconnect?: boolean;
@@ -126,26 +126,26 @@ describe("ManagedWebSocket", () => {
     vi.useRealTimers();
   });
 
-  it("emits connect_failed and retry_limit when URL resolution fails", async () => {
+  it("emits connect_failed and retry_limit when websocket creation fails", async () => {
     const connectAttempts: number[] = [];
     const connectFailures: string[] = [];
     const retryLimitEvents: Array<{ trigger: string; rootCause?: string }> = [];
 
     const { manager, sockets } = buildManaged({
-      url: () => {
-        throw new Error("resolver exploded");
+      websocketFactory: () => {
+        throw new Error("dial exploded");
       },
       shouldReconnect: true,
       reconnectPolicy: { maxAttempts: 0 },
     });
 
-    manager.onConnectAttempt((event) => {
+    manager.on("connect_attempt", (event) => {
       connectAttempts.push(event.attempt);
     });
-    manager.onConnectFailed((event) => {
+    manager.on("connect_failed", (event) => {
       connectFailures.push(event.rootCause);
     });
-    manager.onRetryLimit((event) => {
+    manager.on("retry_limit", (event) => {
       retryLimitEvents.push({
         trigger: event.trigger,
         rootCause: event.rootCause,
@@ -156,11 +156,11 @@ describe("ManagedWebSocket", () => {
 
     expect(sockets).toHaveLength(0);
     expect(connectAttempts).toEqual([1]);
-    expect(connectFailures).toEqual(["resolver exploded"]);
+    expect(connectFailures).toEqual(["dial exploded"]);
     expect(retryLimitEvents).toEqual([
       {
         trigger: "connect_failed",
-        rootCause: "resolver exploded",
+        rootCause: "dial exploded",
       },
     ]);
   });
@@ -189,16 +189,16 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onConnectAttempt((event) => {
+    manager.on("connect_attempt", (event) => {
       connectAttempts.push(event.attempt);
     });
-    manager.onDropped((event) => {
+    manager.on("dropped", (event) => {
       droppedEvents.push({ code: event.closeCode, reason: event.closeReason });
     });
-    manager.onReconnectScheduled((event) => {
+    manager.on("reconnect_scheduled", (event) => {
       scheduledEvents.push({ attempt: event.attempt, trigger: event.trigger });
     });
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -221,6 +221,45 @@ describe("ManagedWebSocket", () => {
       aborted: false,
       graceful: true,
     });
+  });
+
+  it("resolves URL from the handler on each reconnect attempt", async () => {
+    let cursor = 0;
+    const seenUrls: string[] = [];
+
+    const { manager, sockets } = buildManaged({
+      url: () => `ws://localhost:4000/v1/sessions/ses_1/tail?cursor=${cursor}`,
+      shouldReconnect: true,
+      reconnectPolicy: {
+        initialDelayMs: 0,
+        maxDelayMs: 0,
+        multiplier: 1,
+        jitterRatio: 0,
+        maxAttempts: 2,
+      },
+      websocketFactory: (url) => {
+        seenUrls.push(url);
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const done = manager.waitForClose();
+
+    await waitForSocketCount(sockets, 1);
+    cursor = 1;
+    sockets[0]?.emit("close", { code: 1006, reason: "reconnect" });
+
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("close", { code: 1000, reason: "finished" });
+
+    await done;
+
+    expect(seenUrls).toEqual([
+      "ws://localhost:4000/v1/sessions/ses_1/tail?cursor=0",
+      "ws://localhost:4000/v1/sessions/ses_1/tail?cursor=1",
+    ]);
   });
 
   it("retries connect_failed errors and recovers on a later attempt", async () => {
@@ -259,16 +298,16 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onConnectAttempt((event) => {
+    manager.on("connect_attempt", (event) => {
       connectAttempts.push(event.attempt);
     });
-    manager.onConnectFailed((event) => {
+    manager.on("connect_failed", (event) => {
       connectFailures.push(event.rootCause);
     });
-    manager.onReconnectScheduled((event) => {
+    manager.on("reconnect_scheduled", (event) => {
       reconnectEvents.push({ attempt: event.attempt, trigger: event.trigger });
     });
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -308,7 +347,7 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onRetryLimit((event) => {
+    manager.on("retry_limit", (event) => {
       retryLimitEvents.push({
         trigger: event.trigger,
         closeCode: event.closeCode,
@@ -354,16 +393,16 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onDropped((event) => {
+    manager.on("dropped", (event) => {
       droppedEvents.push({ code: event.closeCode, reason: event.closeReason });
     });
-    manager.onRetryLimit((event) => {
+    manager.on("retry_limit", (event) => {
       retryLimitEvents.push({
         trigger: event.trigger,
         closeCode: event.closeCode,
       });
     });
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -396,7 +435,7 @@ describe("ManagedWebSocket", () => {
       connectionTimeoutMs: 25,
     });
 
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -432,7 +471,7 @@ describe("ManagedWebSocket", () => {
       inactivityTimeoutMs: 20,
     });
 
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -474,7 +513,7 @@ describe("ManagedWebSocket", () => {
       shouldReconnect: true,
     });
 
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -504,7 +543,7 @@ describe("ManagedWebSocket", () => {
       | undefined;
 
     const { manager, sockets } = buildManaged({ shouldReconnect: false });
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -531,12 +570,12 @@ describe("ManagedWebSocket", () => {
 
     const { manager, sockets } = buildManaged();
 
-    manager.onFatal((error) => {
+    manager.on("fatal", (error) => {
       fatalMessages.push(
         error instanceof Error ? error.message : String(error)
       );
     });
-    manager.onConnectAttempt(() => {
+    manager.on("connect_attempt", () => {
       throw new Error("attempt observer failed");
     });
 
@@ -559,15 +598,15 @@ describe("ManagedWebSocket", () => {
 
     const { manager, sockets } = buildManaged({ shouldReconnect: false });
 
-    manager.onMessage(() => {
+    manager.on("message", () => {
       throw new Error("message observer failed");
     });
-    manager.onFatal((error) => {
+    manager.on("fatal", (error) => {
       fatalMessages.push(
         error instanceof Error ? error.message : String(error)
       );
     });
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -604,12 +643,12 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onFatal((error) => {
+    manager.on("fatal", (error) => {
       fatalMessages.push(
         error instanceof Error ? error.message : String(error)
       );
     });
-    manager.onReconnectScheduled(() => {
+    manager.on("reconnect_scheduled", () => {
       throw new Error("reconnect observer failed");
     });
 
@@ -635,7 +674,7 @@ describe("ManagedWebSocket", () => {
 
     const { manager, sockets } = buildManaged();
 
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -687,7 +726,7 @@ describe("ManagedWebSocket", () => {
       },
     });
 
-    manager.onClosed((event) => {
+    manager.on("closed", (event) => {
       closedEvent = event;
     });
 
@@ -697,7 +736,15 @@ describe("ManagedWebSocket", () => {
     sockets[0]?.emit("close", { code: 1006, reason: "dropped" });
     manager.close(1000, "manual stop");
 
-    await vi.advanceTimersByTimeAsync(200);
+    const completion = Promise.race([
+      done.then(() => "done" as const),
+      new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), 1);
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(completion).resolves.toBe("done");
+
     await done;
 
     expect(sockets).toHaveLength(1);

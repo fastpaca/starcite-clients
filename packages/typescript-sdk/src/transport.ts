@@ -195,16 +195,3 @@ export async function requestWithBaseUrl<T>(
 
   return schema.parse(body);
 }
-
-/**
- * Flattens batched iterables into item-by-item iteration.
- */
-export async function* flattenBatches<T>(
-  source: AsyncIterable<T[]>
-): AsyncGenerator<T> {
-  for await (const batch of source) {
-    for (const item of batch) {
-      yield item;
-    }
-  }
-}

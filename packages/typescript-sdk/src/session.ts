@@ -4,7 +4,7 @@ import type { StarciteIdentity } from "./identity";
 import { SessionLog, SessionLogGapError } from "./session-log";
 import { TailStream } from "./tail/stream";
 import type { TransportConfig } from "./transport";
-import { flattenBatches, request } from "./transport";
+import { request } from "./transport";
 import type {
   AppendEventRequest,
   AppendEventResponse,
@@ -224,26 +224,34 @@ export class StarciteSession {
   }
 
   /**
-   * Streams tail events one at a time.
+   * Streams tail events one at a time via callback.
    */
-  async *tail(options: SessionTailOptions = {}): AsyncGenerator<TailEvent> {
-    yield* flattenBatches(this.tailBatches(options));
+  async tail(
+    onEvent: (event: TailEvent) => void | Promise<void>,
+    options: SessionTailOptions = {}
+  ): Promise<void> {
+    await this.tailBatches(async (batch) => {
+      for (const event of batch) {
+        await onEvent(event);
+      }
+    }, options);
   }
 
   /**
-   * Streams tail event batches grouped by incoming frame.
+   * Streams tail event batches grouped by incoming frame via callback.
    */
-  async *tailBatches(
+  async tailBatches(
+    onBatch: (batch: TailEvent[]) => void | Promise<void>,
     options: SessionTailOptions = {}
-  ): AsyncGenerator<TailEvent[]> {
-    yield* new TailStream({
+  ): Promise<void> {
+    await new TailStream({
       sessionId: this.id,
       token: this.token,
       websocketBaseUrl: this.transport.websocketBaseUrl,
       websocketFactory: this.transport.websocketFactory,
       websocketAuthTransport: this.transport.websocketAuthTransport,
       options,
-    }).run();
+    }).subscribe(onBatch);
   }
 
   /**

@@ -10,8 +10,10 @@ import {
 } from "../src/errors";
 import type {
   SessionCursorStore,
+  SessionTailOptions,
   StarciteWebSocket,
   StarciteWebSocketEventMap,
+  TailEvent,
   TailLifecycleEvent,
 } from "../src/types";
 
@@ -87,6 +89,59 @@ async function waitForSocketCount(
   throw new Error(
     `Timed out waiting for ${expectedCount} socket(s); saw ${sockets.length}`
   );
+}
+
+async function waitForValues<T>(
+  values: T[],
+  expectedCount: number
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (values.length >= expectedCount) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedCount} value(s); saw ${values.length}`
+  );
+}
+
+function startTail(
+  session: {
+    tail: (
+      onEvent: (event: TailEvent) => void | Promise<void>,
+      options?: SessionTailOptions
+    ) => Promise<void>;
+  },
+  options: SessionTailOptions = {}
+): { events: TailEvent[]; done: Promise<void> } {
+  const events: TailEvent[] = [];
+  return {
+    events,
+    done: session.tail((event) => {
+      events.push(event);
+    }, options),
+  };
+}
+
+function startTailBatches(
+  session: {
+    tailBatches: (
+      onBatch: (batch: TailEvent[]) => void | Promise<void>,
+      options?: SessionTailOptions
+    ) => Promise<void>;
+  },
+  options: SessionTailOptions = {}
+): { batches: TailEvent[][]; done: Promise<void> } {
+  const batches: TailEvent[][] = [];
+  return {
+    batches,
+    done: session.tailBatches((batch) => {
+      batches.push(batch);
+    }, options),
+  };
 }
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
@@ -519,11 +574,11 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken("ses_tail", "agent:drafter");
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({ agent: "drafter", cursor: 0 })
-      [Symbol.asyncIterator]();
-
-    const firstValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      agent: "drafter",
+      cursor: 0,
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify({
@@ -547,22 +602,15 @@ describe("Starcite", () => {
       }),
     });
 
-    const first = await firstValuePromise;
-
-    expect(first.done).toBe(false);
-    expect(first.value).toMatchObject({
+    await waitForValues(events, 1);
+    expect(events[0]).toMatchObject({
       seq: 2,
       actor: "agent:drafter",
       payload: { text: "Drafting clause 4.2..." },
     });
 
-    const donePromise = iterator.next();
     sockets[0]?.emit("close", { code: 1000 });
-
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
     expect(sockets[0]?.url).toBe(
       "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
     );
@@ -573,12 +621,11 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({ cursor: 0, batchSize: 2 })
-      [Symbol.asyncIterator]();
-
-    const firstValuePromise = iterator.next();
-    const secondValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      cursor: 0,
+      batchSize: 2,
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify([
@@ -601,22 +648,12 @@ describe("Starcite", () => {
       ]),
     });
 
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
-    await expect(secondValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2 },
-    });
+    await waitForValues(events, 2);
+    expect(events[0]).toMatchObject({ seq: 1 });
+    expect(events[1]).toMatchObject({ seq: 2 });
 
-    const donePromise = iterator.next();
     sockets[0]?.emit("close", { code: 1000 });
-
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
     expect(sockets[0]?.url).toBe(
       "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=2"
     );
@@ -627,10 +664,11 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tailBatches({ cursor: 0, batchSize: 2 })
-      [Symbol.asyncIterator]();
-    const firstBatchPromise = iterator.next();
+    const { batches, done: tailDone } = startTailBatches(session, {
+      cursor: 0,
+      batchSize: 2,
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify([
@@ -653,16 +691,11 @@ describe("Starcite", () => {
       ]),
     });
 
-    const firstBatch = await firstBatchPromise;
-    expect(firstBatch.done).toBe(false);
-    expect(firstBatch.value?.map((event) => event.seq)).toEqual([1, 2]);
+    await waitForValues(batches, 1);
+    expect(batches[0]?.map((event) => event.seq)).toEqual([1, 2]);
 
-    const donePromise = iterator.next();
     sockets[0]?.emit("close", { code: 1000 });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("tails event batches for batched ingestion", async () => {
@@ -670,10 +703,11 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tailBatches({ cursor: 0, batchSize: 2 })
-      [Symbol.asyncIterator]();
-    const firstBatchPromise = iterator.next();
+    const { batches, done: tailDone } = startTailBatches(session, {
+      cursor: 0,
+      batchSize: 2,
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify([
@@ -696,19 +730,14 @@ describe("Starcite", () => {
       ]),
     });
 
-    const firstBatch = await firstBatchPromise;
-    expect(firstBatch.done).toBe(false);
-    expect(firstBatch.value).toMatchObject([
+    await waitForValues(batches, 1);
+    expect(batches[0]).toMatchObject([
       { seq: 1, actor: "agent:drafter", payload: { text: "Draft one" } },
       { seq: 2, actor: "agent:drafter", payload: { text: "Draft two" } },
     ]);
 
-    const donePromise = iterator.next();
     sockets[0]?.emit("close", { code: 1000 });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("sends authorization header in websocket upgrade when apiKey is set", async () => {
@@ -735,15 +764,12 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session);
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1000 });
 
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
     expect(websocketFactory).toHaveBeenCalledWith(
       "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0",
       expect.objectContaining({
@@ -776,15 +802,12 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session);
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1000 });
 
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
 
     expect(websocketFactory).toHaveBeenCalledWith(
       expect.stringContaining(
@@ -799,12 +822,12 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session);
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 4001, reason: "token_expired" });
 
-    const error = await nextPromise.catch((err) => err);
+    const error = await tailDone.catch((err) => err);
     expect(error).toBeInstanceOf(StarciteTokenExpiredError);
     expect((error as Error).message).toContain("token expired");
   });
@@ -814,17 +837,14 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        cursor: 0,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-
-    const firstPromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      cursor: 0,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify({
@@ -837,12 +857,9 @@ describe("Starcite", () => {
       }),
     });
 
-    await expect(firstPromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
 
-    const secondPromise = iterator.next();
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
@@ -861,18 +878,12 @@ describe("Starcite", () => {
       }),
     });
 
-    await expect(secondPromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2 },
-    });
+    await waitForValues(events, 2);
+    expect(events[1]?.seq).toBe(2);
 
-    const donePromise = iterator.next();
     sockets[1]?.emit("close", { code: 1000 });
 
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("resumes from the latest seq in a batched frame after reconnect", async () => {
@@ -880,19 +891,15 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        cursor: 0,
-        batchSize: 2,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-
-    const firstValuePromise = iterator.next();
-    const secondValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      cursor: 0,
+      batchSize: 2,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
       data: JSON.stringify([
@@ -915,16 +922,9 @@ describe("Starcite", () => {
       ]),
     });
 
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
-    await expect(secondValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2 },
-    });
+    await waitForValues(events, 2);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
 
-    const thirdValuePromise = iterator.next();
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
@@ -943,18 +943,12 @@ describe("Starcite", () => {
       }),
     });
 
-    await expect(thirdValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 3 },
-    });
+    await waitForValues(events, 3);
+    expect(events[2]?.seq).toBe(3);
 
-    const donePromise = iterator.next();
     sockets[1]?.emit("close", { code: 1000 });
 
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("resumes batched ingestion from latest observed seq after reconnect", async () => {
@@ -962,18 +956,16 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tailBatches({
-        cursor: 0,
-        batchSize: 2,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
+    const { batches, done: tailDone } = startTailBatches(session, {
+      cursor: 0,
+      batchSize: 2,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
-    const firstBatchPromise = iterator.next();
     sockets[0]?.emit("message", {
       data: JSON.stringify([
         {
@@ -995,11 +987,9 @@ describe("Starcite", () => {
       ]),
     });
 
-    const firstBatch = await firstBatchPromise;
-    expect(firstBatch.done).toBe(false);
-    expect(firstBatch.value?.map((event) => event.seq)).toEqual([1, 2]);
+    await waitForValues(batches, 1);
+    expect(batches[0]?.map((event) => event.seq)).toEqual([1, 2]);
 
-    const secondBatchPromise = iterator.next();
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
@@ -1018,16 +1008,11 @@ describe("Starcite", () => {
       }),
     });
 
-    const secondBatch = await secondBatchPromise;
-    expect(secondBatch.done).toBe(false);
-    expect(secondBatch.value?.map((event) => event.seq)).toEqual([3]);
+    await waitForValues(batches, 2);
+    expect(batches[1]?.map((event) => event.seq)).toEqual([3]);
 
-    const donePromise = iterator.next();
     sockets[1]?.emit("close", { code: 1000 });
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("keeps reconnecting until the transport recovers", async () => {
@@ -1035,15 +1020,13 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const firstValuePromise = iterator.next();
+    const { events, done: tailDone } = startTail(session, {
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
 
@@ -1062,18 +1045,12 @@ describe("Starcite", () => {
       }),
     });
 
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
 
-    const donePromise = iterator.next();
     sockets[2]?.emit("close", { code: 1000 });
 
-    await expect(donePromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("fails when reconnectPolicy maxAttempts is exceeded", async () => {
@@ -1081,27 +1058,23 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 1,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const firstValuePromise = iterator.next();
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 1,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
     await waitForSocketCount(sockets, 2);
     sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(
-      StarciteRetryLimitError
-    );
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteRetryLimitError);
 
-    await firstValuePromise.catch((error) => {
+    await tailDone.catch((error) => {
       const tailError = error as StarciteRetryLimitError;
       expect(tailError.stage).toBe("retry_limit");
       expect(tailError.sessionId).toBe("ses_tail");
@@ -1114,24 +1087,20 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 0,
-        },
-      })
-      [Symbol.asyncIterator]();
-    const firstValuePromise = iterator.next();
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 0,
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
 
-    await expect(firstValuePromise).rejects.toBeInstanceOf(
-      StarciteRetryLimitError
-    );
-    await firstValuePromise.catch((error) => {
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteRetryLimitError);
+    await tailDone.catch((error) => {
       const tailError = error as StarciteRetryLimitError;
       expect(tailError.stage).toBe("retry_limit");
       expect(tailError.sessionId).toBe("ses_tail");
@@ -1147,23 +1116,21 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        reconnect: true,
-        reconnectPolicy: {
-          mode: "fixed",
-          initialDelayMs: 0,
-          maxAttempts: 0,
-        },
-        onLifecycleEvent: (event) => {
-          lifecycleEvents.push(event);
-        },
-      })
-      [Symbol.asyncIterator]();
-    const firstValuePromise = iterator.next();
+    const { done: tailDone } = startTail(session, {
+      reconnect: true,
+      reconnectPolicy: {
+        mode: "fixed",
+        initialDelayMs: 0,
+        maxAttempts: 0,
+      },
+      onLifecycleEvent: (event) => {
+        lifecycleEvents.push(event);
+      },
+    });
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
-    await expect(firstValuePromise).rejects.toBeInstanceOf(StarciteTailError);
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteTailError);
 
     expect(lifecycleEvents).toHaveLength(2);
     expect(lifecycleEvents[0]).toMatchObject({
@@ -1186,17 +1153,14 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({
-        reconnect: false,
-        onLifecycleEvent: () => {
-          throw new Error("observer failure");
-        },
-      })
-      [Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session, {
+      reconnect: false,
+      onLifecycleEvent: () => {
+        throw new Error("observer failure");
+      },
+    });
 
-    await expect(nextPromise).rejects.toThrow("observer failure");
+    await expect(tailDone).rejects.toThrow("observer failure");
   });
 
   it("lists sessions with pagination and metadata filters", async () => {
@@ -1244,28 +1208,43 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session.tail()[Symbol.asyncIterator]();
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session);
+    await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", { data: "not json" });
 
-    await expect(nextPromise).rejects.toBeInstanceOf(StarciteConnectionError);
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteConnectionError);
   });
 
   it("fails fast when the tail consumer falls behind buffered batches", async () => {
     const { starcite, sockets } = buildTailClient(fetchMock);
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
+    const events: TailEvent[] = [];
+    let releaseFirstEvent: (() => void) | undefined;
+    const firstEventGate = new Promise<void>((resolve) => {
+      releaseFirstEvent = resolve;
+    });
 
-    const iterator = session
-      .tail({
+    let callbackInvocations = 0;
+    const tailDone = session.tail(
+      async (event) => {
+        events.push(event);
+        callbackInvocations += 1;
+
+        if (callbackInvocations === 1) {
+          // Keep the first callback pending so later frames accumulate and
+          // trigger the stream's buffered-batch backpressure guard.
+          await firstEventGate;
+        }
+      },
+      {
         cursor: 0,
         reconnect: false,
         maxBufferedBatches: 1,
-      })
-      [Symbol.asyncIterator]();
+      }
+    );
 
-    const firstValuePromise = iterator.next();
     await waitForSocketCount(sockets, 1);
 
     sockets[0]?.emit("message", {
@@ -1299,22 +1278,11 @@ describe("Starcite", () => {
       }),
     });
 
-    await expect(firstValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 1 },
-    });
+    releaseFirstEvent?.();
 
-    const secondValuePromise = iterator.next();
-    await expect(secondValuePromise).resolves.toMatchObject({
-      done: false,
-      value: { seq: 2 },
-    });
-
-    const overflowPromise = iterator.next();
-    await expect(overflowPromise).rejects.toBeInstanceOf(
-      StarciteBackpressureError
-    );
-    await overflowPromise.catch((error) => {
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteBackpressureError);
+    expect(events[0]?.seq).toBe(1);
+    await tailDone.catch((error) => {
       const tailError = error as StarciteBackpressureError;
       expect(tailError.stage).toBe("consumer_backpressure");
       expect(tailError.sessionId).toBe("ses_tail");
@@ -1795,17 +1763,10 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session
-      .tail({ maxBufferedBatches: 0 })
-      [Symbol.asyncIterator]();
-
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session, { maxBufferedBatches: 0 });
     await waitForSocketCount(sockets, 1);
     sockets[0]?.emit("close", { code: 1000 });
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 
   it("does not fail fast when batchSize is provided", async () => {
@@ -1813,17 +1774,12 @@ describe("Starcite", () => {
     const sessionToken = makeTailSessionToken();
     const session = await starcite.session({ token: sessionToken });
 
-    const iterator = session.tail({ batchSize: 0 })[Symbol.asyncIterator]();
-
-    const nextPromise = iterator.next();
+    const { done: tailDone } = startTail(session, { batchSize: 0 });
     await waitForSocketCount(sockets, 1);
     expect(sockets[0]?.url).toBe(
       "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=0"
     );
     sockets[0]?.emit("close", { code: 1000 });
-    await expect(nextPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
-    });
+    await expect(tailDone).resolves.toBeUndefined();
   });
 });

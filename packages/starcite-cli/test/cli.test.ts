@@ -41,19 +41,6 @@ function makeLogger() {
   };
 }
 
-function streamEvents(events: TailEvent[]): AsyncIterable<TailEvent> {
-  return {
-    [Symbol.asyncIterator]() {
-      const iterator = events[Symbol.iterator]();
-      return {
-        next() {
-          return Promise.resolve(iterator.next());
-        },
-      };
-    },
-  };
-}
-
 function encodeJwt(payload: Record<string, unknown>): string {
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `test.${encoded}.sig`;
@@ -122,17 +109,17 @@ describe("starcite CLI", () => {
       last_seq: 1,
       deduped: false,
     });
-    fakeSession.tail.mockReturnValue(
-      streamEvents([
-        {
+    fakeSession.tail.mockImplementation(
+      async (onEvent: (event: TailEvent) => void | Promise<void>) => {
+        await onEvent({
           seq: 1,
           type: "content",
           payload: { text: "Drafting clause 4.2..." },
           actor: "agent:drafter",
           producer_id: "producer:drafter",
           producer_seq: 1,
-        },
-      ])
+        });
+      }
     );
   });
 
@@ -902,7 +889,7 @@ describe("starcite CLI", () => {
       token: sessionToken,
       id: "ses_123",
     });
-    expect(fakeSession.tail).toHaveBeenCalledWith({
+    expect(fakeSession.tail).toHaveBeenCalledWith(expect.any(Function), {
       cursor: 0,
       batchSize: 256,
       agent: undefined,
@@ -910,6 +897,54 @@ describe("starcite CLI", () => {
       signal: expect.any(AbortSignal),
     });
     expect(info).toEqual(["[drafter] Drafting clause 4.2..."]);
+  });
+
+  it("tail --limit applies a hard cap even when multiple events arrive in one callback stream", async () => {
+    const { logger, info } = makeLogger();
+
+    fakeSession.tail.mockImplementation(
+      async (onEvent: (event: TailEvent) => void | Promise<void>) => {
+        await onEvent({
+          seq: 1,
+          type: "content",
+          payload: { text: "first event" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        });
+        await onEvent({
+          seq: 2,
+          type: "content",
+          payload: { text: "second event" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        });
+      }
+    );
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "tail",
+        "ses_123",
+        "--limit",
+        "1",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(info).toEqual(["[drafter] first event"]);
   });
 
   it("up fails with install guidance when docker is missing", async () => {

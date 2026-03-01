@@ -26,80 +26,12 @@ interface ResolvedReconnectPolicy {
   maxAttempts: number;
 }
 
-class AsyncBatchQueue<T> {
-  private readonly values: T[] = [];
-  private error: unknown;
-  private ended = false;
-  private waiting:
-    | {
-        resolve: (result: IteratorResult<T>) => void;
-        reject: (error: unknown) => void;
-      }
-    | undefined;
-
-  push(value: T): void {
-    if (this.ended || this.error !== undefined) {
-      return;
-    }
-
-    if (this.waiting) {
-      const waiting = this.waiting;
-      this.waiting = undefined;
-      waiting.resolve({ done: false, value });
-      return;
-    }
-
-    this.values.push(value);
-  }
-
-  fail(error: unknown): void {
-    if (this.ended || this.error !== undefined) {
-      return;
-    }
-
-    this.error = error;
-    if (this.waiting) {
-      const waiting = this.waiting;
-      this.waiting = undefined;
-      waiting.reject(error);
-    }
-  }
-
-  end(): void {
-    if (this.ended) {
-      return;
-    }
-
-    this.ended = true;
-    if (this.waiting) {
-      const waiting = this.waiting;
-      this.waiting = undefined;
-      waiting.resolve({ done: true, value: undefined });
-    }
-  }
-
-  async next(): Promise<IteratorResult<T>> {
-    if (this.values.length > 0) {
-      const value = this.values.shift() as T;
-      return { done: false, value };
-    }
-
-    if (this.error !== undefined) {
-      throw this.error;
-    }
-
-    if (this.ended) {
-      return { done: true, value: undefined };
-    }
-
-    return await new Promise<IteratorResult<T>>((resolve, reject) => {
-      this.waiting = { resolve, reject };
-    });
-  }
-}
-
 /**
  * Stateful tail runner powered by a managed websocket loop.
+ *
+ * `cursor` is the reconnect checkpoint and advances with every parsed event.
+ * Agent filtering affects emitted batches, not cursor advancement.
+ * In non-follow mode, stream auto-closes after `catchUpIdleMs` of inactivity.
  */
 export class TailStream {
   private readonly sessionId: string;
@@ -155,6 +87,7 @@ export class TailStream {
     this.batchSize = opts.batchSize;
     this.agent = opts.agent?.trim();
     this.follow = follow;
+    // Catch-up mode (`follow: false`) is single-pass and never reconnects.
     this.shouldReconnect = follow ? (opts.reconnect ?? true) : false;
     this.catchUpIdleMs = opts.catchUpIdleMs ?? 1000;
     this.connectionTimeoutMs = opts.connectionTimeoutMs ?? 4000;
@@ -175,35 +108,6 @@ export class TailStream {
     };
   }
 
-  async *run(): AsyncGenerator<TailEvent[]> {
-    const queue = new AsyncBatchQueue<TailEvent[]>();
-    const controller = new AbortController();
-    const signal = combineAbortSignals(this.signal, controller.signal);
-
-    const task = this.subscribeWithSignal((batch) => {
-      queue.push(batch);
-    }, signal)
-      .then(() => {
-        queue.end();
-      })
-      .catch((error) => {
-        queue.fail(error);
-      });
-
-    try {
-      while (true) {
-        const next = await queue.next();
-        if (next.done) {
-          return;
-        }
-        yield next.value;
-      }
-    } finally {
-      controller.abort();
-      await task;
-    }
-  }
-
   /**
    * Pushes batches to a callback, enabling emitter-style consumers.
    */
@@ -217,6 +121,7 @@ export class TailStream {
     onBatch: (batch: TailEvent[]) => void | Promise<void>,
     signal: AbortSignal | undefined
   ): Promise<void> {
+    // Shared run state: one terminal error + one terminal reason for the whole subscription.
     let streamError: unknown;
     let streamReason: "aborted" | "caught_up" | "graceful" = this.follow
       ? "graceful"
@@ -226,6 +131,7 @@ export class TailStream {
     let dispatchChain: Promise<void> = Promise.resolve();
 
     const stream = new ManagedWebSocket({
+      // URL is re-read per attempt by `ManagedWebSocket` and reflects current cursor.
       url: () => this.buildTailUrl(),
       websocketFactory: this.websocketFactory,
       connectOptions: this.buildConnectOptions(),
@@ -243,6 +149,7 @@ export class TailStream {
     });
 
     const fail = (error: unknown): void => {
+      // First terminal error wins; subsequent errors are ignored.
       if (streamError !== undefined) {
         return;
       }
@@ -256,6 +163,7 @@ export class TailStream {
       }
 
       try {
+        // Lifecycle callbacks are part of control flow; failures are terminal.
         this.onLifecycleEvent(event);
       } catch (error) {
         fail(error);
@@ -274,6 +182,7 @@ export class TailStream {
         return;
       }
 
+      // Non-follow mode closes once no frames arrive for `catchUpIdleMs`.
       clearCatchUpTimer();
       catchUpTimer = setTimeout(() => {
         streamReason = "caught_up";
@@ -286,6 +195,7 @@ export class TailStream {
         return;
       }
 
+      // Backpressure is measured as unresolved consumer callbacks.
       if (
         this.maxBufferedBatches > 0 &&
         queuedBatches > this.maxBufferedBatches
@@ -300,6 +210,7 @@ export class TailStream {
       }
 
       queuedBatches += 1;
+      // Serialize consumer callbacks: preserves order and keeps backpressure measurable.
       dispatchChain = dispatchChain
         .then(async () => {
           try {
@@ -313,151 +224,194 @@ export class TailStream {
         });
     };
 
-    const unsubscribers = [
-      stream.onConnectAttempt((event) => {
-        emitLifecycle({
-          type: "connect_attempt",
-          sessionId: this.sessionId,
-          attempt: event.attempt,
-          cursor: this.cursor,
-        });
-      }),
-      stream.onConnectFailed((event) => {
-        if (!this.shouldReconnect) {
-          fail(
-            new StarciteTailError(
-              `Tail connection failed for session '${this.sessionId}': ${event.rootCause}`,
-              {
-                sessionId: this.sessionId,
-                stage: "connect",
-                attempts: event.attempt - 1,
-              }
-            )
-          );
-        }
-      }),
-      stream.onReconnectScheduled((event) => {
-        emitLifecycle({
-          type: "reconnect_scheduled",
-          sessionId: this.sessionId,
-          attempt: event.attempt,
-          delayMs: event.delayMs,
-          trigger: event.trigger,
-          closeCode: event.closeCode,
-          closeReason: event.closeReason,
-        });
-      }),
-      stream.onDropped((event) => {
-        if (event.closeCode === 4001 || event.closeReason === "token_expired") {
-          fail(
-            new StarciteTokenExpiredError(
-              `Tail token expired for session '${this.sessionId}'. Re-issue a session token and reconnect from the last processed cursor.`,
-              {
-                sessionId: this.sessionId,
-                attempts: event.attempt,
-                closeCode: event.closeCode,
-                closeReason: event.closeReason,
-              }
-            )
-          );
-          return;
-        }
+    // Translate low-level transport lifecycle into SDK lifecycle + domain errors.
+    const onConnectAttempt = (event: { attempt: number }): void => {
+      emitLifecycle({
+        type: "connect_attempt",
+        sessionId: this.sessionId,
+        attempt: event.attempt,
+        cursor: this.cursor,
+      });
+    };
 
-        emitLifecycle({
-          type: "stream_dropped",
-          sessionId: this.sessionId,
-          attempt: event.attempt,
-          closeCode: event.closeCode,
-          closeReason: event.closeReason,
-        });
-
-        if (!this.shouldReconnect) {
-          fail(
-            new StarciteTailError(
-              `Tail connection dropped for session '${this.sessionId}' (${describeClose(event.closeCode, event.closeReason)})`,
-              {
-                sessionId: this.sessionId,
-                stage: "stream",
-                attempts: event.attempt - 1,
-                closeCode: event.closeCode,
-                closeReason: event.closeReason,
-              }
-            )
-          );
-        }
-      }),
-      stream.onRetryLimit((event) => {
-        const message =
-          event.trigger === "connect_failed"
-            ? `Tail connection failed for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s): ${event.rootCause ?? "Unknown error"}`
-            : `Tail connection dropped for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s) (${describeClose(event.closeCode, event.closeReason)})`;
-
+    const onConnectFailed = (event: {
+      attempt: number;
+      rootCause: string;
+    }): void => {
+      // Without reconnect, first dial failure is terminal for the subscription.
+      if (!this.shouldReconnect) {
         fail(
-          new StarciteRetryLimitError(message, {
-            sessionId: this.sessionId,
-            attempts: event.attempt,
-            closeCode: event.closeCode,
-            closeReason: event.closeReason,
-          })
-        );
-      }),
-      stream.onOpen(() => {
-        scheduleCatchUpClose();
-      }),
-      stream.onMessage((data) => {
-        try {
-          const parsedEvents = parseTailFrame(data);
-          const matchingEvents: TailEvent[] = [];
-
-          for (const parsedEvent of parsedEvents) {
-            this.cursor = Math.max(this.cursor, parsedEvent.seq);
-
-            if (
-              this.agent &&
-              agentFromActor(parsedEvent.actor) !== this.agent
-            ) {
-              continue;
+          new StarciteTailError(
+            `Tail connection failed for session '${this.sessionId}': ${event.rootCause}`,
+            {
+              sessionId: this.sessionId,
+              stage: "connect",
+              attempts: event.attempt - 1,
             }
+          )
+        );
+      }
+    };
 
-            matchingEvents.push(parsedEvent);
+    const onReconnectScheduled = (event: {
+      attempt: number;
+      delayMs: number;
+      trigger: "connect_failed" | "dropped";
+      closeCode?: number;
+      closeReason?: string;
+    }): void => {
+      emitLifecycle({
+        type: "reconnect_scheduled",
+        sessionId: this.sessionId,
+        attempt: event.attempt,
+        delayMs: event.delayMs,
+        trigger: event.trigger,
+        closeCode: event.closeCode,
+        closeReason: event.closeReason,
+      });
+    };
+
+    const onDropped = (event: {
+      attempt: number;
+      closeCode?: number;
+      closeReason?: string;
+    }): void => {
+      // Auth expiry is non-recoverable with current token; surface explicit domain error.
+      if (event.closeCode === 4001 || event.closeReason === "token_expired") {
+        fail(
+          new StarciteTokenExpiredError(
+            `Tail token expired for session '${this.sessionId}'. Re-issue a session token and reconnect from the last processed cursor.`,
+            {
+              sessionId: this.sessionId,
+              attempts: event.attempt,
+              closeCode: event.closeCode,
+              closeReason: event.closeReason,
+            }
+          )
+        );
+        return;
+      }
+
+      emitLifecycle({
+        type: "stream_dropped",
+        sessionId: this.sessionId,
+        attempt: event.attempt,
+        closeCode: event.closeCode,
+        closeReason: event.closeReason,
+      });
+
+      if (!this.shouldReconnect) {
+        // In no-reconnect mode, any drop is terminal and includes close metadata.
+        fail(
+          new StarciteTailError(
+            `Tail connection dropped for session '${this.sessionId}' (${describeClose(event.closeCode, event.closeReason)})`,
+            {
+              sessionId: this.sessionId,
+              stage: "stream",
+              attempts: event.attempt - 1,
+              closeCode: event.closeCode,
+              closeReason: event.closeReason,
+            }
+          )
+        );
+      }
+    };
+
+    const onRetryLimit = (event: {
+      attempt: number;
+      trigger: "connect_failed" | "dropped";
+      closeCode?: number;
+      closeReason?: string;
+      rootCause?: string;
+    }): void => {
+      // Retry limit unifies terminal error reporting for both connect and drop failures.
+      const message =
+        event.trigger === "connect_failed"
+          ? `Tail connection failed for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s): ${event.rootCause ?? "Unknown error"}`
+          : `Tail connection dropped for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s) (${describeClose(event.closeCode, event.closeReason)})`;
+
+      fail(
+        new StarciteRetryLimitError(message, {
+          sessionId: this.sessionId,
+          attempts: event.attempt,
+          closeCode: event.closeCode,
+          closeReason: event.closeReason,
+        })
+      );
+    };
+
+    const onOpen = (): void => {
+      // Re-arm catch-up detection after each successful (re)connect.
+      scheduleCatchUpClose();
+    };
+
+    const onMessage = (data: unknown): void => {
+      try {
+        const parsedEvents = parseTailFrame(data);
+        const matchingEvents: TailEvent[] = [];
+
+        for (const parsedEvent of parsedEvents) {
+          // Cursor advances for every parsed event, even if filtered out by agent.
+          this.cursor = Math.max(this.cursor, parsedEvent.seq);
+
+          if (this.agent && agentFromActor(parsedEvent.actor) !== this.agent) {
+            continue;
           }
 
-          if (matchingEvents.length > 0) {
-            stream.resetReconnectAttempts();
-            dispatchBatch(matchingEvents);
-          }
-
-          scheduleCatchUpClose();
-        } catch (error) {
-          fail(error);
+          matchingEvents.push(parsedEvent);
         }
-      }),
-      stream.onFatal((error) => {
+
+        if (matchingEvents.length > 0) {
+          // A successfully delivered batch proves the stream is healthy again.
+          stream.resetReconnectAttempts();
+          dispatchBatch(matchingEvents);
+        }
+
+        scheduleCatchUpClose();
+      } catch (error) {
         fail(error);
-      }),
-      stream.onClosed((event) => {
-        clearCatchUpTimer();
-        if (event.aborted) {
-          streamReason = "aborted";
-          return;
-        }
+      }
+    };
 
-        if (!this.follow) {
-          streamReason = "caught_up";
-          return;
-        }
+    const onFatal = (error: unknown): void => {
+      fail(error);
+    };
 
-        if (event.graceful) {
-          streamReason = "graceful";
-        }
-      }),
-    ];
+    const onClosed = (event: { aborted: boolean; graceful: boolean }): void => {
+      clearCatchUpTimer();
+      // Map transport terminal state into SDK-level stream reason.
+      if (event.aborted) {
+        streamReason = "aborted";
+        return;
+      }
+
+      if (!this.follow) {
+        streamReason = "caught_up";
+        return;
+      }
+
+      if (event.graceful) {
+        streamReason = "graceful";
+      }
+    };
+
+    stream.on("connect_attempt", onConnectAttempt);
+    stream.on("connect_failed", onConnectFailed);
+    stream.on("reconnect_scheduled", onReconnectScheduled);
+    stream.on("dropped", onDropped);
+    stream.on("retry_limit", onRetryLimit);
+    stream.on("open", onOpen);
+    stream.on("message", onMessage);
+    stream.on("fatal", onFatal);
+    stream.on("closed", onClosed);
 
     try {
       await stream.waitForClose();
       clearCatchUpTimer();
+      // Drain in-flight consumer callbacks before returning/throwing.
       await dispatchChain;
 
+      // Transport finished, but callback processing may already have failed.
       if (streamError !== undefined) {
         throw streamError;
       }
@@ -468,19 +422,27 @@ export class TailStream {
         reason: streamReason,
       });
 
+      // Lifecycle callbacks can fail and convert clean transport completion into failure.
       if (streamError !== undefined) {
         throw streamError;
       }
     } finally {
       clearCatchUpTimer();
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
-      }
+      stream.off("connect_attempt", onConnectAttempt);
+      stream.off("connect_failed", onConnectFailed);
+      stream.off("reconnect_scheduled", onReconnectScheduled);
+      stream.off("dropped", onDropped);
+      stream.off("retry_limit", onRetryLimit);
+      stream.off("open", onOpen);
+      stream.off("message", onMessage);
+      stream.off("fatal", onFatal);
+      stream.off("closed", onClosed);
       stream.close(NORMAL_CLOSE_CODE, "finished");
     }
   }
 
   private buildTailUrl(): string {
+    // Cursor is always included so reconnect resumes from last observed sequence.
     const query = new URLSearchParams({ cursor: `${this.cursor}` });
 
     if (this.batchSize !== undefined) {
@@ -497,6 +459,7 @@ export class TailStream {
   }
 
   private buildConnectOptions(): StarciteWebSocketConnectOptions | undefined {
+    // Header auth is opt-in; browser-first flows can use `access_token` query auth instead.
     if (this.websocketAuthTransport !== "header" || !this.token) {
       return undefined;
     }
@@ -515,37 +478,4 @@ function describeClose(
 ): string {
   const codeText = `code ${code ?? "unknown"}`;
   return reason ? `${codeText}, reason '${reason}'` : codeText;
-}
-
-function combineAbortSignals(
-  first: AbortSignal | undefined,
-  second: AbortSignal | undefined
-): AbortSignal | undefined {
-  if (!(first || second)) {
-    return undefined;
-  }
-
-  if (!first) {
-    return second;
-  }
-
-  if (!second) {
-    return first;
-  }
-
-  const controller = new AbortController();
-  const abort = (): void => {
-    controller.abort();
-    first.removeEventListener("abort", abort);
-    second.removeEventListener("abort", abort);
-  };
-
-  if (first.aborted || second.aborted) {
-    controller.abort();
-    return controller.signal;
-  }
-
-  first.addEventListener("abort", abort, { once: true });
-  second.addEventListener("abort", abort, { once: true });
-  return controller.signal;
 }

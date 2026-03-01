@@ -123,7 +123,9 @@ async function main(): Promise<void> {
   const timeout = setTimeout(() => controller.abort(), tailTimeoutMs);
 
   try {
-    for await (const batch of session.tailRawBatches({
+    await session.tailBatches((batch) => {
+      observedEvents += batch.length;
+    }, {
       cursor: 0,
       follow: false,
       batchSize: DEFAULT_TAIL_BATCH_SIZE,
@@ -131,9 +133,7 @@ async function main(): Promise<void> {
       onLifecycleEvent: (event) => {
         lifecycleEvents.push(event.type);
       },
-    })) {
-      observedEvents += batch.length;
-    }
+    });
   } finally {
     clearTimeout(timeout);
   }
