@@ -4,7 +4,8 @@
 
 ### Added
 
-- New `@starcite/ai-sdk-transport` package for AI SDK `useChat` integration
-- `StarciteChatTransport` with `sendMessages` and `reconnectToStream`
-- Default Starcite protocol mapping for `chat.user.message` and `chat.response.*`
-- Fallback one-shot `content` event support for quick integration
+- `StarciteChatTransport` integration for AI SDK `useChat`
+- `createStarciteChatTransport()` factory
+- `sendMessages` appends messages as `chat.user.message` payloads and streams matching `UIMessageChunk`s from the session tail
+- `reconnectToStream` resume support from the last tracked cursor
+- Optional factory-based construction path for ergonomic dependency injection

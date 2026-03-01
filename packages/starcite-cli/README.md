@@ -33,10 +33,29 @@ bunx starcite --help
 
 ## Requirements
 
-- Your Starcite Cloud instance URL (`https://<your-instance>.starcite.io`)
-- Your Starcite API key
+- Your Starcite API base URL (`https://<your-instance>.starcite.io`, or local/development URL)
+- Your Starcite credentials:
+  - API key (recommended), or
+  - an existing session token for a single session flow
 
 For temporary usage, use `npx starcite` or `bunx starcite` instead of installing globally.
+
+## Auth and Resolution
+
+The CLI resolves auth in this order:
+
+1. `--token`
+2. `STARCITE_API_KEY`
+3. `~/.starcite/credentials.json`
+4. `apiKey` in `~/.starcite/config.json` or `~/.starcite/config.toml`
+
+How token handling is selected:
+
+- `create` requires a service token with tenant context that can mint a session.
+- `append` and `tail`:
+  - If the token is an API key with `auth:issue` scope, the CLI resolves via identity + session creation/binding.
+  - Otherwise, the token is treated as a session token and must match the target `sessionId`.
+- If no `--token` is supplied, stored/ambient credentials are resolved from env/config.
 
 ## Quick Start
 
@@ -59,7 +78,7 @@ starcite config set api-key <YOUR_KEY>
 ## Global Options
 
 - `-u, --base-url <url>`: Starcite API base URL (highest precedence)
-- `-k, --token <key>`: Starcite API key (highest precedence)
+- `-k, --token <key>`: Starcite API key or session token (highest precedence)
 - `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
 - `-v, --version`: show CLI version and exit
@@ -91,6 +110,7 @@ starcite version
 ### `create`
 
 Create a session.
+Requires an API key-capable token context (typically with session minting capability).
 
 ```bash
 starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":"acme"}'
@@ -99,6 +119,7 @@ starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":
 ### `sessions list`
 
 List sessions from the API catalog.
+Uses the resolved API credential context.
 
 ```bash
 starcite sessions list
@@ -202,6 +223,8 @@ By default the CLI uses `~/.starcite`:
 
 Use `--config-dir <path>` to override the directory for testing or isolated runs.
 
+Note: `credentials.json` contains the saved API key; `config.json`/`config.toml` may contain defaults, and environment/CLI values still take precedence.
+
 ### `tail <sessionId>`
 
 Replay and follow events over WebSocket.
@@ -220,4 +243,4 @@ Useful flags:
 - `--limit <count>`: stop after N emitted events
 - `--no-follow`: stop after replay instead of following live events
 
-By default, `tail` requests batched replay frames from the API for faster catch-up.
+By default, `tail` starts from cursor `0` and requests batched replay frames from the API for faster catch-up.
