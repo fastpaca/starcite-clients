@@ -1,11 +1,6 @@
-import type {
-  CreateSessionInput,
-  StarciteClient,
-  StarcitePayload,
-} from "@starcite/sdk";
+import type { StarciteSession } from "@starcite/sdk";
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
 
-export type ChatMessage = UIMessage;
 export type SendMessagesOptions = Parameters<
   ChatTransport<UIMessage>["sendMessages"]
 >[0];
@@ -15,11 +10,11 @@ export type ReconnectToStreamOptions = Parameters<
 
 export type ChatChunk = UIMessageChunk;
 
-export interface StarciteChatTransportOptions<
-  TPayload extends StarcitePayload = StarcitePayload,
-> {
-  client: StarciteClient<TPayload>;
-  creatorPrincipal?: CreateSessionInput["creator_principal"];
-  userAgent?: string;
-  producerId?: string;
+export interface StarciteChatTransportOptions {
+  /**
+   * Starcite session bound to this transport. Created server-side with an
+   * API key, then reconstructed on the frontend from the session token via
+   * `starcite.session({ token })`.
+   */
+  session: StarciteSession;
 }

@@ -8,10 +8,6 @@ export const SessionCreatorPrincipalSchema = SessionCreatorPrincipalSchemaValue;
 export const SessionTokenPrincipalSchema = SessionTokenPrincipalSchemaValue;
 
 const ArbitraryObjectSchema = z.record(z.unknown());
-const OptionalStringFromNullSchema = z
-  .string()
-  .nullish()
-  .transform((value) => value ?? undefined);
 
 const SessionTokenScopeSchema = z.enum(["session:read", "session:append"]);
 
@@ -161,7 +157,7 @@ export const TailEventSchema = z.object({
   actor: z.string().min(1),
   producer_id: z.string().min(1),
   producer_seq: z.number().int().positive(),
-  source: OptionalStringFromNullSchema,
+  source: z.string().optional(),
   metadata: ArbitraryObjectSchema.optional(),
   refs: ArbitraryObjectSchema.optional(),
   idempotency_key: z.string().nullable().optional(),

@@ -1,0 +1,49 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "baseUrl": ".",
+    "declaration": false,
+    "incremental": false,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./*"],
+      "@starcite/ai-sdk-transport": [
+        "../../packages/ai-sdk-transport/src/index.ts"
+      ],
+      "@starcite/sdk": ["../../packages/typescript-sdk/src/index.ts"]
+    },
+    "plugins": [{ "name": "next" }]
+  },
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/ai-elements/conversation.tsx",
+    "components/ai-elements/message.tsx",
+    "components/ai-elements/prompt-input.tsx",
+    "components/ui/button.tsx",
+    "components/ui/button-group.tsx",
+    "components/ui/command.tsx",
+    "components/ui/dialog.tsx",
+    "components/ui/dropdown-menu.tsx",
+    "components/ui/hover-card.tsx",
+    "components/ui/input-group.tsx",
+    "components/ui/input.tsx",
+    "components/ui/select.tsx",
+    "components/ui/separator.tsx",
+    "components/ui/spinner.tsx",
+    "components/ui/textarea.tsx",
+    "components/ui/tooltip.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "next-env.d.ts",
+    "next.config.ts",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

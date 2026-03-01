@@ -7,6 +7,11 @@ Clients for building and operating multi-agent systems on one ordered session ti
 - `@starcite/sdk` (`packages/typescript-sdk`) for app and browser integration
 - `starcite` (`packages/starcite-cli`) for terminal workflows
 
+## Examples
+
+- Next.js chat UI (`examples/nextjs-chat-ui`) for minimal `useChat` + Starcite transport wiring
+- Vite chat UI (`packages/usechat-streaming-example`) for local proxy-driven streaming demos
+
 Detailed package docs:
 - SDK guide: `packages/typescript-sdk/README.md`
 - CLI guide: `packages/starcite-cli/README.md`

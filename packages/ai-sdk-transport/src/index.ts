@@ -6,7 +6,6 @@ export {
 
 export type {
   ChatChunk,
-  ChatMessage,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,

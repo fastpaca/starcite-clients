@@ -1,328 +1,91 @@
-import {
-  StarciteApiError,
-  type StarcitePayload,
-  type StarciteSession,
-} from "@starcite/sdk";
+import type { StarciteSession } from "@starcite/sdk";
 import type { ChatTransport, UIMessage } from "ai";
 import type {
   ChatChunk,
-  ChatMessage,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
 } from "./types";
 
-const DEFAULT_USER_AGENT = "user";
-const DEFAULT_SOURCE = "use-chat";
-const USER_MESSAGE_TYPE = "chat.user.message";
-const REGENERATE_TRIGGERS = new Set([
-  "regenerate-message",
-  "regenerate-assistant-message",
-]);
+export class StarciteChatTransport implements ChatTransport<UIMessage> {
+  private readonly session: StarciteSession;
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
+  private lastCursor = 0;
 
-function isSessionConflict(error: unknown): boolean {
-  if (!(error instanceof StarciteApiError)) {
-    return false;
-  }
-
-  if (error.status === 409) {
-    return true;
-  }
-
-  return (
-    error.code === "session_exists" ||
-    error.code === "already_exists" ||
-    error.message.toLowerCase().includes("already exists")
-  );
-}
-
-function extractText(message: ChatMessage): string {
-  if (Array.isArray(message.parts)) {
-    return message.parts
-      .map((part) => {
-        const record = asRecord(part);
-        return part.type === "text" && typeof record.text === "string"
-          ? record.text
-          : "";
-      })
-      .join("");
-  }
-
-  const record = asRecord(message);
-
-  if (typeof record.content === "string") {
-    return record.content;
-  }
-
-  if (typeof record.text === "string") {
-    return record.text;
-  }
-
-  return "";
-}
-
-function latestUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") {
-      return messages[index];
-    }
-  }
-
-  return messages.at(-1);
-}
-
-function shouldAppend(trigger: string | undefined): boolean {
-  if (!trigger) {
-    return true;
-  }
-
-  return !REGENERATE_TRIGGERS.has(trigger);
-}
-
-function defaultProducerId(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `producer:use-chat:${crypto.randomUUID()}`;
-  }
-
-  return `producer:use-chat:${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function actorIsUser(actor: string, userAgent: string): boolean {
-  return actor === `agent:${userAgent}`;
-}
-
-function hasTypeField(value: unknown): value is { type: string } {
-  const record = asRecord(value);
-  return typeof record.type === "string";
-}
-
-export class StarciteChatTransport<
-  TPayload extends StarcitePayload = StarcitePayload,
-  TChunk extends TPayload & ChatChunk = TPayload & ChatChunk,
-> implements ChatTransport<UIMessage>
-{
-  private readonly client: StarciteChatTransportOptions<TPayload>["client"];
-  private readonly creatorPrincipal: StarciteChatTransportOptions<TPayload>["creatorPrincipal"];
-  private readonly userAgent: string;
-  private readonly producerId: string;
-
-  private readonly knownSessions = new Set<string>();
-  private readonly lastCursorByChat = new Map<string, number>();
-  private readonly producerSeqByChat = new Map<string, number>();
-
-  constructor(options: StarciteChatTransportOptions<TPayload>) {
-    this.client = options.client;
-    this.creatorPrincipal = options.creatorPrincipal;
-    this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
-    this.producerId = options.producerId?.trim() || defaultProducerId();
+  constructor(options: StarciteChatTransportOptions) {
+    this.session = options.session;
   }
 
   async sendMessages(
     options: SendMessagesOptions
   ): Promise<ReadableStream<ChatChunk>> {
-    const chatId = options.chatId.trim();
-    if (chatId.length === 0) {
-      throw new Error("sendMessages() requires a non-empty chatId");
-    }
-
-    const session = await this.getSession(chatId);
-    const messages = options.messages;
-
-    let cursor = this.lastCursorByChat.get(chatId) ?? 0;
-
-    if (shouldAppend(options.trigger)) {
-      cursor = await this.appendUserMessage(session, options, messages);
-    }
-
-    return this.streamResponse({
-      chatId,
-      session,
-      cursor,
-      abortSignal: undefined,
-    });
+    const cursor = await this.appendUserMessage(options);
+    return this.streamResponse(cursor);
   }
 
   async reconnectToStream(
-    options: ReconnectToStreamOptions
+    _options: ReconnectToStreamOptions
   ): Promise<ReadableStream<ChatChunk> | null> {
-    const chatId = options.chatId.trim();
-    if (chatId.length === 0) {
-      throw new Error("reconnectToStream() requires a non-empty chatId");
-    }
-
-    const cursor = this.lastCursorByChat.get(chatId);
-    if (cursor === undefined) {
+    if (this.lastCursor === 0) {
       return null;
     }
 
-    const session = await this.getSession(chatId);
-    return this.streamResponse({
-      chatId,
-      session,
-      cursor,
-      abortSignal: undefined,
-    });
-  }
-
-  private async getSession(chatId: string): Promise<StarciteSession<TPayload>> {
-    const session = this.client.session(chatId);
-
-    if (!this.knownSessions.has(chatId)) {
-      try {
-        await this.client.createSession({
-          id: chatId,
-          creator_principal: this.creatorPrincipal,
-        });
-      } catch (error) {
-        if (!isSessionConflict(error)) {
-          throw error;
-        }
-      }
-
-      this.knownSessions.add(chatId);
-    }
-
-    return session;
-  }
-
-  private nextProducerSeq(chatId: string): number {
-    const next = (this.producerSeqByChat.get(chatId) ?? 0) + 1;
-    this.producerSeqByChat.set(chatId, next);
-    return next;
+    return this.streamResponse(this.lastCursor);
   }
 
   private async appendUserMessage(
-    session: StarciteSession<TPayload>,
-    options: SendMessagesOptions,
-    messages: ChatMessage[]
+    options: SendMessagesOptions
   ): Promise<number> {
-    const userMessage = latestUserMessage(messages);
-    if (!userMessage) {
-      throw new Error("sendMessages() requires at least one message");
-    }
-
-    const text = extractText(userMessage);
-    if (text.trim().length === 0) {
-      throw new Error(
-        "sendMessages() could not extract text from the latest user message"
-      );
-    }
-
-    const response = await session.append({
-      agent: this.userAgent,
-      producerId: this.producerId,
-      producerSeq: this.nextProducerSeq(options.chatId),
-      type: USER_MESSAGE_TYPE,
-      source: DEFAULT_SOURCE,
-      text,
-      metadata: {
-        messageId: options.messageId ?? userMessage?.id,
-        trigger: options.trigger,
-      },
+    const message = options.messages.at(-1)!;
+    const response = await this.session.append({
+      type: "chat.user.message",
+      source: "use-chat",
+      payload: { parts: message.parts },
     });
 
-    this.lastCursorByChat.set(options.chatId, response.seq);
+    this.lastCursor = response.seq;
     return response.seq;
   }
 
-  private isChunkPayload(payload: TPayload): payload is TChunk {
-    return hasTypeField(payload);
-  }
+  private streamResponse(cursor: number): ReadableStream<ChatChunk> {
+    let unsubEvent: (() => void) | undefined;
+    let unsubError: (() => void) | undefined;
 
-  private streamResponse({
-    chatId,
-    session,
-    cursor,
-    abortSignal,
-  }: {
-    chatId: string;
-    session: StarciteSession<TPayload>;
-    cursor: number;
-    abortSignal: AbortSignal | undefined;
-  }): ReadableStream<ChatChunk> {
-    const runtimeAbort = new AbortController();
-    const onExternalAbort = () => runtimeAbort.abort();
-
-    if (abortSignal) {
-      if (abortSignal.aborted) {
-        runtimeAbort.abort();
-      } else {
-        abortSignal.addEventListener("abort", onExternalAbort, { once: true });
-      }
-    }
+    const cleanup = () => {
+      unsubEvent?.();
+      unsubError?.();
+    };
 
     return new ReadableStream<ChatChunk>({
       start: (controller) => {
-        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: linear stream handling keeps this adapter easy to follow.
-        const run = async () => {
-          try {
-            for await (const event of session.tailRaw({
-              cursor,
-              signal: runtimeAbort.signal,
-            })) {
-              this.lastCursorByChat.set(chatId, event.seq);
-
-              if (actorIsUser(event.actor, this.userAgent)) {
-                continue;
-              }
-
-              const payload = event.payload;
-              if (!this.isChunkPayload(payload)) {
-                continue;
-              }
-
-              controller.enqueue(payload);
-
-              if (payload.type === "finish") {
-                controller.close();
-                return;
-              }
-            }
-
-            controller.close();
-          } catch (error) {
-            if (runtimeAbort.signal.aborted) {
-              controller.close();
-              return;
-            }
-
-            controller.error(error);
-          } finally {
-            if (abortSignal) {
-              abortSignal.removeEventListener("abort", onExternalAbort);
-            }
-            runtimeAbort.abort();
+        unsubEvent = this.session.on("event", (event) => {
+          if (event.seq <= cursor) {
+            return;
           }
-        };
 
-        run().catch((error) => {
+          this.lastCursor = event.seq;
+
+          const chunk = event.payload as ChatChunk;
+          controller.enqueue(chunk);
+
+          if (chunk.type === "finish") {
+            controller.close();
+            cleanup();
+          }
+        });
+
+        unsubError = this.session.on("error", (error) => {
           controller.error(error);
+          cleanup();
         });
       },
-      cancel: () => {
-        runtimeAbort.abort();
-        if (abortSignal) {
-          abortSignal.removeEventListener("abort", onExternalAbort);
-        }
-      },
+      cancel: cleanup,
     });
   }
 }
 
-export function createStarciteChatTransport<
-  TPayload extends StarcitePayload = StarcitePayload,
-  TChunk extends TPayload & ChatChunk = TPayload & ChatChunk,
->(
-  options: StarciteChatTransportOptions<TPayload>
-): StarciteChatTransport<TPayload, TChunk> {
+export function createStarciteChatTransport(
+  options: StarciteChatTransportOptions
+): StarciteChatTransport {
   return new StarciteChatTransport(options);
 }

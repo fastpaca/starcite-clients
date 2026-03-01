@@ -1,10 +1,12 @@
-import type { StarciteWebSocket } from "@starcite/sdk";
-import { StarciteClient } from "@starcite/sdk";
+import {
+  MemoryStore,
+  StarciteIdentity,
+  StarciteSession,
+  type StarciteWebSocket,
+} from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StarciteChatTransport } from "../src/transport";
 import type { ChatChunk } from "../src/types";
-
-const PRODUCER_ID_PREFIX_REGEX = /^producer:use-chat:/;
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
@@ -15,19 +17,25 @@ class FakeWebSocket implements StarciteWebSocket {
     this.url = url;
   }
 
-  addEventListener(type: string, listener: (event: unknown) => void): void {
+  addEventListener<TType extends string>(
+    type: TType,
+    listener: (event: never) => void
+  ): void {
     const handlers = this.listeners.get(type) ?? new Set();
-    handlers.add(listener);
+    handlers.add(listener as (event: unknown) => void);
     this.listeners.set(type, handlers);
   }
 
-  removeEventListener(type: string, listener: (event: unknown) => void): void {
+  removeEventListener<TType extends string>(
+    type: TType,
+    listener: (event: never) => void
+  ): void {
     const handlers = this.listeners.get(type);
     if (!handlers) {
       return;
     }
 
-    handlers.delete(listener);
+    handlers.delete(listener as (event: unknown) => void);
     if (handlers.size === 0) {
       this.listeners.delete(type);
     }
@@ -67,31 +75,55 @@ async function collectChunks(
   return chunks;
 }
 
-function mockCreateSessionAndAppend(
-  fetchMock: ReturnType<typeof vi.fn<typeof fetch>>,
-  sessionId: string,
-  appendSeq: number
-): void {
-  fetchMock
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: sessionId,
-          title: null,
-          metadata: {},
-          last_seq: 0,
-          created_at: "2026-02-18T00:00:00Z",
-          updated_at: "2026-02-18T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    )
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ seq: appendSeq, last_seq: appendSeq, deduped: false }),
-        { status: 201 }
-      )
-    );
+async function waitForSocketCount(
+  sockets: FakeWebSocket[],
+  count: number
+): Promise<void> {
+  while (sockets.length < count) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+function tailEvent(
+  seq: number,
+  payload: Record<string, unknown>,
+  actor = "agent:assistant"
+): string {
+  return JSON.stringify({
+    seq,
+    type: "content",
+    payload,
+    actor,
+    producer_id: `producer:${actor.split(":")[1]}`,
+    producer_seq: seq,
+  });
+}
+
+const testIdentity = new StarciteIdentity({
+  tenantId: "test-tenant",
+  id: "user:tester",
+  type: "user",
+});
+
+function createTestSession(options: {
+  id: string;
+  fetchFn: typeof fetch;
+  websocketFactory: (url: string) => FakeWebSocket;
+}): StarciteSession {
+  return new StarciteSession({
+    id: options.id,
+    token: "test-token",
+    identity: testIdentity,
+    store: new MemoryStore(),
+    transport: {
+      baseUrl: "http://localhost:4000/v1",
+      websocketBaseUrl: "ws://localhost:4000/v1",
+      authorization: "Bearer test-token",
+      fetchFn: options.fetchFn,
+      headers: new Headers(),
+      websocketFactory: options.websocketFactory,
+    },
+  });
 }
 
 describe("StarciteChatTransport", () => {
@@ -101,24 +133,30 @@ describe("StarciteChatTransport", () => {
     fetchMock.mockReset();
   });
 
+  function mockAppendResponse(seq: number): void {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ seq, last_seq: seq, deduped: false }),
+        { status: 201 }
+      )
+    );
+  }
+
   it("appends user input and forwards assistant chunk payloads", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_ai", 1);
+    mockAppendResponse(1);
 
     const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
+    const session = createTestSession({
+      id: "ses_ai",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
         const socket = new FakeWebSocket(url);
         sockets.push(socket);
         return socket;
       },
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      producerId: "producer:test-tab",
-    });
+    const transport = new StarciteChatTransport({ session });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -134,58 +172,36 @@ describe("StarciteChatTransport", () => {
       ],
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:4000/v1/sessions",
+      "http://localhost:4000/v1/sessions/ses_ai/append",
       expect.objectContaining({ method: "POST" })
     );
 
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "http://localhost:4000/v1/sessions/ses_ai/append",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          type: "chat.user.message",
-          payload: { text: "Hello from UI" },
-          actor: "agent:user",
-          producer_id: "producer:test-tab",
-          producer_seq: 1,
-          source: "use-chat",
-          metadata: {
-            messageId: "msg_user",
-            trigger: "submit-message",
-          },
-        }),
-      })
+    const appendBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string
     );
+    expect(appendBody).toMatchObject({
+      type: "chat.user.message",
+      payload: { parts: [{ type: "text", text: "Hello from UI" }] },
+      source: "use-chat",
+    });
 
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=1"
-    );
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
 
     const chunksPromise = collectChunks(stream);
 
+    // User's own event at seq=1 is skipped (seq <= cursor)
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 2,
-        type: "content",
-        payload: { type: "start", messageId: "assistant_1" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 1,
-      }),
+      data: tailEvent(1, { text: "Hello from UI" }, "agent:user"),
     });
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 3,
-        type: "content",
-        payload: { type: "finish", finishReason: "stop" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 2,
-      }),
+      data: tailEvent(2, { type: "start", messageId: "assistant_1" }),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(3, { type: "finish", finishReason: "stop" }),
     });
 
     const chunks = await chunksPromise;
@@ -195,82 +211,21 @@ describe("StarciteChatTransport", () => {
     ]);
   });
 
-  it("passes creator_principal when creating a session", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_principal", 1);
-
-    const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    const transport = new StarciteChatTransport({
-      client,
-      creatorPrincipal: {
-        tenant_id: "org:acme",
-        id: "user:tester",
-        type: "user",
-      },
-      producerId: "producer:test-tab",
-    });
-
-    const stream = await transport.sendMessages({
-      chatId: "ses_principal",
-      trigger: "submit-message",
-      messageId: undefined,
-      abortSignal: undefined,
-      messages: [
-        {
-          id: "msg_user",
-          role: "user",
-          parts: [{ type: "text", text: "Hello from UI" }],
-        },
-      ],
-    });
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "http://localhost:4000/v1/sessions",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          id: "ses_principal",
-          creator_principal: {
-            tenant_id: "org:acme",
-            id: "user:tester",
-            type: "user",
-          },
-        }),
-      })
-    );
-
-    stream.cancel();
-    sockets[0]?.emit("close", { code: 1000 });
-  });
-
   it("forwards AI SDK chunks from tail payload when payload already matches schema", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_chunks", 1);
+    mockAppendResponse(1);
 
     const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
+    const session = createTestSession({
+      id: "ses_chunks",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
         const socket = new FakeWebSocket(url);
         sockets.push(socket);
         return socket;
       },
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      producerId: "producer:test-tab",
-    });
+    const transport = new StarciteChatTransport({ session });
     const stream = await transport.sendMessages({
       chatId: "ses_chunks",
       trigger: "submit-message",
@@ -281,61 +236,32 @@ describe("StarciteChatTransport", () => {
       ],
     });
 
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
     const chunksPromise = collectChunks(stream);
 
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 2,
-        type: "content",
-        payload: { type: "start", messageId: "m_assistant" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 1,
+      data: tailEvent(1, { text: "Q" }, "agent:user"),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(2, { type: "start", messageId: "m_assistant" }),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(3, { type: "text-start", id: "p_assistant" }),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(4, {
+        type: "text-delta",
+        id: "p_assistant",
+        delta: "schema native",
       }),
     });
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 3,
-        type: "content",
-        payload: { type: "text-start", id: "p_assistant" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 2,
-      }),
+      data: tailEvent(5, { type: "text-end", id: "p_assistant" }),
     });
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 4,
-        type: "content",
-        payload: {
-          type: "text-delta",
-          id: "p_assistant",
-          delta: "schema native",
-        },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 3,
-      }),
-    });
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 5,
-        type: "content",
-        payload: { type: "text-end", id: "p_assistant" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 4,
-      }),
-    });
-    sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 6,
-        type: "content",
-        payload: { type: "finish", finishReason: "stop" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 5,
-      }),
+      data: tailEvent(6, { type: "finish", finishReason: "stop" }),
     });
 
     await expect(chunksPromise).resolves.toEqual([
@@ -348,23 +274,20 @@ describe("StarciteChatTransport", () => {
   });
 
   it("reconnects using the last tracked cursor", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_ai", 5);
+    mockAppendResponse(1);
 
     const sockets: FakeWebSocket[] = [];
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => {
+    const session = createTestSession({
+      id: "ses_ai",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
         const socket = new FakeWebSocket(url);
         sockets.push(socket);
         return socket;
       },
     });
 
-    const transport = new StarciteChatTransport({
-      client,
-      producerId: "producer:test-tab",
-    });
+    const transport = new StarciteChatTransport({ session });
 
     const stream = await transport.sendMessages({
       chatId: "ses_ai",
@@ -376,108 +299,64 @@ describe("StarciteChatTransport", () => {
       ],
     });
 
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
     const firstChunksPromise = collectChunks(stream);
 
     sockets[0]?.emit("message", {
-      data: JSON.stringify({
-        seq: 6,
-        type: "content",
-        payload: { type: "finish", finishReason: "stop" },
-        actor: "agent:assistant",
-        producer_id: "producer:assistant",
-        producer_seq: 1,
-      }),
+      data: tailEvent(1, { text: "first" }, "agent:user"),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(2, { type: "finish", finishReason: "stop" }),
     });
 
     await expect(firstChunksPromise).resolves.toEqual([
       { type: "finish", finishReason: "stop" },
     ]);
 
+    // Allow the session's live sync promise chain to fully settle
+    // before reconnecting (liveSyncTask clears in .finally()).
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
     const reconnectStream = await transport.reconnectToStream({
       chatId: "ses_ai",
     });
 
     expect(reconnectStream).not.toBeNull();
+
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("open", undefined);
     expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=6"
+      "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=2&access_token=test-token"
     );
 
-    const reconnectReadPromise = reconnectStream?.getReader().read();
-    sockets[1]?.emit("close", { code: 1000, reason: "finished" });
+    const reconnectChunksPromise = collectChunks(reconnectStream!);
 
-    await expect(reconnectReadPromise).resolves.toEqual({
-      done: true,
-      value: undefined,
+    sockets[1]?.emit("message", {
+      data: tailEvent(3, { type: "start", messageId: "m_reconnect" }),
     });
+    sockets[1]?.emit("message", {
+      data: tailEvent(4, { type: "finish", finishReason: "stop" }),
+    });
+
+    await expect(reconnectChunksPromise).resolves.toEqual([
+      { type: "start", messageId: "m_reconnect" },
+      { type: "finish", finishReason: "stop" },
+    ]);
   });
 
-  it("returns null on reconnect when no cursor is known", async () => {
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: () => new FakeWebSocket("ws://localhost"),
+  it("returns null on reconnect when no messages have been sent", async () => {
+    const session = createTestSession({
+      id: "ses_unknown",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => new FakeWebSocket(url),
     });
 
-    const transport = new StarciteChatTransport({ client });
+    const transport = new StarciteChatTransport({ session });
 
     await expect(
-      transport.reconnectToStream({
-        chatId: "ses_unknown",
-      })
+      transport.reconnectToStream({ chatId: "ses_unknown" })
     ).resolves.toBeNull();
-  });
-
-  it("uses a unique producer id by default for each transport instance", async () => {
-    mockCreateSessionAndAppend(fetchMock, "ses_one", 1);
-    mockCreateSessionAndAppend(fetchMock, "ses_two", 1);
-
-    const client = new StarciteClient({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      websocketFactory: (url) => new FakeWebSocket(url),
-    });
-
-    const transportA = new StarciteChatTransport({ client });
-    const transportB = new StarciteChatTransport({ client });
-
-    await transportA.sendMessages({
-      chatId: "ses_one",
-      trigger: "submit-message",
-      messageId: undefined,
-      abortSignal: undefined,
-      messages: [
-        {
-          id: "u1",
-          role: "user",
-          parts: [{ type: "text", text: "first tab" }],
-        },
-      ],
-    });
-    await transportB.sendMessages({
-      chatId: "ses_two",
-      trigger: "submit-message",
-      messageId: undefined,
-      abortSignal: undefined,
-      messages: [
-        {
-          id: "u2",
-          role: "user",
-          parts: [{ type: "text", text: "second tab" }],
-        },
-      ],
-    });
-
-    const appendOne = JSON.parse(
-      ((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body ??
-        "{}") as string
-    ) as { producer_id?: string };
-    const appendTwo = JSON.parse(
-      ((fetchMock.mock.calls[3]?.[1] as RequestInit | undefined)?.body ??
-        "{}") as string
-    ) as { producer_id?: string };
-
-    expect(appendOne.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
-    expect(appendTwo.producer_id).toMatch(PRODUCER_ID_PREFIX_REGEX);
-    expect(appendOne.producer_id).not.toBe(appendTwo.producer_id);
   });
 });
