@@ -23,20 +23,24 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
     return this.streamResponse(cursor);
   }
 
-  async reconnectToStream(
+  reconnectToStream(
     _options: ReconnectToStreamOptions
   ): Promise<ReadableStream<ChatChunk> | null> {
     if (this.lastCursor === 0) {
-      return null;
+      return Promise.resolve(null);
     }
 
-    return this.streamResponse(this.lastCursor);
+    return Promise.resolve(this.streamResponse(this.lastCursor));
   }
 
   private async appendUserMessage(
     options: SendMessagesOptions
   ): Promise<number> {
-    const message = options.messages.at(-1)!;
+    const message = options.messages.at(-1);
+    if (!message) {
+      throw new Error("sendMessages requires at least one message.");
+    }
+
     const response = await this.session.append({
       type: "chat.user.message",
       source: "use-chat",

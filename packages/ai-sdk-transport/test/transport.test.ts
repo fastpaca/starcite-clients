@@ -135,10 +135,9 @@ describe("StarciteChatTransport", () => {
 
   function mockAppendResponse(seq: number): void {
     fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ seq, last_seq: seq, deduped: false }),
-        { status: 201 }
-      )
+      new Response(JSON.stringify({ seq, last_seq: seq, deduped: false }), {
+        status: 201,
+      })
     );
   }
 
@@ -324,6 +323,9 @@ describe("StarciteChatTransport", () => {
     });
 
     expect(reconnectStream).not.toBeNull();
+    if (reconnectStream === null) {
+      throw new Error("Expected reconnect stream after sendMessages");
+    }
 
     await waitForSocketCount(sockets, 2);
     sockets[1]?.emit("open", undefined);
@@ -331,7 +333,7 @@ describe("StarciteChatTransport", () => {
       "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=2&access_token=test-token"
     );
 
-    const reconnectChunksPromise = collectChunks(reconnectStream!);
+    const reconnectChunksPromise = collectChunks(reconnectStream);
 
     sockets[1]?.emit("message", {
       data: tailEvent(3, { type: "start", messageId: "m_reconnect" }),

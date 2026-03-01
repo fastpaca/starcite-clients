@@ -123,17 +123,20 @@ async function main(): Promise<void> {
   const timeout = setTimeout(() => controller.abort(), tailTimeoutMs);
 
   try {
-    await session.tailBatches((batch) => {
-      observedEvents += batch.length;
-    }, {
-      cursor: 0,
-      follow: false,
-      batchSize: DEFAULT_TAIL_BATCH_SIZE,
-      signal: controller.signal,
-      onLifecycleEvent: (event) => {
-        lifecycleEvents.push(event.type);
+    await session.tailBatches(
+      (batch) => {
+        observedEvents += batch.length;
       },
-    });
+      {
+        cursor: 0,
+        follow: false,
+        batchSize: DEFAULT_TAIL_BATCH_SIZE,
+        signal: controller.signal,
+        onLifecycleEvent: (event) => {
+          lifecycleEvents.push(event.type);
+        },
+      }
+    );
   } finally {
     clearTimeout(timeout);
   }
