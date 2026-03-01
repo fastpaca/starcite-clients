@@ -4,11 +4,7 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import type {
-  StarciteWebSocket,
-  StarciteWebSocketAuthTransport,
-  StarciteWebSocketConnectOptions,
-} from "./types";
+import type { StarciteWebSocket } from "./types";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -24,11 +20,7 @@ export interface TransportConfig {
   readonly authorization: string | null;
   readonly fetchFn: typeof fetch;
   readonly headers: Headers;
-  readonly websocketFactory: (
-    url: string,
-    options?: StarciteWebSocketConnectOptions
-  ) => StarciteWebSocket;
-  readonly websocketAuthTransport: "header" | "access_token";
+  readonly websocketFactory: (url: string) => StarciteWebSocket;
 }
 
 /**
@@ -66,46 +58,16 @@ export function toWebSocketBaseUrl(apiBaseUrl: string): string {
 }
 
 /**
- * Chooses websocket auth transport mode.
- */
-export function resolveWebSocketAuthTransport(
-  requested: StarciteWebSocketAuthTransport | undefined,
-  hasCustomFactory: boolean
-): "header" | "access_token" {
-  if (requested === "header" || requested === "access_token") {
-    return requested;
-  }
-
-  return hasCustomFactory ? "header" : "access_token";
-}
-
-/**
  * Default websocket connector used when no custom factory is provided.
  */
-export function defaultWebSocketFactory(
-  url: string,
-  options: StarciteWebSocketConnectOptions = {}
-): StarciteWebSocket {
+export function defaultWebSocketFactory(url: string): StarciteWebSocket {
   if (typeof WebSocket === "undefined") {
     throw new StarciteError(
       "WebSocket is not available in this runtime. Provide websocketFactory in StarciteOptions."
     );
   }
 
-  const headers = new Headers(options.headers);
-  const headerObject = Object.fromEntries(headers.entries());
-
-  if (Object.keys(headerObject).length === 0) {
-    return new WebSocket(url);
-  }
-
-  // Reflect.construct bypasses the DOM `WebSocket(url, protocols?)` type
-  // signature so we can pass the `{ headers }` options bag accepted by
-  // Node.js and some edge runtimes.
-  return Reflect.construct(WebSocket, [
-    url,
-    { headers: headerObject },
-  ]) as StarciteWebSocket;
+  return new WebSocket(url);
 }
 
 /**

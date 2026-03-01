@@ -26,6 +26,7 @@ The SDK normalizes the API URL to `/v1` automatically.
 - `StarciteSession`: session-scoped handle for append/tail/consume/live-sync
 
 The key split:
+
 - backend: construct `Starcite` with `apiKey`
 - frontend: construct `Starcite` without `apiKey`, bind with `session({ token })`
 
@@ -45,6 +46,7 @@ const starcite = new Starcite({
   apiKey: process.env.STARCITE_API_KEY,
 });
 
+// Use a persistent store in production
 const cursorStore = new InMemoryCursorStore();
 
 export async function runPlanner(prompt: string, sessionId?: string) {
@@ -80,7 +82,7 @@ export async function runPlanner(prompt: string, sessionId?: string) {
 
 ### B) User Frontend (browser)
 
-Do not use API keys in browser code. Your backend mints a session token and sends it to the UI.
+Do not use API keys in browser code. Your backend mints a per-session token and sends it to the UI.
 
 ```ts
 import { Starcite } from "@starcite/sdk";
@@ -89,11 +91,11 @@ const starcite = new Starcite({
   baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
 });
 
-const { token, sessionId } = await fetch("/api/chat/session", {
+const { token } = await fetch("/api/chat/session", {
   method: "POST",
 }).then((res) => res.json());
 
-const session = starcite.session({ token, id: sessionId });
+const session = starcite.session({ token });
 
 const stopEvents = session.on("event", (event) => {
   // Replay + live events from canonical ordered session log.
@@ -117,9 +119,10 @@ session.disconnect();
 ### C) Admin Panel (ops/audit)
 
 Typical split:
+
 1. Backend lists sessions using API key.
 2. Backend mints an admin viewer token for a selected session.
-3. Frontend binds with `session({ token, id })` and tails/replays safely.
+3. Frontend binds with `session({ token })` and tails/replays safely.
 
 Backend:
 
@@ -175,7 +178,7 @@ export async function inspectSession(sessionId: string) {
     (res) => res.json()
   );
 
-  const session = starcite.session({ token, id: sessionId });
+  const session = starcite.session({ token });
 
   const stop = session.on("event", (event) => {
     appendAuditRow(event);
@@ -192,30 +195,92 @@ export async function inspectSession(sessionId: string) {
 }
 ```
 
-## Session APIs (Current)
+## Public API (Current)
 
-`Starcite`:
-- `new Starcite(options?)`
-- `user({ id })`
-- `agent({ id })`
-- `session({ token, id?, logOptions? }) => StarciteSession` (sync)
-- `session({ identity, id?, title?, metadata?, logOptions? }) => Promise<StarciteSession>`
-- `listSessions(options?, requestOptions?)`
+```ts
+import {
+  MemoryStore,
+  Starcite,
+  type AppendResult,
+  type SessionEvent,
+  type SessionStore,
+  type StarciteWebSocket,
+} from "@starcite/sdk";
 
-`StarciteSession`:
-- `append(input, options?)`
-- `appendRaw(input, options?)`
-- `tail(onEvent, options?) => Promise<void>`
-- `tailBatches(onBatch, options?) => Promise<void>`
-- `consume(options)`
-- `on("event" | "error", listener)` / `off(...)`
-- `getSnapshot()`
-- `setLogOptions({ maxEvents })`
-- `disconnect()` / `close()`
+// ── Construction ────────────────────────────────────────────────────────────
+
+const starcite = new Starcite({
+  apiKey: process.env.STARCITE_API_KEY, // required for server-side session creation
+  baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
+  authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
+  fetch: globalThis.fetch,
+  websocketFactory: (url) => new WebSocket(url),
+  store: new MemoryStore(), // cursor + event persistence (default: MemoryStore)
+});
+
+// WebSocketFactory — simplified, auth is always in access_token query string.
+type WebSocketFactory = (url: string) => StarciteWebSocket;
+
+// ── Identities (server-side, require apiKey) ───────────────────────────────
+
+const alice = starcite.user({ id: "u_123" });
+const bot = starcite.agent({ id: "planner" });
+
+// ── Sessions ────────────────────────────────────────────────────────────────
+
+// Server-side: creates session + mints token (async)
+const aliceSession = await starcite.session({ identity: alice });
+const botSession = await starcite.session({
+  identity: bot,
+  id: aliceSession.id,
+});
+
+// Client-side: wraps existing JWT (sync, no network calls)
+const session = starcite.session({ token: "<jwt>" });
+
+// ── Session properties ──────────────────────────────────────────────────────
+
+session.id; // string
+session.token; // string
+session.identity; // StarciteIdentity
+session.log; // SessionLog — canonical source of truth
+
+// ── Session log ─────────────────────────────────────────────────────────────
+
+session.log.events; // readonly SessionEvent[] — ordered by seq, no gaps
+session.log.cursor; // number — highest applied seq
+
+// ── Append ──────────────────────────────────────────────────────────────────
+
+await session.append({ text: "hello" });
+await session.append({ payload: { ok: true }, type: "custom", source: "user" });
+// -> Promise<AppendResult> = { seq: number, deduped: boolean }
+
+// ── Subscribe ───────────────────────────────────────────────────────────────
+
+// Late subscribers get synchronous replay of log.events, then live events.
+// WS connects lazily on first subscriber, disconnects when all leave.
+const unsub = session.on("event", (event) => {
+  console.log(event.seq);
+});
+
+// Fatal errors only (for example token expiry). Transient drops auto-reconnect.
+const unsubErr = session.on("error", (error) => {
+  console.error(error.message);
+});
+
+unsub();
+unsubErr();
+
+// ── Teardown ────────────────────────────────────────────────────────────────
+
+session.disconnect(); // stops WS immediately, removes all listeners
+```
 
 ## Tail Reliability Controls
 
 `SessionTailOptions` supports:
+
 - `cursor`, `batchSize`, `agent`
 - `follow`, `reconnect`, `reconnectPolicy`
 - `connectionTimeoutMs`, `inactivityTimeoutMs`
@@ -225,14 +290,16 @@ export async function inspectSession(sessionId: string) {
 
 This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
 
-## Cursor Stores
+## Session Stores
 
-For durable processing/checkpointing with `consume()`:
+`new Starcite({ store })` accepts a `SessionStore` for cursor + retained-event
+persistence across session rebinds.
 
-- `InMemoryCursorStore`
-- `WebStorageCursorStore`
-- `LocalStorageCursorStore`
-- or bring your own via `SessionCursorStore`
+- Default: `MemoryStore`
+- Bring your own by implementing:
+  - `load(sessionId)`
+  - `save(sessionId, { cursor, events })`
+  - optional `clear(sessionId)`
 
 ## Error Types You Should Handle
 
@@ -254,5 +321,5 @@ bun run --cwd packages/typescript-sdk check:browser:all
 
 ## Links
 
-- Product: https://starcite.ai
-- Repository: https://github.com/fastpaca/starcite-clients
+- Product: <https://starcite.ai>
+- Repository: <https://github.com/fastpaca/starcite-clients>

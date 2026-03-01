@@ -8,12 +8,15 @@ import { request } from "./transport";
 import type {
   AppendEventRequest,
   AppendEventResponse,
+  AppendResult,
   RequestOptions,
   SessionAppendInput,
   SessionConsumeOptions,
+  SessionEvent,
   SessionLogOptions,
   SessionRecord,
   SessionSnapshot,
+  SessionStore,
   SessionTailOptions,
   TailEvent,
 } from "./types";
@@ -27,11 +30,12 @@ export interface StarciteSessionOptions {
   token: string;
   identity: StarciteIdentity;
   transport: TransportConfig;
+  store: SessionStore;
   record?: SessionRecord;
   logOptions?: SessionLogOptions;
 }
 
-type SessionEventListener = (event: TailEvent) => void;
+type SessionEventListener = (event: SessionEvent) => void;
 
 interface SessionLifecycleEvents {
   error: (error: Error) => void;
@@ -56,7 +60,8 @@ export class StarciteSession {
   private readonly producerId: string;
   private producerSeq = 0;
 
-  private readonly log: SessionLog;
+  readonly log: SessionLog;
+  private readonly store: SessionStore;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
   private readonly eventSubscriptions = new Map<
     SessionEventListener,
@@ -72,7 +77,13 @@ export class StarciteSession {
     this.transport = options.transport;
     this.record = options.record;
     this.producerId = crypto.randomUUID();
+    this.store = options.store;
     this.log = new SessionLog(options.logOptions);
+
+    const storedState = this.store.load(this.id);
+    if (storedState) {
+      this.log.hydrate(storedState);
+    }
   }
 
   /**
@@ -80,14 +91,14 @@ export class StarciteSession {
    *
    * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
    */
-  append(
+  async append(
     input: SessionAppendInput,
     options?: RequestOptions
-  ): Promise<AppendEventResponse> {
+  ): Promise<AppendResult> {
     const parsed = SessionAppendInputSchema.parse(input);
     this.producerSeq += 1;
 
-    return this.appendRaw(
+    const result = await this.appendRaw(
       {
         type: parsed.type ?? "content",
         payload: parsed.payload ?? { text: parsed.text },
@@ -102,6 +113,11 @@ export class StarciteSession {
       },
       options
     );
+
+    return {
+      seq: result.seq,
+      deduped: result.deduped,
+    };
   }
 
   /**
@@ -214,6 +230,7 @@ export class StarciteSession {
    */
   setLogOptions(options: SessionLogOptions): void {
     this.log.setMaxEvents(options.maxEvents);
+    this.persistLogState();
   }
 
   /**
@@ -249,7 +266,6 @@ export class StarciteSession {
       token: this.token,
       websocketBaseUrl: this.transport.websocketBaseUrl,
       websocketFactory: this.transport.websocketFactory,
-      websocketAuthTransport: this.transport.websocketAuthTransport,
       options,
     }).subscribe(onBatch);
   }
@@ -284,7 +300,6 @@ export class StarciteSession {
       token: this.token,
       websocketBaseUrl: this.transport.websocketBaseUrl,
       websocketFactory: this.transport.websocketFactory,
-      websocketAuthTransport: this.transport.websocketAuthTransport,
       options: {
         ...tailOptions,
         cursor,
@@ -349,7 +364,6 @@ export class StarciteSession {
         token: this.token,
         websocketBaseUrl: this.transport.websocketBaseUrl,
         websocketFactory: this.transport.websocketFactory,
-        websocketAuthTransport: this.transport.websocketAuthTransport,
         options: {
           cursor: this.log.lastSeq,
           signal,
@@ -358,7 +372,10 @@ export class StarciteSession {
 
       try {
         await stream.subscribe((batch) => {
-          this.log.applyBatch(batch);
+          const appliedEvents = this.log.applyBatch(batch);
+          if (appliedEvents.length > 0) {
+            this.persistLogState();
+          }
         });
       } catch (error) {
         if (signal.aborted) {
@@ -372,5 +389,12 @@ export class StarciteSession {
         throw error;
       }
     }
+  }
+
+  private persistLogState(): void {
+    this.store.save(this.id, {
+      cursor: this.log.cursor,
+      events: [...this.log.events],
+    });
   }
 }

@@ -2,7 +2,6 @@ import EventEmitter from "eventemitter3";
 import type {
   StarciteWebSocket,
   StarciteWebSocketCloseEvent,
-  StarciteWebSocketConnectOptions,
   StarciteWebSocketEventMap,
   StarciteWebSocketFactory,
   StarciteWebSocketMessageEvent,
@@ -61,7 +60,6 @@ export interface ManagedWebSocketOptions {
   // held by `TailStream`, without `TailStream` managing reconnect internals.
   url: () => string;
   websocketFactory: StarciteWebSocketFactory;
-  connectOptions?: StarciteWebSocketConnectOptions;
   signal?: AbortSignal;
   shouldReconnect: boolean;
   reconnectPolicy: ReconnectPolicy;
@@ -203,10 +201,7 @@ export class ManagedWebSocket extends EventEmitter<ManagedWebSocketEvents> {
       try {
         // Resolve URL per attempt so reconnect uses latest producer cursor state.
         const url = this.options.url();
-        socket = this.options.websocketFactory(
-          url,
-          this.options.connectOptions
-        );
+        socket = this.options.websocketFactory(url);
       } catch (error) {
         // Connect failures use the same retry policy path as dropped sockets.
         const shouldContinue = await this.handleConnectFailure(attempt, error);

@@ -6,13 +6,13 @@ import {
 import { StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
+import { MemoryStore } from "./session-store";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
   normalizeAbsoluteHttpUrl,
   request,
   requestWithBaseUrl,
-  resolveWebSocketAuthTransport,
   toApiBaseUrl,
   toWebSocketBaseUrl,
 } from "./transport";
@@ -23,6 +23,7 @@ import type {
   SessionListPage,
   SessionLogOptions,
   SessionRecord,
+  SessionStore,
   StarciteOptions,
 } from "./types";
 import {
@@ -72,6 +73,7 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredIdentity?: StarciteIdentity;
+  private readonly store: SessionStore;
 
   constructor(options: StarciteOptions = {}) {
     const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -89,12 +91,9 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiKey);
 
-    const websocketAuthTransport = resolveWebSocketAuthTransport(
-      options.websocketAuthTransport,
-      options.websocketFactory !== undefined
-    );
     const websocketFactory =
       options.websocketFactory ?? defaultWebSocketFactory;
+    this.store = options.store ?? new MemoryStore();
 
     this.transport = {
       baseUrl,
@@ -103,7 +102,6 @@ export class Starcite {
       fetchFn,
       headers,
       websocketFactory,
-      websocketAuthTransport,
     };
   }
 
@@ -140,7 +138,6 @@ export class Starcite {
    */
   session(input: {
     token: string;
-    id?: string;
     logOptions?: SessionLogOptions;
   }): StarciteSession;
   session(input: {
@@ -152,7 +149,7 @@ export class Starcite {
   }): Promise<StarciteSession>;
   session(
     input:
-      | { token: string; id?: string; logOptions?: SessionLogOptions }
+      | { token: string; logOptions?: SessionLogOptions }
       | {
           identity: StarciteIdentity;
           id?: string;
@@ -162,7 +159,7 @@ export class Starcite {
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
-      return this.sessionFromToken(input.token, input.id, input.logOptions);
+      return this.sessionFromToken(input.token, input.logOptions);
     }
 
     return this.sessionFromIdentity(input);
@@ -235,6 +232,7 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token),
+      store: this.store,
       record,
       logOptions: input.logOptions,
     });
@@ -242,15 +240,14 @@ export class Starcite {
 
   private sessionFromToken(
     token: string,
-    explicitId?: string,
     logOptions?: SessionLogOptions
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
-    const sessionId = explicitId ?? decoded.sessionId;
+    const sessionId = decoded.sessionId;
 
     if (!sessionId) {
       throw new StarciteError(
-        "session({ token }) requires 'id' when the token does not contain a session_id claim."
+        "session({ token }) requires a token with a session_id claim."
       );
     }
 
@@ -259,6 +256,7 @@ export class Starcite {
       token,
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
+      store: this.store,
       logOptions,
     });
   }

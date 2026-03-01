@@ -389,7 +389,14 @@ async function resolveSession(
     });
   }
 
-  return client.session({ token: apiKey, id: sessionId });
+  const session = client.session({ token: apiKey });
+  if (session.id !== sessionId) {
+    throw new InvalidArgumentError(
+      `session token is bound to '${session.id}', expected '${sessionId}'`
+    );
+  }
+
+  return session;
 }
 
 function resolveCreateIdentity(
@@ -774,9 +781,7 @@ class StarciteCliApp {
           return;
         }
 
-        logger.info(
-          `seq=${response.seq} last_seq=${response.last_seq} deduped=${response.deduped}`
-        );
+        logger.info(`seq=${response.seq} deduped=${response.deduped}`);
       });
 
     program

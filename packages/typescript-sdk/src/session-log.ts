@@ -1,6 +1,11 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
-import type { SessionLogOptions, SessionSnapshot, TailEvent } from "./types";
+import type {
+  SessionLogOptions,
+  SessionSnapshot,
+  SessionStoreState,
+  TailEvent,
+} from "./types";
 
 interface SessionLogEvents {
   event: (event: TailEvent) => void;
@@ -30,7 +35,7 @@ export class SessionLogConflictError extends StarciteError {
  */
 export class SessionLog {
   private readonly history: TailEvent[] = [];
-  private readonly events = new EventEmitter<SessionLogEvents>();
+  private readonly emitter = new EventEmitter<SessionLogEvents>();
   private readonly canonicalBySeq = new Map<number, string>();
   private maxEvents: number | undefined;
   private appliedSeq = 0;
@@ -59,11 +64,44 @@ export class SessionLog {
     for (const event of batch) {
       if (this.apply(event)) {
         applied.push(event);
-        this.events.emit("event", event);
+        this.emitter.emit("event", event);
       }
     }
 
     return applied;
+  }
+
+  hydrate(state: SessionStoreState): void {
+    if (!Number.isInteger(state.cursor) || state.cursor < 0) {
+      throw new StarciteError(
+        "Session store cursor must be a non-negative integer"
+      );
+    }
+
+    this.history.length = 0;
+    this.canonicalBySeq.clear();
+    this.appliedSeq = state.cursor;
+
+    let previousSeq: number | undefined;
+    for (const event of state.events) {
+      if (event.seq > state.cursor) {
+        throw new StarciteError(
+          `Session store contains event seq ${event.seq} above cursor ${state.cursor}`
+        );
+      }
+
+      if (previousSeq !== undefined && event.seq !== previousSeq + 1) {
+        throw new StarciteError(
+          `Session store events must be contiguous; saw seq ${event.seq} after ${previousSeq}`
+        );
+      }
+
+      this.history.push(event);
+      this.canonicalBySeq.set(event.seq, JSON.stringify(event));
+      previousSeq = event.seq;
+    }
+
+    this.enforceRetention();
   }
 
   subscribe(
@@ -77,9 +115,9 @@ export class SessionLog {
       }
     }
 
-    this.events.on("event", listener);
+    this.emitter.on("event", listener);
     return () => {
-      this.events.off("event", listener);
+      this.emitter.off("event", listener);
     };
   }
 
@@ -128,6 +166,14 @@ export class SessionLog {
       lastSeq: this.appliedSeq,
       syncing,
     };
+  }
+
+  get events(): readonly TailEvent[] {
+    return this.history.slice();
+  }
+
+  get cursor(): number {
+    return this.appliedSeq;
   }
 
   get lastSeq(): number {

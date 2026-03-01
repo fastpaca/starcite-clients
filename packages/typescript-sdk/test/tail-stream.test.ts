@@ -88,7 +88,6 @@ function buildTailStream(
   options: {
     tailOptions?: SessionTailOptions;
     websocketFactory?: (url: string) => StarciteWebSocket;
-    websocketAuthTransport?: "header" | "access_token";
     token?: string;
   } = {}
 ) {
@@ -105,7 +104,6 @@ function buildTailStream(
         sockets.push(socket);
         return socket;
       }),
-    websocketAuthTransport: options.websocketAuthTransport ?? "header",
     options: options.tailOptions ?? {},
   });
 

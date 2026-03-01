@@ -1,56 +1,129 @@
 # [Starcite](https://starcite.ai) Clients
 
-Built for multi-agent systems.
+Clients for building and operating multi-agent systems on one ordered session timeline.
 
-`@starcite/sdk` and `starcite` give multiple producers a shared, append-only session feed you can trust for:
+## Packages
 
-- live monitoring of each agent’s work,
-- consistent ordering and replay for frontend/UX stability,
-- auditable session history you can stream and inspect.
+- `@starcite/sdk` (`packages/typescript-sdk`) for app and browser integration
+- `starcite` (`packages/starcite-cli`) for terminal workflows
 
-- `@starcite/sdk` (`packages/typescript-sdk`) for app-level integration in TypeScript.
-- `starcite` (`packages/starcite-cli`) for terminal-driven workflows and quick experiments.
+Detailed package docs:
+- SDK guide: `packages/typescript-sdk/README.md`
+- CLI guide: `packages/starcite-cli/README.md`
 
-## Why this exists
+## Public SDK Surface
 
-Modern AI products often have many agents producing events at the same time. Starcite gives you:
+```ts
+import { MemoryStore, Starcite, type StarciteWebSocket } from "@starcite/sdk";
 
-- a single stream that captures everything in order,
-- a simple way to **a) listen/monitor** what every agent is doing,
-- UI/UX **b) consistency guarantees** so frontend views stay in sync with the same ordered event stream.
+const starcite = new Starcite({
+  apiKey: process.env.STARCITE_API_KEY, // required for server-side session creation
+  baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
+  authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
+  fetch: globalThis.fetch,
+  websocketFactory: (url) => new WebSocket(url),
+  store: new MemoryStore(), // cursor + event persistence (default: MemoryStore)
+});
 
-## Pick your path
+type WebSocketFactory = (url: string) => StarciteWebSocket;
 
-- Start with the TypeScript SDK if you are building an app: `packages/typescript-sdk/README.md`
-- Start with the CLI if you are scripting or testing from terminal: `packages/starcite-cli/README.md`
+const alice = starcite.user({ id: "u_123" });
+const bot = starcite.agent({ id: "planner" });
 
-## Get started in minutes
+const aliceSession = await starcite.session({ identity: alice });
+const botSession = await starcite.session({
+  identity: bot,
+  id: aliceSession.id,
+});
 
-1. Install the CLI
+const session = starcite.session({ token: "<jwt>" }); // sync, no network call
+
+session.id; // string
+session.token; // string
+session.identity; // StarciteIdentity
+session.log.events; // readonly SessionEvent[], ordered by seq with no gaps
+session.log.cursor; // number, highest applied seq
+
+await session.append({ text: "hello" }); // Promise<AppendResult> { seq, deduped }
+
+const unsub = session.on("event", (event) => {
+  console.log(event.seq);
+});
+const unsubErr = session.on("error", (error) => {
+  console.error(error.message);
+});
+
+unsub();
+unsubErr();
+session.disconnect();
+```
+
+## How Teams Use It
+
+### A) Agent Backend
+
+```ts
+import { Starcite } from "@starcite/sdk";
+
+const starcite = new Starcite({
+  baseUrl: process.env.STARCITE_BASE_URL,
+  apiKey: process.env.STARCITE_API_KEY,
+});
+
+const planner = starcite.agent({ id: "planner" });
+const session = await starcite.session({ identity: planner });
+
+await session.append({ text: "planning started" });
+```
+
+### B) User Frontend
+
+```ts
+import { Starcite } from "@starcite/sdk";
+
+const starcite = new Starcite({
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
+});
+
+const { token } = await fetch("/api/session-token").then((res) => res.json());
+const session = starcite.session({ token });
+
+const stop = session.on("event", (event) => {
+  renderEvent(event);
+});
+```
+
+### C) Admin Panel
+
+```ts
+import { Starcite } from "@starcite/sdk";
+
+const starcite = new Starcite({
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
+});
+
+const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
+  (res) => res.json()
+);
+const session = starcite.session({ token });
+
+session.on("event", (event) => appendAuditRow(event));
+session.on("error", (error) => showBanner(error.message));
+```
+
+## CLI Quick Start
 
 ```bash
 npm install -g starcite
-```
-
-1. Set your customer instance URL and API key
-
-```bash
-export STARCITE_BASE_URL=https://<your-instance>.starcite.io
-export STARCITE_API_KEY=<YOUR_API_KEY>
-```
-
-1. Run a tiny end-to-end flow
-
-```bash
-starcite config set endpoint "$STARCITE_BASE_URL"
-starcite auth login --api-key "$STARCITE_API_KEY"
+starcite config set endpoint https://<your-instance>.starcite.io
+starcite config set api-key <YOUR_API_KEY>
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite tail ses_demo --cursor 0 --limit 1
 ```
 
-## Development commands (if you work in this repo)
+## Development Commands
 
 ```bash
 bun run build
@@ -59,18 +132,18 @@ bun run typecheck
 bun run test
 ```
 
-Build a standalone CLI binary when needed:
+Build a standalone CLI binary:
 
 ```bash
 bun run starcite:compile
 ./packages/starcite-cli/dist/starcite --help
 ```
 
-## Release process
+## Release Process
 
-This repo intentionally uses manual releases.
+This repo uses manual releases.
 
-1. Choose a bump and create the release commit + tag:
+1. Create release commit and tag:
 
 ```bash
 bun run release:patch
@@ -78,17 +151,17 @@ bun run release:minor
 bun run release:major
 ```
 
-1. Push the release commit and tag:
+2. Push commit and tag:
 
 ```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-1. Publish through GitHub Releases:
+3. Publish via GitHub release:
 
-- Create GitHub release `vX.Y.Z`.
-- `publish-npm.yml` publishes `@starcite/sdk` and `starcite` when `release.published` runs.
+- Create GitHub release `vX.Y.Z`
+- `publish-npm.yml` publishes `@starcite/sdk` and `starcite` on `release.published`
 
 Required secret:
 

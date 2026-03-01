@@ -8,7 +8,6 @@ import { agentFromActor } from "../identity";
 import type {
   SessionTailOptions,
   StarciteWebSocket,
-  StarciteWebSocketConnectOptions,
   TailEvent,
   TailLifecycleEvent,
 } from "../types";
@@ -37,11 +36,7 @@ export class TailStream {
   private readonly sessionId: string;
   private readonly token: string | undefined;
   private readonly websocketBaseUrl: string;
-  private readonly websocketFactory: (
-    url: string,
-    options?: StarciteWebSocketConnectOptions
-  ) => StarciteWebSocket;
-  private readonly websocketAuthTransport: "header" | "access_token";
+  private readonly websocketFactory: (url: string) => StarciteWebSocket;
 
   private readonly batchSize: number | undefined;
   private readonly agent: string | undefined;
@@ -63,11 +58,7 @@ export class TailStream {
     sessionId: string;
     token: string | undefined;
     websocketBaseUrl: string;
-    websocketFactory: (
-      url: string,
-      options?: StarciteWebSocketConnectOptions
-    ) => StarciteWebSocket;
-    websocketAuthTransport: "header" | "access_token";
+    websocketFactory: (url: string) => StarciteWebSocket;
     options: SessionTailOptions;
   }) {
     const opts = input.options;
@@ -81,7 +72,6 @@ export class TailStream {
     this.token = input.token;
     this.websocketBaseUrl = input.websocketBaseUrl;
     this.websocketFactory = input.websocketFactory;
-    this.websocketAuthTransport = input.websocketAuthTransport;
 
     this.cursor = opts.cursor ?? 0;
     this.batchSize = opts.batchSize;
@@ -134,7 +124,6 @@ export class TailStream {
       // URL is re-read per attempt by `ManagedWebSocket` and reflects current cursor.
       url: () => this.buildTailUrl(),
       websocketFactory: this.websocketFactory,
-      connectOptions: this.buildConnectOptions(),
       signal,
       shouldReconnect: this.shouldReconnect,
       reconnectPolicy: {
@@ -449,26 +438,13 @@ export class TailStream {
       query.set("batch_size", `${this.batchSize}`);
     }
 
-    if (this.websocketAuthTransport === "access_token" && this.token) {
+    if (this.token) {
       query.set("access_token", this.token);
     }
 
     return `${this.websocketBaseUrl}/sessions/${encodeURIComponent(
       this.sessionId
     )}/tail?${query.toString()}`;
-  }
-
-  private buildConnectOptions(): StarciteWebSocketConnectOptions | undefined {
-    // Header auth is opt-in; browser-first flows can use `access_token` query auth instead.
-    if (this.websocketAuthTransport !== "header" || !this.token) {
-      return undefined;
-    }
-
-    return {
-      headers: {
-        authorization: `Bearer ${this.token}`,
-      },
-    };
   }
 }
 

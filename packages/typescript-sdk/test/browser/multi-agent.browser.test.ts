@@ -411,7 +411,6 @@ describe("Browser Multi-Agent Workflows", () => {
   });
 
   it("supports explicit access_token auth with custom browser websocket factories", async () => {
-    const connectOptionsSeen: unknown[] = [];
     const sockets: FakeBrowserWebSocket[] = [];
     const sessionToken = makeTailSessionToken(
       "ses_explicit_access_token",
@@ -420,10 +419,8 @@ describe("Browser Multi-Agent Workflows", () => {
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      websocketAuthTransport: "access_token",
-      websocketFactory: (url, options) => {
-        const socket = new FakeBrowserWebSocket(url, options);
-        connectOptionsSeen.push(options);
+      websocketFactory: (url) => {
+        const socket = new FakeBrowserWebSocket(url);
         sockets.push(socket);
         return socket;
       },
@@ -438,7 +435,6 @@ describe("Browser Multi-Agent Workflows", () => {
 
     const socket = sockets[0];
     expect(socket?.url).toContain("access_token=");
-    expect(connectOptionsSeen[0]).toBeUndefined();
 
     socket?.emitClose({ code: 1000, reason: "done" });
     await expect(tailDone).resolves.toBeUndefined();
@@ -954,16 +950,14 @@ describe("Browser Multi-Agent Workflows", () => {
     session.disconnect();
   });
 
-  it("uses websocket header auth with custom factories in browser runtimes", async () => {
-    const connectOptionsSeen: unknown[] = [];
+  it("uses query-token auth with custom factories in browser runtimes", async () => {
     const sockets: FakeBrowserWebSocket[] = [];
     const sessionToken = makeTailSessionToken("ses_header", "agent:planner");
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      websocketFactory: (url, options) => {
-        const socket = new FakeBrowserWebSocket(url, options);
-        connectOptionsSeen.push(options);
+      websocketFactory: (url) => {
+        const socket = new FakeBrowserWebSocket(url);
         sockets.push(socket);
         return socket;
       },
@@ -977,13 +971,7 @@ describe("Browser Multi-Agent Workflows", () => {
     );
 
     const socket = sockets[0];
-    expect(socket?.url).not.toContain("access_token=");
-
-    const firstOptions = connectOptionsSeen[0] as
-      | { headers?: HeadersInit }
-      | undefined;
-    const headers = new Headers(firstOptions?.headers);
-    expect(headers.get("authorization")).toBe(`Bearer ${sessionToken}`);
+    expect(socket?.url).toContain("access_token=");
 
     socket?.emitMessage(
       JSON.stringify({

@@ -87,7 +87,7 @@ describe("starcite CLI", () => {
           type: "agent",
         })
     );
-    session.mockResolvedValue(fakeSession);
+    session.mockReturnValue(fakeSession);
     listSessions.mockResolvedValue({
       sessions: [
         {
@@ -261,7 +261,6 @@ describe("starcite CLI", () => {
 
     expect(session).toHaveBeenCalledWith({
       token: sessionToken,
-      id: "ses_123",
     });
     expect(fakeSession.append).toHaveBeenCalledWith({
       type: "content",
@@ -272,7 +271,7 @@ describe("starcite CLI", () => {
       idempotencyKey: undefined,
       expectedSeq: undefined,
     });
-    expect(info).toContain("seq=1 last_seq=1 deduped=false");
+    expect(info).toContain("seq=1 deduped=false");
   });
 
   it("auto-generates producer id when missing", async () => {
@@ -637,7 +636,7 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       serviceToken
     );
-    expect(info).toContain("seq=1 last_seq=1 deduped=false");
+    expect(info).toContain("seq=1 deduped=false");
   });
 
   it("append uses the configured API key when token scopes cannot be inferred", async () => {
@@ -679,13 +678,12 @@ describe("starcite CLI", () => {
 
     expect(session).toHaveBeenCalledWith({
       token: opaqueToken,
-      id: "ses_123",
     });
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       opaqueToken
     );
-    expect(info).toContain("seq=1 last_seq=1 deduped=false");
+    expect(info).toContain("seq=1 deduped=false");
   });
 
   it("tail uses SDK identity session binding when API key has auth:issue", async () => {
@@ -887,7 +885,6 @@ describe("starcite CLI", () => {
 
     expect(session).toHaveBeenCalledWith({
       token: sessionToken,
-      id: "ses_123",
     });
     expect(fakeSession.tail).toHaveBeenCalledWith(expect.any(Function), {
       cursor: 0,

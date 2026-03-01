@@ -140,6 +140,14 @@ export const AppendEventResponseSchema = z.object({
 export type AppendEventResponse = z.infer<typeof AppendEventResponseSchema>;
 
 /**
+ * High-level append result returned by `session.append()`.
+ */
+export interface AppendResult {
+  seq: number;
+  deduped: boolean;
+}
+
+/**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
@@ -160,6 +168,11 @@ export const TailEventSchema = z.object({
  * Inferred TypeScript type for {@link TailEventSchema}.
  */
 export type TailEvent = z.infer<typeof TailEventSchema>;
+
+/**
+ * Canonical session event surfaced by the SDK.
+ */
+export type SessionEvent = TailEvent;
 /**
  * Raw tail event batch grouped by a single WebSocket frame.
  */
@@ -193,6 +206,29 @@ export interface SessionSnapshot {
    * Indicates whether the session is actively streaming tail updates.
    */
   syncing: boolean;
+}
+
+/**
+ * Serializable persisted state for one session log.
+ */
+export interface SessionStoreState {
+  /**
+   * Highest contiguous sequence applied for this session.
+   */
+  cursor: number;
+  /**
+   * Retained events snapshot used for immediate replay.
+   */
+  events: TailEvent[];
+}
+
+/**
+ * Persistence interface for session cursor + retained events.
+ */
+export interface SessionStore {
+  load(sessionId: string): SessionStoreState | undefined;
+  save(sessionId: string, state: SessionStoreState): void;
+  clear?(sessionId: string): void;
 }
 
 /**
@@ -445,22 +481,7 @@ export interface StarciteWebSocket {
 /**
  * Factory used to create the WebSocket connection for `tail`.
  */
-export interface StarciteWebSocketConnectOptions {
-  /**
-   * Headers to include with the WebSocket handshake request.
-   */
-  headers?: HeadersInit;
-}
-
-/**
- * Factory used to create the WebSocket connection for `tail`.
- */
-export type StarciteWebSocketFactory = (
-  url: string,
-  options?: StarciteWebSocketConnectOptions
-) => StarciteWebSocket;
-
-export type StarciteWebSocketAuthTransport = "auto" | "header" | "access_token";
+export type StarciteWebSocketFactory = (url: string) => StarciteWebSocket;
 
 /**
  * Options forwarded to individual HTTP requests.
@@ -490,7 +511,7 @@ export interface StarciteOptions {
   headers?: HeadersInit;
   /**
    * Service key / JWT token. When set, the SDK automatically sends
-   * `Authorization: Bearer <token>` for HTTP requests and WebSocket upgrades.
+   * `Authorization: Bearer <token>` for HTTP requests.
    */
   apiKey?: string;
   /**
@@ -503,14 +524,11 @@ export interface StarciteOptions {
    */
   websocketFactory?: StarciteWebSocketFactory;
   /**
-   * Tail WebSocket authentication transport.
+   * Session store used for cursor + retained event persistence.
    *
-   * - `auto` (default): use `access_token` query auth for the default factory and
-   *   header auth when a custom factory is supplied.
-   * - `header`: send `Authorization: Bearer <token>` during upgrade.
-   * - `access_token`: send token via `access_token` query parameter.
+   * Defaults to an in-memory store.
    */
-  websocketAuthTransport?: StarciteWebSocketAuthTransport;
+  store?: SessionStore;
 }
 
 /**

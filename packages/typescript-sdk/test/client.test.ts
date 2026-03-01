@@ -17,8 +17,6 @@ import type {
   TailLifecycleEvent,
 } from "../src/types";
 
-const BEARER_PREFIX_REGEX = /^Bearer /;
-
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
 
@@ -374,7 +372,6 @@ describe("Starcite", () => {
     // session({ token }) works without apiKey
     const session = await starcite.session({
       token: sessionToken,
-      id: "ses_demo",
     });
     expect(session.id).toBe("ses_demo");
 
@@ -611,8 +608,10 @@ describe("Starcite", () => {
 
     sockets[0]?.emit("close", { code: 1000 });
     await expect(tailDone).resolves.toBeUndefined();
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+      )
     );
   });
 
@@ -654,8 +653,10 @@ describe("Starcite", () => {
 
     sockets[0]?.emit("close", { code: 1000 });
     await expect(tailDone).resolves.toBeUndefined();
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=2"
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=2"
+      )
     );
   });
 
@@ -740,19 +741,13 @@ describe("Starcite", () => {
     await expect(tailDone).resolves.toBeUndefined();
   });
 
-  it("sends authorization header in websocket upgrade when apiKey is set", async () => {
+  it("uses query-token websocket auth even when apiKey is set", async () => {
     const sockets: FakeWebSocket[] = [];
-    const websocketFactory = vi.fn(
-      (url: string, options?: { headers?: HeadersInit }) => {
-        const headers = new Headers(options?.headers);
-        // Session token auth is used for the WebSocket, not the API key
-        expect(headers.get("authorization")).toMatch(BEARER_PREFIX_REGEX);
-
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      }
-    );
+    const websocketFactory = vi.fn((url: string) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    });
 
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
@@ -771,32 +766,25 @@ describe("Starcite", () => {
 
     await expect(tailDone).resolves.toBeUndefined();
     expect(websocketFactory).toHaveBeenCalledWith(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0",
-      expect.objectContaining({
-        headers: expect.anything(),
-      })
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token="
+      )
     );
   });
 
-  it("supports access_token query auth for websocket tail", async () => {
+  it("sends only a URL argument to custom websocket factories", async () => {
     const sockets: FakeWebSocket[] = [];
-    const websocketFactory = vi.fn(
-      (url: string, options?: { headers?: HeadersInit }) => {
-        const headers = new Headers(options?.headers);
-        expect(headers.get("authorization")).toBeNull();
-
-        const socket = new FakeWebSocket(url);
-        sockets.push(socket);
-        return socket;
-      }
-    );
+    const websocketFactory = vi.fn((url: string) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    });
 
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey: makeApiKey(),
       websocketFactory,
-      websocketAuthTransport: "access_token",
     });
 
     const sessionToken = makeTailSessionToken();
@@ -812,8 +800,7 @@ describe("Starcite", () => {
     expect(websocketFactory).toHaveBeenCalledWith(
       expect.stringContaining(
         "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token="
-      ),
-      undefined
+      )
     );
   });
 
@@ -863,8 +850,10 @@ describe("Starcite", () => {
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
-    expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+      )
     );
 
     sockets[1]?.emit("message", {
@@ -928,8 +917,10 @@ describe("Starcite", () => {
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
-    expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+      )
     );
 
     sockets[1]?.emit("message", {
@@ -993,8 +984,10 @@ describe("Starcite", () => {
     sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
 
     await waitForSocketCount(sockets, 2);
-    expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+      )
     );
 
     sockets[1]?.emit("message", {
@@ -1308,8 +1301,10 @@ describe("Starcite", () => {
     });
 
     await waitForSocketCount(sockets, 1);
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=4"
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=4"
+      )
     );
 
     sockets[0]?.emit("message", {
@@ -1402,8 +1397,10 @@ describe("Starcite", () => {
     });
 
     await waitForSocketCount(sockets, 1);
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=-1"
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=-1"
+      )
     );
 
     sockets[0]?.emit("close", { code: 1000 });
@@ -1489,6 +1486,83 @@ describe("Starcite", () => {
     unsubscribe();
   });
 
+  it("hydrates session.log from SessionStore persisted state", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const persistedBySession = new Map<
+      string,
+      { cursor: number; events: TailEvent[] }
+    >();
+    const store = {
+      load(sessionId: string) {
+        return persistedBySession.get(sessionId);
+      },
+      save(
+        sessionId: string,
+        state: {
+          cursor: number;
+          events: TailEvent[];
+        }
+      ) {
+        persistedBySession.set(sessionId, {
+          cursor: state.cursor,
+          events: [...state.events],
+        });
+      },
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const sessionToken = makeTailSessionToken();
+    const firstSession = await starcite.session({ token: sessionToken });
+    const unsubscribe = firstSession.on("event", () => undefined);
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    unsubscribe();
+    firstSession.disconnect();
+
+    const secondSession = await starcite.session({ token: sessionToken });
+    expect(secondSession.log.cursor).toBe(2);
+    expect(secondSession.log.events.map((event) => event.seq)).toEqual([1, 2]);
+
+    const replayedSeqs: number[] = [];
+    const stopReplay = secondSession.on("event", (event) => {
+      replayedSeqs.push(event.seq);
+    });
+    expect(replayedSeqs).toEqual([1, 2]);
+    stopReplay();
+    secondSession.disconnect();
+  });
+
   it("replays retained events to late session listeners", async () => {
     const { starcite, sockets } = buildTailClient(fetchMock);
     const session = await starcite.session({ token: makeTailSessionToken() });
@@ -1564,8 +1638,10 @@ describe("Starcite", () => {
     });
 
     await waitForSocketCount(sockets, 2);
-    expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+      )
     );
 
     sockets[1]?.emit("message", {
@@ -1776,8 +1852,10 @@ describe("Starcite", () => {
 
     const { done: tailDone } = startTail(session, { batchSize: 0 });
     await waitForSocketCount(sockets, 1);
-    expect(sockets[0]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=0"
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=0"
+      )
     );
     sockets[0]?.emit("close", { code: 1000 });
     await expect(tailDone).resolves.toBeUndefined();

@@ -20,26 +20,29 @@ export type { PrincipalType } from "./identity";
 export { StarciteIdentity } from "./identity";
 export { StarciteSession } from "./session";
 export { SessionLogConflictError, SessionLogGapError } from "./session-log";
+export { MemoryStore } from "./session-store";
 export type {
   AppendEventRequest,
   AppendEventResponse,
+  AppendResult,
   RequestOptions,
   SessionAppendInput,
   SessionConsumeOptions,
   SessionCursorStore,
+  SessionEvent,
   SessionListItem,
   SessionListOptions,
   SessionListPage,
   SessionLogOptions,
   SessionRecord,
   SessionSnapshot,
+  SessionStore,
+  SessionStoreState,
   SessionTailOptions,
   SessionTokenScope,
   StarciteOptions,
   StarciteWebSocket,
-  StarciteWebSocketAuthTransport,
   StarciteWebSocketCloseEvent,
-  StarciteWebSocketConnectOptions,
   StarciteWebSocketEventMap,
   StarciteWebSocketFactory,
   StarciteWebSocketMessageEvent,
