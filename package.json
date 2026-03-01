@@ -36,6 +36,8 @@
   },
   "workspaces": [
     "packages/typescript-sdk",
-    "packages/starcite-cli"
+    "packages/starcite-cli",
+    "packages/ai-sdk-transport",
+    "examples/nextjs-chat-ui"
   ]
 }

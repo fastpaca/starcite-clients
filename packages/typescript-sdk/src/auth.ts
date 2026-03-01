@@ -14,8 +14,8 @@ const SessionTokenClaimsSchema = z.object({
   session_id: z.string().min(1).optional(),
   sub: z.string().min(1).optional(),
   tenant_id: z.string().min(1),
-  principal_id: z.string().min(1),
-  principal_type: PrincipalTypeSchema,
+  principal_id: z.string().min(1).optional(),
+  principal_type: PrincipalTypeSchema.optional(),
 });
 
 /**
@@ -62,13 +62,15 @@ export function decodeSessionToken(token: string): {
   identity: StarciteIdentity;
 } {
   const claims = SessionTokenClaimsSchema.parse(decodeJwt(token));
+  const principalId = claims.principal_id ?? claims.sub ?? "session-user";
+  const principalType = claims.principal_type ?? "user";
 
   return {
     sessionId: claims.session_id,
     identity: new StarciteIdentity({
       tenantId: claims.tenant_id,
-      id: claims.principal_id,
-      type: claims.principal_type,
+      id: principalId,
+      type: principalType,
     }),
   };
 }

@@ -79,7 +79,10 @@ export class Starcite {
     const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.baseUrl = baseUrl;
 
-    const fetchFn = options.fetch ?? fetch;
+    const userFetch = options.fetch;
+    const fetchFn: typeof fetch = userFetch
+      ? (input, init) => userFetch(input, init)
+      : (input, init) => fetch(input, init);
     const headers = new Headers(options.headers);
     const apiKey = options.apiKey?.trim();
     let authorization: string | undefined;
