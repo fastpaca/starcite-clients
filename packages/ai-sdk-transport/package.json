@@ -1,6 +1,6 @@
 {
   "name": "@starcite/ai-sdk-transport",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "description": "AI SDK useChat transport for Starcite sessions",
   "license": "Apache-2.0",
   "homepage": "https://starcite.ai",
@@ -46,7 +46,7 @@
     "check": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@starcite/sdk": "^0.0.1"
+    "@starcite/sdk": "^0.0.4"
   },
   "peerDependencies": {
     "ai": ">=5.0.0"
