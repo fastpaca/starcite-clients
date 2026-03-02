@@ -1,8 +1,8 @@
 import { openai } from "@ai-sdk/openai";
-import { streamText } from "ai";
 import { toModelMessagesFromEvents } from "@starcite/ai-sdk-transport";
-import { decodeJwt } from "jose";
 import { Starcite, StarciteIdentity } from "@starcite/sdk";
+import { streamText } from "ai";
+import { decodeJwt } from "jose";
 
 const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultModel = "gpt-4o-mini";
@@ -51,9 +51,7 @@ async function runSessionAgent(sessionId: string): Promise<void> {
           return;
         }
 
-        const messages = await toModelMessagesFromEvents(
-          session.getSnapshot().events
-        );
+        const messages = await toModelMessagesFromEvents(session.events());
         if (messages.length === 0) {
           // nothing to do ..
           return;

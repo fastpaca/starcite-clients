@@ -792,12 +792,12 @@ describe("Browser Multi-Agent Workflows", () => {
       () => plannerSeqs.length === 1 && drafterSeqs.length === 1,
       "Timed out waiting for initial isolated live-sync frames"
     );
-    expect(
-      plannerSession.getSnapshot().events.map((event) => event.seq)
-    ).toEqual([1]);
-    expect(
-      drafterSession.getSnapshot().events.map((event) => event.seq)
-    ).toEqual([1]);
+    expect(plannerSession.state().events.map((event) => event.seq)).toEqual([
+      1,
+    ]);
+    expect(drafterSession.state().events.map((event) => event.seq)).toEqual([
+      1,
+    ]);
 
     plannerSession.disconnect();
     await waitForCondition(
@@ -895,9 +895,7 @@ describe("Browser Multi-Agent Workflows", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(observedSeqs).toEqual([1, 2, 3]);
-    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
-      1, 2, 3,
-    ]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1, 2, 3]);
 
     session.disconnect();
   });

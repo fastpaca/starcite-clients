@@ -273,10 +273,17 @@ export class StarciteSession {
   }
 
   /**
-   * Returns a stable snapshot of the current canonical in-memory log.
+   * Returns a stable view of the current canonical in-memory log state.
    */
-  getSnapshot(): SessionSnapshot {
-    return this.log.getSnapshot(this.liveSyncTask !== undefined);
+  state(): SessionSnapshot {
+    return this.log.state(this.liveSyncTask !== undefined);
+  }
+
+  /**
+   * Returns the retained canonical event list.
+   */
+  events(): readonly SessionEvent[] {
+    return this.log.events;
   }
 
   /**

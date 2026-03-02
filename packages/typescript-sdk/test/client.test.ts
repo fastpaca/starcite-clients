@@ -1427,17 +1427,15 @@ describe("Starcite", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(observedSeqs).toEqual([1, 2]);
-    expect(session.getSnapshot()).toMatchObject({
+    expect(session.state()).toMatchObject({
       lastSeq: 2,
       syncing: true,
     });
-    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
-      1, 2,
-    ]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1, 2]);
 
     unsubscribe();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(session.getSnapshot().syncing).toBe(false);
+    expect(session.state().syncing).toBe(false);
   });
 
   it("deduplicates identical repeated events in session snapshot", async () => {
@@ -1466,7 +1464,7 @@ describe("Starcite", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(observedSeqs).toEqual([1]);
-    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([1]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1]);
     unsubscribe();
   });
 
@@ -1829,7 +1827,7 @@ describe("Starcite", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const snapshot = session.getSnapshot();
+    const snapshot = session.state();
     expect(snapshot.lastSeq).toBe(3);
     expect(snapshot.events.map((event) => event.seq)).toEqual([2, 3]);
     unsubscribe();
@@ -1897,9 +1895,7 @@ describe("Starcite", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
-      2, 3,
-    ]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([2, 3]);
     expect(observedSeqs).toEqual([1, 2, 3]);
     expect(syncErrors).toEqual([]);
     session.disconnect();

@@ -14,7 +14,7 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
 
   constructor(options: StarciteChatTransportOptions) {
     this.session = options.session;
-    this.lastCursor = options.session.getSnapshot().lastSeq;
+    this.lastCursor = options.session.state().lastSeq;
   }
 
   async sendMessages(
@@ -27,10 +27,8 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   reconnectToStream(
     _options: ReconnectToStreamOptions
   ): Promise<ReadableStream<ChatChunk> | null> {
-    const snapshot = this.session.getSnapshot();
-    const inferredUserCursor = this.findLatestUserMessageCursor(
-      snapshot.events
-    );
+    const state = this.session.state();
+    const inferredUserCursor = this.findLatestUserMessageCursor(state.events);
     if (inferredUserCursor === undefined && this.lastCursor === 0) {
       return Promise.resolve(null);
     }
