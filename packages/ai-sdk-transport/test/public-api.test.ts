@@ -63,7 +63,9 @@ describe("public API", () => {
       { payload: { type: "finish", finishReason: "stop" } },
     ];
 
-    const uiMessages = await toUIMessagesFromEvents(events);
+    const uiMessages = await toUIMessagesFromEvents(events, {
+      unknownPayloadStrategy: "ignore",
+    });
 
     expect(uiMessages.map((message) => message.role)).toEqual([
       "user",

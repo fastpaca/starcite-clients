@@ -7,6 +7,11 @@ import {
 
 type HistoryMessage = Omit<UIMessage, "id">;
 export type ChatHistoryPayload = HistoryMessage | UIMessageChunk;
+
+export interface HistoryProjectionOptions {
+  unknownPayloadStrategy?: "throw" | "ignore";
+}
+
 const uiMessageChunkValidator = uiMessageChunkSchema();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -26,11 +31,9 @@ function toMessage(payload: unknown): HistoryMessage | undefined {
     return undefined;
   }
 
-  return {
-    role: payload.role as UIMessage["role"],
-    parts: payload.parts as UIMessage["parts"],
-    metadata: payload.metadata,
-  };
+  const { id: _id, ...message } = payload as UIMessage &
+    Record<string, unknown>;
+  return message as HistoryMessage;
 }
 
 async function toChunk(payload: unknown): Promise<UIMessageChunk | undefined> {
@@ -62,11 +65,21 @@ function createChunkStream(
 }
 
 function toHistoryMessage(message: UIMessage): HistoryMessage {
-  return {
-    role: message.role,
-    parts: message.parts,
-    metadata: message.metadata,
-  };
+  const { id: _id, ...historyMessage } = message;
+  return historyMessage;
+}
+
+function describePayload(payload: unknown): string {
+  if (!isRecord(payload)) {
+    return `${typeof payload}`;
+  }
+
+  const keys = Object.keys(payload);
+  if (keys.length === 0) {
+    return "object{}";
+  }
+
+  return `object{${keys.slice(0, 8).join(",")}${keys.length > 8 ? ",..." : ""}}`;
 }
 
 async function buildChunkMessages(
@@ -105,10 +118,12 @@ async function buildChunkMessages(
  * Projects mixed Starcite payload history into AI SDK UI messages.
  */
 export async function toUIMessagesFromPayloads(
-  payloads: readonly unknown[]
+  payloads: readonly unknown[],
+  options: HistoryProjectionOptions = {}
 ): Promise<HistoryMessage[]> {
   const messages: HistoryMessage[] = [];
   const bufferedChunks: UIMessageChunk[] = [];
+  const unknownPayloadStrategy = options.unknownPayloadStrategy ?? "throw";
 
   const flushBufferedChunks = async (): Promise<void> => {
     if (bufferedChunks.length === 0) {
@@ -119,7 +134,7 @@ export async function toUIMessagesFromPayloads(
     bufferedChunks.length = 0;
   };
 
-  for (const payload of payloads) {
+  for (const [index, payload] of payloads.entries()) {
     const message = toMessage(payload);
     if (message) {
       await flushBufferedChunks();
@@ -129,6 +144,12 @@ export async function toUIMessagesFromPayloads(
 
     const chunk = await toChunk(payload);
     if (!chunk) {
+      if (unknownPayloadStrategy === "throw") {
+        throw new Error(
+          `Unsupported chat history payload at index ${index}: ${describePayload(payload)}. ` +
+            "Expected a native AI SDK UI message payload (role + parts) or UI message chunk."
+        );
+      }
       continue;
     }
 
@@ -143,18 +164,23 @@ export async function toUIMessagesFromPayloads(
  * Projects Starcite events into AI SDK UI messages.
  */
 export function toUIMessagesFromEvents<TPayload = unknown>(
-  events: readonly { payload: TPayload }[]
+  events: readonly { payload: TPayload }[],
+  options: HistoryProjectionOptions = {}
 ): Promise<HistoryMessage[]> {
-  return toUIMessagesFromPayloads(events.map((event) => event.payload));
+  return toUIMessagesFromPayloads(
+    events.map((event) => event.payload),
+    options
+  );
 }
 
 /**
  * Projects mixed Starcite payload history into AI SDK model messages.
  */
 export async function toModelMessagesFromPayloads(
-  payloads: readonly unknown[]
+  payloads: readonly unknown[],
+  options: HistoryProjectionOptions = {}
 ): Promise<ModelMessage[]> {
-  const messages = await toUIMessagesFromPayloads(payloads);
+  const messages = await toUIMessagesFromPayloads(payloads, options);
   return convertToModelMessages(messages);
 }
 
@@ -162,8 +188,9 @@ export async function toModelMessagesFromPayloads(
  * Projects Starcite events into AI SDK model messages.
  */
 export async function toModelMessagesFromEvents<TPayload = unknown>(
-  events: readonly { payload: TPayload }[]
+  events: readonly { payload: TPayload }[],
+  options: HistoryProjectionOptions = {}
 ): Promise<ModelMessage[]> {
-  const messages = await toUIMessagesFromEvents(events);
+  const messages = await toUIMessagesFromEvents(events, options);
   return convertToModelMessages(messages);
 }

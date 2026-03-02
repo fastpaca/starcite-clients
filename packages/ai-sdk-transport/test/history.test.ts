@@ -5,6 +5,22 @@ import {
 } from "../src/history";
 
 describe("history projection", () => {
+  it("preserves extended message payload fields", async () => {
+    const payloads: unknown[] = [
+      {
+        role: "user",
+        parts: [{ type: "text", text: "hello" }],
+        metadata: { test: true },
+        customField: { tenant: "acme" },
+      },
+    ];
+
+    const uiMessages = await toUIMessagesFromPayloads(payloads);
+    const firstMessage = uiMessages[0] as Record<string, unknown> | undefined;
+    expect(firstMessage?.customField).toEqual({ tenant: "acme" });
+    expect(firstMessage?.metadata).toEqual({ test: true });
+  });
+
   it("projects mixed UIMessage and UIMessageChunk payloads into UI messages", async () => {
     const payloads: unknown[] = [
       {
@@ -58,7 +74,7 @@ describe("history projection", () => {
     ]);
   });
 
-  it("ignores non-native payloads", async () => {
+  it("throws on unknown payloads by default", async () => {
     const payloads: unknown[] = [
       {
         parts: [{ type: "text", text: "legacy payload without role" }],
@@ -69,7 +85,25 @@ describe("history projection", () => {
       },
     ];
 
-    const uiMessages = await toUIMessagesFromPayloads(payloads);
+    await expect(toUIMessagesFromPayloads(payloads)).rejects.toThrow(
+      "Unsupported chat history payload"
+    );
+  });
+
+  it("can explicitly ignore unknown payloads", async () => {
+    const payloads: unknown[] = [
+      {
+        parts: [{ type: "text", text: "legacy payload without role" }],
+      },
+      {
+        role: "user",
+        parts: [{ type: "text", text: "native payload" }],
+      },
+    ];
+
+    const uiMessages = await toUIMessagesFromPayloads(payloads, {
+      unknownPayloadStrategy: "ignore",
+    });
     expect(uiMessages).toHaveLength(1);
     expect(uiMessages[0]?.role).toBe("user");
   });

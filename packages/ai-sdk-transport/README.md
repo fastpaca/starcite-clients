@@ -57,8 +57,9 @@ Then it subscribes to the same session tail and forwards each event with
 - The backend should emit valid AI SDK chunks (including `finish`) in event payloads.
 - Use `toUIMessagesFromEvents(...)` / `toModelMessagesFromEvents(...)` to reconstruct
   full history from a Starcite session snapshot without custom protocol glue.
-- History helpers only project native AI SDK payloads (`Omit<UIMessage, "id">` and
-  `UIMessageChunk`); non-native payloads are ignored.
+- History helpers preserve extended UI message payload fields (everything except `id`).
+- Unknown payloads throw by default (to avoid silent data loss). For mixed logs, pass
+  `{ unknownPayloadStrategy: "ignore" }`.
 
 ## Exported Shapes
 
@@ -70,6 +71,7 @@ Then it subscribes to the same session tail and forwards each event with
 - `toUIMessagesFromEvents`
 - `toModelMessagesFromEvents`
 - `ChatHistoryPayload`
+- `HistoryProjectionOptions`
 
 ## Example: factory with prebuilt session
 
