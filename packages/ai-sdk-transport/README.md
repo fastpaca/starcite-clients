@@ -47,8 +47,9 @@ const chat = useChat({
 Then it subscribes to the same session tail and forwards each event with
 `event.seq > cursor` as a `ReadableStream<ChatChunk>`.
 
-`reconnectToStream` replays from the last cursor only when a previous
-`sendMessages` call has established one; otherwise it returns `null`.
+`reconnectToStream` replays from the last cursor when a previous
+`sendMessages` call has established one; otherwise it streams from the
+beginning of the session.
 
 ## Notes
 
@@ -63,20 +64,14 @@ Then it subscribes to the same session tail and forwards each event with
 ## Exported Shapes
 
 - `createStarciteChatTransport`
+- `appendUserMessageEvent`
+- `appendAssistantChunkEvent`
 - `StarciteChatTransportOptions`
 - `SendMessagesOptions`
 - `ReconnectToStreamOptions`
 - `ChatChunk`
 - `toUIMessagesFromEvents`
 - `toModelMessagesFromEvents`
-- `chatUserMessageEventType`
-- `chatAssistantChunkEventType`
-- `chatUserMessageEnvelopeKind`
-- `chatAssistantChunkEnvelopeKind`
-- `chatPayloadEnvelopeSchema`
-- `createUserMessageEnvelope`
-- `createAssistantChunkEnvelope`
-- `ChatPayloadEnvelope`
 
 ## Example: factory with prebuilt session
 

@@ -6,13 +6,14 @@ import {
 } from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  chatAssistantChunkEventType,
-  chatUserMessageEventType,
   createAssistantChunkEnvelope,
   createUserMessageEnvelope,
-} from "../src/protocol";
-import { StarciteChatTransport } from "../src/transport";
+  StarciteChatTransport,
+} from "../src/transport";
 import type { ChatChunk } from "../src/types";
+
+const chatUserMessageEventType = "chat.user.message";
+const chatAssistantChunkEventType = "chat.assistant.chunk";
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
@@ -452,7 +453,7 @@ describe("StarciteChatTransport", () => {
     ]);
   });
 
-  it("returns null on reconnect when no messages have been sent", async () => {
+  it("opens reconnect stream when no messages have been sent", async () => {
     const session = createTestSession({
       id: "ses_unknown",
       fetchFn: fetchMock,
@@ -463,6 +464,52 @@ describe("StarciteChatTransport", () => {
 
     await expect(
       transport.reconnectToStream({ chatId: "ses_unknown" })
-    ).resolves.toBeNull();
+    ).resolves.not.toBeNull();
+  });
+
+  it("closes the reconnect stream when sendMessages is called", async () => {
+    mockAppendResponse(1);
+
+    const sockets: FakeWebSocket[] = [];
+    const session = createTestSession({
+      id: "ses_cancel",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({ session });
+
+    // Start a reconnect stream (simulates resume: true on mount).
+    const reconnectStream = await transport.reconnectToStream({
+      chatId: "ses_cancel",
+    });
+    expect(reconnectStream).not.toBeNull();
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
+    // Lock a reader on the reconnect stream before sendMessages replaces it.
+    const reconnectReader = reconnectStream?.getReader();
+    expect(reconnectReader).toBeDefined();
+
+    // Calling sendMessages should close the previous reconnect stream.
+    await transport.sendMessages({
+      chatId: "ses_cancel",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "Hi" }] },
+      ],
+    });
+
+    // The reconnect stream should have been closed by sendMessages,
+    // so reading from it returns done immediately.
+    const reconnectResult = await reconnectReader?.read();
+    expect(reconnectResult?.done).toBe(true);
   });
 });

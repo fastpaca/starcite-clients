@@ -1,31 +1,17 @@
 import { openai } from "@ai-sdk/openai";
 import {
-  chatAssistantChunkEventType,
-  chatUserMessageEventType,
-  createAssistantChunkEnvelope,
+  appendAssistantChunkEvent,
   toModelMessagesFromEvents,
 } from "@starcite/ai-sdk-transport";
-import { Starcite, StarciteIdentity } from "@starcite/sdk";
+import { StarciteIdentity } from "@starcite/sdk";
 import { streamText } from "ai";
 import { decodeJwt } from "jose";
+import { getApiKey, getServerStarcite } from "@/lib/starcite-server";
 
-const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultModel = "gpt-4o-mini";
+const userMessageEventType = "chat.user.message";
 
-interface AgentClaims {
-  tenant_id?: string;
-}
-
-function getApiKey(): string {
-  return process.env.STARCITE_API_KEY ?? process.env.STARCITE_API_TOKEN ?? "";
-}
-
-const apiKey = getApiKey();
-const claims = decodeJwt(apiKey) as AgentClaims;
-const starcite = new Starcite({
-  apiKey,
-  baseUrl: process.env.STARCITE_BASE_URL || defaultBaseUrl,
-});
+const claims = decodeJwt(getApiKey()) as { tenant_id?: string };
 const identity = new StarciteIdentity({
   tenantId: claims.tenant_id!,
   id: process.env.STARCITE_AGENT_ID || "nextjs-demo-agent",
@@ -36,7 +22,7 @@ const sessions = new Set<string>();
 
 async function runSessionAgent(sessionId: string): Promise<void> {
   try {
-    const session = await starcite.session({
+    const session = await getServerStarcite().session({
       identity,
       id: sessionId,
       title: "Next.js demo chat",
@@ -49,7 +35,7 @@ async function runSessionAgent(sessionId: string): Promise<void> {
           return;
         }
 
-        if (event.type !== chatUserMessageEventType) {
+        if (event.type !== userMessageEventType) {
           // ignore our own events, otherwise we'll basically
           // chatter to ourselves (fun)
           return;
@@ -68,11 +54,7 @@ async function runSessionAgent(sessionId: string): Promise<void> {
         });
 
         for await (const chunk of result.toUIMessageStream()) {
-          await session.append({
-            type: chatAssistantChunkEventType,
-            source: "openai",
-            payload: createAssistantChunkEnvelope(chunk),
-          });
+          await appendAssistantChunkEvent(session, chunk, { source: "openai" });
         }
       } catch (error) {
         console.error("nextjs-chat-ui agent event handler failed", error);

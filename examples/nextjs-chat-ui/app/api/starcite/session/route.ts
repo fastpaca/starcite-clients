@@ -1,25 +1,20 @@
 import { decodeJwt } from "jose";
-import { Starcite, StarciteIdentity } from "@starcite/sdk";
+import { StarciteIdentity } from "@starcite/sdk";
 import { NextResponse } from "next/server";
 import { registerSession } from "@/agent";
+import { getApiKey, getServerStarcite } from "@/lib/starcite-server";
 
 export const runtime = "nodejs";
-const defaultBaseUrl = "https://anor-ai.starcite.io";
 
 export async function POST(request: Request): Promise<Response> {
   const { sessionId } = (await request.json()) as { sessionId?: string };
-  const apiKey = process.env.STARCITE_API_KEY ?? process.env.STARCITE_API_TOKEN!;
-  const claims = decodeJwt(apiKey) as {
+  const requestedSessionId = sessionId?.trim();
+  const claims = decodeJwt(getApiKey()) as {
     tenant_id?: string;
     principal_id?: string;
     principal_type?: "user" | "agent";
     sub?: string;
   };
-
-  const starcite = new Starcite({
-    apiKey,
-    baseUrl: process.env.STARCITE_BASE_URL || defaultBaseUrl,
-  });
 
   const identity = new StarciteIdentity({
     tenantId: claims.tenant_id!,
@@ -27,9 +22,12 @@ export async function POST(request: Request): Promise<Response> {
     type: claims.principal_type === "agent" ? "agent" : "user",
   });
 
-  const session = await starcite.session({
+  const session = await getServerStarcite().session({
     identity,
-    id: sessionId?.startsWith("ses_") ? sessionId : undefined,
+    id:
+      requestedSessionId && requestedSessionId.length > 0
+        ? requestedSessionId
+        : undefined,
     title: "Next.js demo chat",
   });
   registerSession(session.id);
