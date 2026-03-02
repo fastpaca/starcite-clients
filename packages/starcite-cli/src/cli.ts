@@ -666,29 +666,21 @@ class StarciteCliApp {
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
-        const identity = resolveCreateIdentity(resolved.apiKey);
-        const record =
-          options.id === undefined
-            ? await client.session({
-                identity,
-                title: options.title,
-                metadata,
-              })
-            : await client.createSession({
-                id: options.id,
-                title: options.title,
-                metadata,
-                creator_principal: identity.toCreatorPrincipal(),
-              });
-        const output =
-          "record" in record ? (record.record ?? { id: record.id }) : record;
+        const session = await client.session({
+          identity: resolveCreateIdentity(resolved.apiKey),
+          id: options.id,
+          title: options.title,
+          metadata,
+        });
 
         if (json) {
-          logger.info(JSON.stringify(output, null, 2));
+          logger.info(
+            JSON.stringify(session.record ?? { id: session.id }, null, 2)
+          );
           return;
         }
 
-        logger.info(output.id);
+        logger.info(session.id);
       });
 
     program

@@ -49,7 +49,6 @@ function encodeJwt(payload: Record<string, unknown>): string {
 describe("starcite CLI", () => {
   const agent = vi.fn();
   const session = vi.fn();
-  const createSession = vi.fn();
   const listSessions = vi.fn();
   let configDir = "";
   const sessionToken = encodeJwt({
@@ -68,14 +67,13 @@ describe("starcite CLI", () => {
   };
 
   function createFakeClient() {
-    return { agent, session, createSession, listSessions } as never;
+    return { agent, session, listSessions } as never;
   }
 
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
     agent.mockReset();
     session.mockReset();
-    createSession.mockReset();
     listSessions.mockReset();
     fakeSession.append.mockReset();
     fakeSession.appendRaw.mockReset();
@@ -90,14 +88,6 @@ describe("starcite CLI", () => {
         })
     );
     session.mockReturnValue(fakeSession);
-    createSession.mockResolvedValue({
-      id: "ses_123",
-      title: "Draft contract",
-      metadata: {},
-      last_seq: 0,
-      created_at: "2026-02-13T00:00:00Z",
-      updated_at: "2026-02-13T00:00:00Z",
-    });
     listSessions.mockResolvedValue({
       sessions: [
         {
@@ -171,15 +161,20 @@ describe("starcite CLI", () => {
 
   it("create --id persists an explicit session id", async () => {
     const { logger, info } = makeLogger();
-
-    createSession.mockResolvedValueOnce({
-      id: "ses_demo",
-      title: "Draft contract",
-      metadata: {},
-      last_seq: 0,
-      created_at: "2026-02-13T00:00:00Z",
-      updated_at: "2026-02-13T00:00:00Z",
-    });
+    session.mockImplementationOnce(
+      (input: { id?: string }) =>
+        ({
+          ...fakeSession,
+          id: input.id ?? fakeSession.id,
+          record:
+            input.id === undefined
+              ? fakeSession.record
+              : {
+                  id: input.id,
+                  title: "Draft contract",
+                },
+        }) as never
+    );
 
     const program = buildProgram({
       logger,
@@ -203,17 +198,16 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(createSession).toHaveBeenCalledWith({
+    const createdSessionInput = session.mock.calls[0]?.[0] as
+      | { identity: StarciteIdentity; id?: string; title?: string }
+      | undefined;
+    expect(createdSessionInput).toEqual({
       id: "ses_demo",
       title: "Draft contract",
       metadata: undefined,
-      creator_principal: {
-        tenant_id: "acme",
-        id: "starcite-cli",
-        type: "agent",
-      },
+      identity: expect.any(StarciteIdentity),
     });
-    expect(session).not.toHaveBeenCalled();
+    expect(createdSessionInput?.identity.toActor()).toBe("agent:starcite-cli");
     expect(info).toEqual(["ses_demo"]);
   });
 

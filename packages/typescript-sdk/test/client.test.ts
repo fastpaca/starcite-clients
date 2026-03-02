@@ -290,62 +290,6 @@ describe("Starcite", () => {
     expect(body.producer_seq).toBe(1);
   });
 
-  it("creates a session with an explicit id via createSession()", async () => {
-    const apiKey = makeApiKey();
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "ses_demo",
-          title: "Draft contract",
-          metadata: { integration: "sdk-test" },
-          last_seq: 0,
-          created_at: "2026-02-11T00:00:00Z",
-          updated_at: "2026-02-11T00:00:00Z",
-        }),
-        { status: 201 }
-      )
-    );
-
-    const starcite = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-      apiKey,
-    });
-
-    const created = await starcite.createSession({
-      id: "ses_demo",
-      title: "Draft contract",
-      metadata: { integration: "sdk-test" },
-      creator_principal: {
-        tenant_id: "tenant-a",
-        id: "starcite-cli",
-        type: "agent",
-      },
-    });
-
-    expect(created.id).toBe("ses_demo");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:4000/v1/sessions",
-      expect.objectContaining({
-        method: "POST",
-      })
-    );
-
-    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const body = JSON.parse(requestInit.body as string);
-    expect(body).toEqual({
-      id: "ses_demo",
-      title: "Draft contract",
-      metadata: { integration: "sdk-test" },
-      creator_principal: {
-        tenant_id: "tenant-a",
-        id: "starcite-cli",
-        type: "agent",
-      },
-    });
-  });
-
   it("validates baseUrl at client construction", () => {
     expect(
       () =>
@@ -356,13 +300,25 @@ describe("Starcite", () => {
     ).toThrowError(StarciteError);
   });
 
-  it("mints session tokens via the session() identity flow using API key issuer authority", async () => {
+  it("session({ identity, id }) creates missing sessions before minting a token", async () => {
     const apiKey = makeApiKey({
       iss: "https://starcite.ai",
       tenant_id: "tenant-a",
     });
 
-    // session({ identity, id }) skips create (existing session) but still mints a token
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_demo",
+          title: null,
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-11T00:00:00Z",
+          updated_at: "2026-02-11T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({ token: "jwt_session_token", expires_in: 3600 }),
@@ -379,7 +335,73 @@ describe("Starcite", () => {
     const identity = starcite.user({ id: "user-42" });
     await starcite.session({ identity, id: "ses_demo" });
 
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://tenant-a.starcite.io/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
     expect(fetchMock).toHaveBeenCalledWith(
+      "https://starcite.ai/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+
+    const createRequest = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const createBody = JSON.parse(createRequest.body as string);
+    expect(createBody).toEqual({
+      id: "ses_demo",
+      creator_principal: {
+        tenant_id: "tenant-a",
+        id: "user-42",
+        type: "user",
+      },
+    });
+  });
+
+  it("session({ identity, id }) binds when create returns conflict", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-a",
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: "jwt_session_token", expires_in: 3600 }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    const identity = starcite.user({ id: "user-42" });
+    await starcite.session({ identity, id: "ses_demo" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://tenant-a.starcite.io/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       "https://starcite.ai/api/v1/session-tokens",
       expect.objectContaining({
         method: "POST",
@@ -393,12 +415,26 @@ describe("Starcite", () => {
       tenant_id: "tenant-a",
     });
 
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ token: "jwt_session_token", expires_in: 900 }),
-        { status: 200 }
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_demo",
+            title: null,
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-11T00:00:00Z",
+            updated_at: "2026-02-11T00:00:00Z",
+          }),
+          { status: 201 }
+        )
       )
-    );
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: "jwt_session_token", expires_in: 900 }),
+          { status: 200 }
+        )
+      );
 
     const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
