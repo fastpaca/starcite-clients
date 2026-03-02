@@ -666,7 +666,6 @@ class StarciteCliApp {
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
-
         const session = await client.session({
           identity: resolveCreateIdentity(resolved.apiKey),
           id: options.id,

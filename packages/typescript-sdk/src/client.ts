@@ -3,7 +3,7 @@ import {
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
 } from "./auth";
-import { StarciteError } from "./errors";
+import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
 import { MemoryStore } from "./session-store";
@@ -134,7 +134,7 @@ export class Starcite {
    * Creates or binds to a session.
    *
    * **With identity** (backend): creates a new session and/or mints a session
-   * token for the given identity. Pass `id` to bind to an existing session.
+   * token for the given identity. Pass `id` to create-or-bind that session.
    *
    * **With token** (frontend): wraps an existing session token. The identity
    * and session id are decoded from the JWT.
@@ -215,7 +215,20 @@ export class Starcite {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
 
-    if (!sessionId) {
+    if (sessionId) {
+      try {
+        record = await this.createSession({
+          id: sessionId,
+          creator_principal: input.identity.toCreatorPrincipal(),
+          title: input.title,
+          metadata: input.metadata,
+        });
+      } catch (error) {
+        if (!(error instanceof StarciteApiError && error.status === 409)) {
+          throw error;
+        }
+      }
+    } else {
       record = await this.createSession({
         creator_principal: input.identity.toCreatorPrincipal(),
         title: input.title,
@@ -272,6 +285,7 @@ export class Starcite {
   }
 
   private createSession(input: {
+    id?: string;
     creator_principal?: { tenant_id: string; id: string; type: string };
     title?: string;
     metadata?: Record<string, unknown>;

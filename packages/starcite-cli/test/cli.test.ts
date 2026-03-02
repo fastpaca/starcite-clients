@@ -159,6 +159,58 @@ describe("starcite CLI", () => {
     expect(info).toEqual(["ses_123"]);
   });
 
+  it("create --id persists an explicit session id", async () => {
+    const { logger, info } = makeLogger();
+    session.mockImplementationOnce(
+      (input: { id?: string }) =>
+        ({
+          ...fakeSession,
+          id: input.id ?? fakeSession.id,
+          record:
+            input.id === undefined
+              ? fakeSession.record
+              : {
+                  id: input.id,
+                  title: "Draft contract",
+                },
+        }) as never
+    );
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "create",
+        "--id",
+        "ses_demo",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const createdSessionInput = session.mock.calls[0]?.[0] as
+      | { identity: StarciteIdentity; id?: string; title?: string }
+      | undefined;
+    expect(createdSessionInput).toEqual({
+      id: "ses_demo",
+      title: "Draft contract",
+      metadata: undefined,
+      identity: expect.any(StarciteIdentity),
+    });
+    expect(createdSessionInput?.identity.toActor()).toBe("agent:starcite-cli");
+    expect(info).toEqual(["ses_demo"]);
+  });
+
   it("prints the CLI version", async () => {
     const { logger, info } = makeLogger();
 
