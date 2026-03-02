@@ -1,12 +1,16 @@
 import { openai } from "@ai-sdk/openai";
-import { toModelMessagesFromEvents } from "@starcite/ai-sdk-transport";
+import {
+  chatAssistantChunkEventType,
+  chatUserMessageEventType,
+  createAssistantChunkEnvelope,
+  toModelMessagesFromEvents,
+} from "@starcite/ai-sdk-transport";
 import { Starcite, StarciteIdentity } from "@starcite/sdk";
 import { streamText } from "ai";
 import { decodeJwt } from "jose";
 
 const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultModel = "gpt-4o-mini";
-const userEventType = "chat.user.message";
 
 interface AgentClaims {
   tenant_id?: string;
@@ -45,7 +49,7 @@ async function runSessionAgent(sessionId: string): Promise<void> {
           return;
         }
 
-        if (event.type !== userEventType) {
+        if (event.type !== chatUserMessageEventType) {
           // ignore our own events, otherwise we'll basically
           // chatter to ourselves (fun)
           return;
@@ -65,8 +69,9 @@ async function runSessionAgent(sessionId: string): Promise<void> {
 
         for await (const chunk of result.toUIMessageStream()) {
           await session.append({
+            type: chatAssistantChunkEventType,
             source: "openai",
-            payload: chunk,
+            payload: createAssistantChunkEnvelope(chunk),
           });
         }
       } catch (error) {

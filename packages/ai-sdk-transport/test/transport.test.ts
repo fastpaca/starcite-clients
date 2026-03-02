@@ -5,6 +5,12 @@ import {
   type StarciteWebSocket,
 } from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  chatAssistantChunkEventType,
+  chatUserMessageEventType,
+  createAssistantChunkEnvelope,
+  createUserMessageEnvelope,
+} from "../src/protocol";
 import { StarciteChatTransport } from "../src/transport";
 import type { ChatChunk } from "../src/types";
 
@@ -86,12 +92,13 @@ async function waitForSocketCount(
 
 function tailEvent(
   seq: number,
-  payload: Record<string, unknown>,
+  type: string,
+  payload: unknown,
   actor = "agent:assistant"
 ): string {
   return JSON.stringify({
     seq,
-    type: "content",
+    type,
     payload,
     actor,
     producer_id: `producer:${actor.split(":")[1]}`,
@@ -184,8 +191,11 @@ describe("StarciteChatTransport", () => {
     expect(appendBody).toMatchObject({
       type: "chat.user.message",
       payload: {
-        role: "user",
-        parts: [{ type: "text", text: "Hello from UI" }],
+        kind: "chat.user.message",
+        message: {
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        },
       },
       source: "use-chat",
     });
@@ -197,13 +207,35 @@ describe("StarciteChatTransport", () => {
 
     // User's own event at seq=1 is skipped (seq <= cursor)
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "Hello from UI" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "start", messageId: "assistant_1" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_1",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(3, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     const chunks = await chunksPromise;
@@ -244,26 +276,66 @@ describe("StarciteChatTransport", () => {
     const chunksPromise = collectChunks(stream);
 
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "Q" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Q" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "start", messageId: "m_assistant" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(3, { type: "text-start", id: "p_assistant" }),
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "p_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(4, {
-        type: "text-delta",
-        id: "p_assistant",
-        delta: "schema native",
-      }),
+      data: tailEvent(
+        4,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "p_assistant",
+          delta: "schema native",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(5, { type: "text-end", id: "p_assistant" }),
+      data: tailEvent(
+        5,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-end",
+          id: "p_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(6, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        6,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     await expect(chunksPromise).resolves.toEqual([
@@ -307,10 +379,25 @@ describe("StarciteChatTransport", () => {
     const firstChunksPromise = collectChunks(stream);
 
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "first" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "first" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     await expect(firstChunksPromise).resolves.toEqual([
@@ -339,10 +426,24 @@ describe("StarciteChatTransport", () => {
     const reconnectChunksPromise = collectChunks(reconnectStream);
 
     sockets[1]?.emit("message", {
-      data: tailEvent(3, { type: "start", messageId: "m_reconnect" }),
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_reconnect",
+        })
+      ),
     });
     sockets[1]?.emit("message", {
-      data: tailEvent(4, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        4,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     await expect(reconnectChunksPromise).resolves.toEqual([

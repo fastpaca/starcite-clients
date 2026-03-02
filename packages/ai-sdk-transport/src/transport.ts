@@ -1,11 +1,29 @@
 import type { StarciteSession } from "@starcite/sdk";
 import type { ChatTransport, UIMessage } from "ai";
+import { z } from "zod";
+import {
+  chatAssistantChunkEnvelopeSchema,
+  chatAssistantChunkEventType,
+  chatUserMessageEnvelopeSchema,
+  chatUserMessageEventType,
+  createUserMessageEnvelope,
+} from "./protocol";
 import type {
   ChatChunk,
   ReconnectToStreamOptions,
   SendMessagesOptions,
   StarciteChatTransportOptions,
 } from "./types";
+
+const assistantChunkEventSchema = z.object({
+  type: z.literal(chatAssistantChunkEventType),
+  payload: chatAssistantChunkEnvelopeSchema,
+});
+
+const userMessageEventSchema = z.object({
+  type: z.literal(chatUserMessageEventType),
+  payload: chatUserMessageEnvelopeSchema,
+});
 
 export class StarciteChatTransport implements ChatTransport<UIMessage> {
   private readonly session: StarciteSession;
@@ -50,9 +68,9 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
     const { id: _id, ...payloadMessage } = message;
 
     const response = await this.session.append({
-      type: "chat.user.message",
+      type: chatUserMessageEventType,
       source: "use-chat",
-      payload: payloadMessage,
+      payload: createUserMessageEnvelope(payloadMessage),
     });
 
     this.lastCursor = response.seq;
@@ -77,7 +95,41 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
 
           this.lastCursor = event.seq;
 
-          const chunk = event.payload as ChatChunk;
+          if (event.type === chatUserMessageEventType) {
+            const parsedUser = userMessageEventSchema.safeParse(event);
+            if (!parsedUser.success) {
+              controller.error(
+                new Error(
+                  `Invalid user message envelope at seq=${event.seq} for event type "${event.type}".`
+                )
+              );
+              cleanup();
+            }
+            return;
+          }
+
+          if (event.type !== chatAssistantChunkEventType) {
+            controller.error(
+              new Error(
+                `Unsupported chat event type at seq=${event.seq}: "${event.type}".`
+              )
+            );
+            cleanup();
+            return;
+          }
+
+          const parsed = assistantChunkEventSchema.safeParse(event);
+          if (!parsed.success) {
+            controller.error(
+              new Error(
+                `Invalid assistant chunk envelope at seq=${event.seq} for event type "${event.type}".`
+              )
+            );
+            cleanup();
+            return;
+          }
+
+          const chunk = parsed.data.payload.chunk as ChatChunk;
           controller.enqueue(chunk);
 
           if (chunk.type === "finish") {
@@ -104,7 +156,7 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
         continue;
       }
 
-      if (event.type === "chat.user.message") {
+      if (event.type === chatUserMessageEventType) {
         return event.seq;
       }
     }

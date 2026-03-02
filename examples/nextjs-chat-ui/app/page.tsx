@@ -1,8 +1,11 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
-import { Starcite } from "@starcite/sdk";
+import {
+  createStarciteChatTransport,
+  toUIMessagesFromEvents,
+} from "@starcite/ai-sdk-transport";
+import { Starcite, type StarciteSession } from "@starcite/sdk";
 import {
   isReasoningUIPart,
   isTextUIPart,
@@ -10,7 +13,7 @@ import {
   type ChatTransport,
   type UIMessage,
 } from "ai";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -37,6 +40,11 @@ const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultSessionId = "nextjs-demo-session";
 const sessionIdCacheKey = "starcite:nextjs-chat-ui:session-id";
 
+interface ChatBootstrap {
+  transport: ChatTransport<UIMessage>;
+  initialMessages: UIMessage[];
+}
+
 async function fetchSessionToken(
   sessionId: string
 ): Promise<{ token: string; sessionId: string }> {
@@ -49,10 +57,31 @@ async function fetchSessionToken(
   return (await response.json()) as { token: string; sessionId: string };
 }
 
+async function hydrateHistoryMessages(
+  session: StarciteSession
+): Promise<UIMessage[]> {
+  const events: Array<{ payload: unknown }> = [];
+  for await (const item of session.tail({
+    cursor: 0,
+    catchUpIdleMs: 10_000,
+    follow: false,
+    replay: true,
+  })) {
+    events.push(item.event);
+  }
+
+  const messages = await toUIMessagesFromEvents(events);
+  return messages.map((message, index) => ({
+    id: `history_${index + 1}`,
+    ...message,
+  }));
+}
+
 export default function Page() {
   const [sessionId, setSessionId] = useState(defaultSessionId);
   const [sessionIdInput, setSessionIdInput] = useState(defaultSessionId);
   const [token, setToken] = useState<string>();
+  const [chatBootstrap, setChatBootstrap] = useState<ChatBootstrap>();
   const tokenRequestCounter = useRef(0);
 
   useEffect(() => {
@@ -88,14 +117,37 @@ export default function Page() {
     };
   }, [sessionId]);
 
-  const transport = useMemo(() => {
+  useEffect(() => {
     if (!token) {
-      return undefined;
+      setChatBootstrap(undefined);
+      return;
     }
 
+    let active = true;
     const baseUrl = process.env.NEXT_PUBLIC_STARCITE_BASE_URL || defaultBaseUrl;
     const session = new Starcite({ baseUrl }).session({ token });
-    return createStarciteChatTransport({ session });
+
+    const transport = createStarciteChatTransport({ session });
+    (async () => {
+      try {
+        const initialMessages = await hydrateHistoryMessages(session);
+        if (!active) {
+          return;
+        }
+        setChatBootstrap({ transport, initialMessages });
+      } catch (error) {
+        console.error("nextjs-chat-ui hydration failed", error);
+        if (!active) {
+          return;
+        }
+        setChatBootstrap({ transport, initialMessages: [] });
+      }
+    })();
+
+    return () => {
+      active = false;
+      session.disconnect();
+    };
   }, [token]);
 
   function onSessionSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -122,8 +174,12 @@ export default function Page() {
         <p className="mt-2 text-xs text-muted-foreground">Active: {sessionId}</p>
       </header>
 
-      {transport && token ? (
-        <ChatThread sessionId={sessionId} transport={transport} />
+      {chatBootstrap && token ? (
+        <ChatThread
+          initialMessages={chatBootstrap.initialMessages}
+          sessionId={sessionId}
+          transport={chatBootstrap.transport}
+        />
       ) : (
         <>
           <section className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-card">
@@ -156,15 +212,18 @@ export default function Page() {
 }
 
 function ChatThread({
+  initialMessages,
   sessionId,
   transport,
 }: {
+  initialMessages: UIMessage[];
   sessionId: string;
   transport: ChatTransport<UIMessage>;
 }) {
   const [input, setInput] = useState("");
   const { messages, sendMessage, status, stop } = useChat({
     id: sessionId,
+    messages: initialMessages,
     transport,
   });
   const isBusy = status === "submitted" || status === "streaming";

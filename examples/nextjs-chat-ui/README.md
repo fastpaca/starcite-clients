@@ -32,6 +32,6 @@ Open `http://localhost:3000`.
 - Route handler creates or reuses a session using `STARCITE_API_KEY` or `STARCITE_API_TOKEN`.
 - Route handler registers that session in `agent.ts`.
 - Client reconstructs the session from token and uses `useChat({ transport })`.
-- `createStarciteChatTransport` appends user messages directly to Starcite and streams assistant chunks from Starcite websocket tail.
-- Backend agent consumes `chat.user.message` events and appends `streamText(...).toUIMessageStream()` chunks into the same Starcite session.
+- `createStarciteChatTransport` appends user messages with a strict payload envelope and streams assistant chunk envelopes from Starcite websocket tail.
+- Backend agent consumes `chat.user.message` events and appends `streamText(...).toUIMessageStream()` chunks wrapped in the same envelope format.
 - Session ID is user-editable and cached in `localStorage` so refresh keeps the same session timeline.

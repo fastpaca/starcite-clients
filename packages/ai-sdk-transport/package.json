@@ -46,7 +46,8 @@
     "check": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@starcite/sdk": "^0.0.6"
+    "@starcite/sdk": "^0.0.6",
+    "zod": "^4.1.5"
   },
   "peerDependencies": {
     "ai": ">=5.0.0"

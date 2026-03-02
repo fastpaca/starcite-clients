@@ -42,7 +42,7 @@ const chat = useChat({
 
 - `type: "chat.user.message"`
 - `source: "use-chat"`
-- `payload: Omit<UIMessage, "id">` (single user message)
+- `payload: { kind: "chat.user.message", message: Omit<UIMessage, "id"> }`
 
 Then it subscribes to the same session tail and forwards each event with
 `event.seq > cursor` as a `ReadableStream<ChatChunk>`.
@@ -52,14 +52,13 @@ Then it subscribes to the same session tail and forwards each event with
 
 ## Notes
 
-- Payloads are not transformed.
-- Incoming event payloads are passed directly into `useChat` as `UIMessageChunk`.
-- The backend should emit valid AI SDK chunks (including `finish`) in event payloads.
-- Use `toUIMessagesFromEvents(...)` / `toModelMessagesFromEvents(...)` to reconstruct
-  full history from a Starcite session snapshot without custom protocol glue.
-- History helpers preserve extended UI message payload fields (everything except `id`).
-- Unknown payloads throw by default (to avoid silent data loss). For mixed logs, pass
-  `{ unknownPayloadStrategy: "ignore" }`.
+- Payloads are wrapped in strict chat envelopes.
+- Incoming assistant events must carry:
+  - `{ kind: "chat.assistant.chunk", chunk: UIMessageChunk }`
+- `toUIMessagesFromEvents(...)` / `toModelMessagesFromEvents(...)` expect strict
+  envelope payloads and throw on invalid payloads.
+- Envelope, message, and chunk shapes are passthrough at runtime, so custom AI SDK
+  extensions are preserved.
 
 ## Exported Shapes
 
@@ -70,8 +69,14 @@ Then it subscribes to the same session tail and forwards each event with
 - `ChatChunk`
 - `toUIMessagesFromEvents`
 - `toModelMessagesFromEvents`
-- `ChatHistoryPayload`
-- `HistoryProjectionOptions`
+- `chatUserMessageEventType`
+- `chatAssistantChunkEventType`
+- `chatUserMessageEnvelopeKind`
+- `chatAssistantChunkEnvelopeKind`
+- `chatPayloadEnvelopeSchema`
+- `createUserMessageEnvelope`
+- `createAssistantChunkEnvelope`
+- `ChatPayloadEnvelope`
 
 ## Example: factory with prebuilt session
 
@@ -89,10 +94,11 @@ Outgoing user append:
 
 Incoming assistant tail events:
 
-- Payloads are passed through directly to `useChat` as AI SDK `UIMessageChunk`.
-- No transport-level payload mapping or validation is applied.
+- Payloads must use `{ kind: "chat.assistant.chunk", chunk }` envelopes.
+- Transport validates the envelope and forwards `chunk` to `useChat`.
 
-Your backend should emit valid AI SDK chunks (including `finish`) in event payloads.
+Your backend should emit valid AI SDK chunks (including `finish`) wrapped in
+transport envelopes.
 
 ## Options
 

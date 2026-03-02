@@ -1,55 +1,28 @@
 import type { ModelMessage, UIMessage, UIMessageChunk } from "ai";
+import { convertToModelMessages, readUIMessageStream } from "ai";
 import {
-  convertToModelMessages,
-  readUIMessageStream,
-  uiMessageChunkSchema,
-} from "ai";
+  type BaseChatAssistantChunkPayload,
+  chatAssistantChunkEnvelopeKind,
+  chatPayloadEnvelopeSchema,
+  chatUserMessageEnvelopeKind,
+  type ParsedChatPayloadEnvelope,
+} from "./protocol";
 
 type HistoryMessage = Omit<UIMessage, "id">;
-export type ChatHistoryPayload = HistoryMessage | UIMessageChunk;
 
-export interface HistoryProjectionOptions {
-  unknownPayloadStrategy?: "throw" | "ignore";
-}
-
-const uiMessageChunkValidator = uiMessageChunkSchema();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function toMessage(payload: unknown): HistoryMessage | undefined {
-  if (!isRecord(payload)) {
-    return undefined;
-  }
-
-  if (typeof payload.role !== "string") {
-    return undefined;
-  }
-
-  if (!Array.isArray(payload.parts)) {
-    return undefined;
-  }
-
-  const { id: _id, ...message } = payload as UIMessage &
-    Record<string, unknown>;
-  return message as HistoryMessage;
-}
-
-async function toChunk(payload: unknown): Promise<UIMessageChunk | undefined> {
-  const validate = uiMessageChunkValidator.validate;
-  if (!validate) {
-    return undefined;
-  }
-
-  const parsed = await validate(payload);
-  return parsed.success ? parsed.value : undefined;
+function toHistoryMessage(payload: object): HistoryMessage {
+  const { id: _id, ...message } = payload as { id?: unknown } & Record<
+    string,
+    unknown
+  >;
+  return message as unknown as HistoryMessage;
 }
 
 function createChunkStream(
-  chunks: readonly UIMessageChunk[]
+  chunks: readonly BaseChatAssistantChunkPayload[]
 ): ReadableStream<UIMessageChunk> {
   let index = 0;
+
   return new ReadableStream<UIMessageChunk>({
     pull(controller) {
       const chunk = chunks[index];
@@ -58,43 +31,46 @@ function createChunkStream(
         return;
       }
 
-      controller.enqueue(chunk);
+      controller.enqueue(chunk as UIMessageChunk);
       index += 1;
     },
   });
 }
 
-function toHistoryMessage(message: UIMessage): HistoryMessage {
-  const { id: _id, ...historyMessage } = message;
-  return historyMessage;
+function describeInvalidEnvelope(payload: unknown, index: number): string {
+  const payloadType =
+    payload !== null && typeof payload === "object"
+      ? `object{${Object.keys(payload).slice(0, 8).join(",")}}`
+      : typeof payload;
+
+  return `Invalid chat payload envelope at index ${index}: payload=${payloadType}. Expected envelope kind "${chatUserMessageEnvelopeKind}" or "${chatAssistantChunkEnvelopeKind}".`;
 }
 
-function describePayload(payload: unknown): string {
-  if (!isRecord(payload)) {
-    return `${typeof payload}`;
+function parseEnvelope(
+  payload: unknown,
+  index: number
+): ParsedChatPayloadEnvelope {
+  const parsed = chatPayloadEnvelopeSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error(describeInvalidEnvelope(payload, index));
   }
 
-  const keys = Object.keys(payload);
-  if (keys.length === 0) {
-    return "object{}";
-  }
-
-  return `object{${keys.slice(0, 8).join(",")}${keys.length > 8 ? ",..." : ""}}`;
+  return parsed.data;
 }
 
 async function buildChunkMessages(
-  chunks: readonly UIMessageChunk[]
+  chunks: readonly BaseChatAssistantChunkPayload[]
 ): Promise<HistoryMessage[]> {
-  const messageIds: string[] = [];
-  const latestById = new Map<string, HistoryMessage>();
-
   if (chunks.length === 0) {
     return [];
   }
 
+  const messageIds: string[] = [];
+  const latestById = new Map<string, HistoryMessage>();
+
   for await (const message of readUIMessageStream({
     stream: createChunkStream(chunks),
-    terminateOnError: false,
+    terminateOnError: true,
   })) {
     if (!latestById.has(message.id)) {
       messageIds.push(message.id);
@@ -115,15 +91,16 @@ async function buildChunkMessages(
 }
 
 /**
- * Projects mixed Starcite payload history into AI SDK UI messages.
+ * Projects Starcite chat events into AI SDK UI messages.
+ *
+ * This helper expects event payloads that follow the strict transport envelope
+ * contract (`chatPayloadEnvelopeSchema`). Invalid envelopes throw.
  */
-export async function toUIMessagesFromPayloads(
-  payloads: readonly unknown[],
-  options: HistoryProjectionOptions = {}
-): Promise<HistoryMessage[]> {
+export async function toUIMessagesFromEvents<
+  TEvent extends { payload: unknown },
+>(events: readonly TEvent[]): Promise<HistoryMessage[]> {
   const messages: HistoryMessage[] = [];
-  const bufferedChunks: UIMessageChunk[] = [];
-  const unknownPayloadStrategy = options.unknownPayloadStrategy ?? "throw";
+  const bufferedChunks: BaseChatAssistantChunkPayload[] = [];
 
   const flushBufferedChunks = async (): Promise<void> => {
     if (bufferedChunks.length === 0) {
@@ -134,26 +111,16 @@ export async function toUIMessagesFromPayloads(
     bufferedChunks.length = 0;
   };
 
-  for (const [index, payload] of payloads.entries()) {
-    const message = toMessage(payload);
-    if (message) {
+  for (const [index, event] of events.entries()) {
+    const envelope = parseEnvelope(event.payload, index);
+
+    if (envelope.kind === chatUserMessageEnvelopeKind) {
       await flushBufferedChunks();
-      messages.push(message);
+      messages.push(toHistoryMessage(envelope.message));
       continue;
     }
 
-    const chunk = await toChunk(payload);
-    if (!chunk) {
-      if (unknownPayloadStrategy === "throw") {
-        throw new Error(
-          `Unsupported chat history payload at index ${index}: ${describePayload(payload)}. ` +
-            "Expected a native AI SDK UI message payload (role + parts) or UI message chunk."
-        );
-      }
-      continue;
-    }
-
-    bufferedChunks.push(chunk);
+    bufferedChunks.push(envelope.chunk);
   }
 
   await flushBufferedChunks();
@@ -161,36 +128,11 @@ export async function toUIMessagesFromPayloads(
 }
 
 /**
- * Projects Starcite events into AI SDK UI messages.
+ * Projects Starcite chat events into AI SDK model messages.
  */
-export function toUIMessagesFromEvents<TPayload = unknown>(
-  events: readonly { payload: TPayload }[],
-  options: HistoryProjectionOptions = {}
-): Promise<HistoryMessage[]> {
-  return toUIMessagesFromPayloads(
-    events.map((event) => event.payload),
-    options
-  );
-}
-
-/**
- * Projects mixed Starcite payload history into AI SDK model messages.
- */
-export async function toModelMessagesFromPayloads(
-  payloads: readonly unknown[],
-  options: HistoryProjectionOptions = {}
-): Promise<ModelMessage[]> {
-  const messages = await toUIMessagesFromPayloads(payloads, options);
-  return convertToModelMessages(messages);
-}
-
-/**
- * Projects Starcite events into AI SDK model messages.
- */
-export async function toModelMessagesFromEvents<TPayload = unknown>(
-  events: readonly { payload: TPayload }[],
-  options: HistoryProjectionOptions = {}
-): Promise<ModelMessage[]> {
-  const messages = await toUIMessagesFromEvents(events, options);
+export async function toModelMessagesFromEvents<
+  TEvent extends { payload: unknown },
+>(events: readonly TEvent[]): Promise<ModelMessage[]> {
+  const messages = await toUIMessagesFromEvents(events);
   return convertToModelMessages(messages);
 }
