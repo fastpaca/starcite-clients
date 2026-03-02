@@ -179,18 +179,15 @@ describeWebSocketIntegration("Starcite tail reconnect integration", () => {
       const session = await starcite.session({ token: sessionToken });
       const observedSeqs: number[] = [];
 
-      await session.tail(
-        (event) => {
-          observedSeqs.push(event.seq);
+      for await (const { event } of session.tail({
+        cursor: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 10,
         },
-        {
-          cursor: 0,
-          reconnectPolicy: {
-            mode: "fixed",
-            initialDelayMs: 10,
-          },
-        }
-      );
+      })) {
+        observedSeqs.push(event.seq);
+      }
 
       expect(observedSeqs).toEqual([1, 2, 3]);
       expect(cursorsSeenByServer).toEqual([0, 1]);
@@ -298,18 +295,15 @@ describeWebSocketIntegration("Starcite tail reconnect integration", () => {
       const session = await starcite.session({ token: sessionToken });
       const observedSeqs: number[] = [];
 
-      await session.tail(
-        (event) => {
-          observedSeqs.push(event.seq);
+      for await (const { event } of session.tail({
+        cursor: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 25,
         },
-        {
-          cursor: 0,
-          reconnectPolicy: {
-            mode: "fixed",
-            initialDelayMs: 25,
-          },
-        }
-      );
+      })) {
+        observedSeqs.push(event.seq);
+      }
 
       expect(observedSeqs).toEqual(range(1, TARGET_SEQ));
       expect(connections).toBeGreaterThanOrEqual(3);
@@ -446,18 +440,15 @@ describeWebSocketIntegration("Starcite tail reconnect integration", () => {
         const session = await starcite.session({ token: sessionToken });
         const observedSeqs: number[] = [];
 
-        await session.tail(
-          (event) => {
-            observedSeqs.push(event.seq);
+        for await (const { event } of session.tail({
+          cursor: 0,
+          reconnectPolicy: {
+            mode: "fixed",
+            initialDelayMs: 25,
           },
-          {
-            cursor: 0,
-            reconnectPolicy: {
-              mode: "fixed",
-              initialDelayMs: 25,
-            },
-          }
-        );
+        })) {
+          observedSeqs.push(event.seq);
+        }
 
         expect(observedSeqs).toEqual(range(1, TARGET_SEQ));
         expect(connections).toBeGreaterThanOrEqual(10);

@@ -11,14 +11,16 @@ import type {
   AppendResult,
   RequestOptions,
   SessionAppendInput,
-  SessionConsumeOptions,
   SessionEvent,
+  SessionEventContext,
+  SessionEventListener,
   SessionLogOptions,
+  SessionOnEventOptions,
   SessionRecord,
   SessionSnapshot,
   SessionStore,
-  SessionTailOptions,
-  TailEvent,
+  SessionTailItem,
+  SessionTailIteratorOptions,
 } from "./types";
 import { AppendEventResponseSchema, SessionAppendInputSchema } from "./types";
 
@@ -30,15 +32,19 @@ export interface StarciteSessionOptions {
   token: string;
   identity: StarciteIdentity;
   transport: TransportConfig;
-  store: SessionStore;
+  store?: SessionStore;
   record?: SessionRecord;
   logOptions?: SessionLogOptions;
 }
 
-type SessionEventListener = (event: SessionEvent) => void;
-
 interface SessionLifecycleEvents {
   error: (error: Error) => void;
+}
+
+interface TailRuntime<TEvent extends SessionEvent> {
+  next: () => Promise<SessionTailItem<TEvent> | undefined>;
+  getFailure: () => unknown;
+  dispose: () => Promise<void>;
 }
 
 /**
@@ -61,7 +67,7 @@ export class StarciteSession {
   private producerSeq = 0;
 
   readonly log: SessionLog;
-  private readonly store: SessionStore;
+  private readonly store: SessionStore | undefined;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
   private readonly eventSubscriptions = new Map<
     SessionEventListener,
@@ -69,6 +75,7 @@ export class StarciteSession {
   >();
   private liveSyncController: AbortController | undefined;
   private liveSyncTask: Promise<void> | undefined;
+  private liveSyncCatchUpActive = false;
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -80,8 +87,8 @@ export class StarciteSession {
     this.store = options.store;
     this.log = new SessionLog(options.logOptions);
 
-    const storedState = this.store.load(this.id);
-    if (storedState) {
+    const storedState = this.store?.load(this.id);
+    if (storedState !== undefined) {
       this.log.hydrate(storedState);
     }
   }
@@ -143,15 +150,47 @@ export class StarciteSession {
    * Subscribes to canonical session events and lifecycle errors.
    */
   on(eventName: "event", listener: SessionEventListener): () => void;
+  on<TEvent extends SessionEvent>(
+    eventName: "event",
+    listener: SessionEventListener<TEvent>,
+    options: SessionOnEventOptions<TEvent>
+  ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
     eventName: "event" | "error",
-    listener: SessionEventListener | ((error: Error) => void)
+    listener: SessionEventListener | ((error: Error) => void),
+    options?: SessionOnEventOptions
   ): () => void {
     if (eventName === "event") {
       const eventListener = listener as SessionEventListener;
       if (!this.eventSubscriptions.has(eventListener)) {
-        const unsubscribe = this.log.subscribe(eventListener, { replay: true });
+        const eventOptions = options as SessionOnEventOptions | undefined;
+        const replay = eventOptions?.replay ?? true;
+        const replayCutoffSeq = replay ? this.log.lastSeq : -1;
+        const schema = eventOptions?.schema;
+
+        const dispatch = (event: SessionEvent): void => {
+          const parsedEvent = this.parseOnEvent(event, schema);
+          if (!parsedEvent) {
+            return;
+          }
+
+          const classifiedContext = this.resolveEventContext(
+            event.seq,
+            replayCutoffSeq,
+            this.liveSyncCatchUpActive
+          );
+
+          try {
+            this.observeEventListenerResult(
+              eventListener(parsedEvent, classifiedContext)
+            );
+          } catch (error) {
+            this.emitStreamError(error);
+          }
+        };
+
+        const unsubscribe = this.log.subscribe(dispatch, { replay });
         this.eventSubscriptions.set(eventListener, unsubscribe);
       }
 
@@ -241,84 +280,239 @@ export class StarciteSession {
   }
 
   /**
-   * Streams tail events one at a time via callback.
+   * Streams canonical events as an async iterator.
+   *
+   * Replay semantics and schema validation mirror `session.on("event", ...)`.
    */
-  async tail(
-    onEvent: (event: TailEvent) => void | Promise<void>,
-    options: SessionTailOptions = {}
-  ): Promise<void> {
-    await this.tailBatches(async (batch) => {
-      for (const event of batch) {
-        await onEvent(event);
-      }
-    }, options);
+  tail<TEvent extends SessionEvent = SessionEvent>(
+    options: SessionTailIteratorOptions<TEvent> = {}
+  ): AsyncIterable<SessionTailItem<TEvent>> {
+    const { replay = true, schema, ...tailOptions } = options;
+    const replayCutoffSeq = replay ? this.log.lastSeq : -1;
+    const startCursor = tailOptions.cursor ?? this.log.lastSeq;
+    const session = this;
+
+    const parseEvent = (event: SessionEvent): TEvent =>
+      session.parseTailEvent(event, schema);
+
+    return {
+      async *[Symbol.asyncIterator](): AsyncIterator<SessionTailItem<TEvent>> {
+        if (replay) {
+          for (const replayEvent of session.log.events) {
+            yield {
+              event: parseEvent(replayEvent),
+              context: { phase: "replay", replayed: true },
+            };
+          }
+        }
+        yield* session.iterateLiveTail({
+          parseEvent,
+          replayCutoffSeq,
+          startCursor,
+          tailOptions,
+        });
+      },
+    };
   }
 
-  /**
-   * Streams tail event batches grouped by incoming frame via callback.
-   */
-  async tailBatches(
-    onBatch: (batch: TailEvent[]) => void | Promise<void>,
-    options: SessionTailOptions = {}
-  ): Promise<void> {
-    await new TailStream({
-      sessionId: this.id,
-      token: this.token,
-      websocketBaseUrl: this.transport.websocketBaseUrl,
-      websocketFactory: this.transport.websocketFactory,
-      options,
-    }).subscribe(onBatch);
-  }
-
-  /**
-   * Durably consumes events and checkpoints `event.seq` after each successful handler invocation.
-   */
-  async consume(options: SessionConsumeOptions): Promise<void> {
-    const {
-      cursorStore,
-      handler,
-      cursor: requestedCursor,
-      ...tailOptions
-    } = options;
-
-    let cursor: number;
-
-    if (requestedCursor !== undefined) {
-      cursor = requestedCursor;
-    } else {
-      try {
-        cursor = (await cursorStore.load(this.id)) ?? 0;
-      } catch (error) {
-        throw new StarciteError(
-          `consume() failed to load cursor for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
+  private parseOnEvent<TEvent extends SessionEvent>(
+    event: SessionEvent,
+    schema: SessionOnEventOptions<TEvent>["schema"] | undefined
+  ): TEvent | undefined {
+    if (!schema) {
+      return event as TEvent;
     }
 
-    const stream = new TailStream({
+    try {
+      return schema.parse(event);
+    } catch (error) {
+      this.emitStreamError(
+        new StarciteError(
+          `session.on("event") schema validation failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+      return undefined;
+    }
+  }
+
+  private parseTailEvent<TEvent extends SessionEvent>(
+    event: SessionEvent,
+    schema: SessionTailIteratorOptions<TEvent>["schema"] | undefined
+  ): TEvent {
+    if (!schema) {
+      return event as TEvent;
+    }
+
+    try {
+      return schema.parse(event);
+    } catch (error) {
+      throw new StarciteError(
+        `session.tail() schema validation failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private resolveEventContext(
+    eventSeq: number,
+    replayCutoffSeq: number,
+    forceReplay = false
+  ): SessionEventContext {
+    const replayed = forceReplay || eventSeq <= replayCutoffSeq;
+    return replayed
+      ? { phase: "replay", replayed: true }
+      : { phase: "live", replayed: false };
+  }
+
+  private observeEventListenerResult(result: void | Promise<void>): void {
+    Promise.resolve(result).catch((error) => {
+      this.emitStreamError(error);
+    });
+  }
+
+  private createTailAbortController(outerSignal: AbortSignal | undefined): {
+    controller: AbortController;
+    detach: () => void;
+  } {
+    const controller = new AbortController();
+    if (!outerSignal) {
+      return { controller, detach: () => undefined };
+    }
+
+    const abortFromOuterSignal = () => {
+      controller.abort(outerSignal.reason);
+    };
+
+    if (outerSignal.aborted) {
+      controller.abort(outerSignal.reason);
+      return { controller, detach: () => undefined };
+    }
+
+    outerSignal.addEventListener("abort", abortFromOuterSignal, { once: true });
+    return {
+      controller,
+      detach: () => {
+        outerSignal.removeEventListener("abort", abortFromOuterSignal);
+      },
+    };
+  }
+
+  private createTailRuntime<TEvent extends SessionEvent>({
+    parseEvent,
+    replayCutoffSeq,
+    startCursor,
+    tailOptions,
+  }: {
+    parseEvent: (event: SessionEvent) => TEvent;
+    replayCutoffSeq: number;
+    startCursor: number;
+    tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
+  }): TailRuntime<TEvent> {
+    const queue: SessionTailItem<TEvent>[] = [];
+    let notify: (() => void) | undefined;
+    let done = false;
+    let failure: unknown;
+    const shouldApplyToLog = tailOptions.agent === undefined;
+
+    const { controller, detach } = this.createTailAbortController(
+      tailOptions.signal
+    );
+    const wake = () => {
+      notify?.();
+    };
+
+    const streamTask = new TailStream({
       sessionId: this.id,
       token: this.token,
       websocketBaseUrl: this.transport.websocketBaseUrl,
       websocketFactory: this.transport.websocketFactory,
       options: {
         ...tailOptions,
-        cursor,
+        cursor: startCursor,
+        signal: controller.signal,
       },
-    });
-
-    await stream.subscribe(async (batch) => {
-      for (const event of batch) {
-        await handler(event);
-
-        try {
-          await cursorStore.save(this.id, event.seq);
-        } catch (error) {
-          throw new StarciteError(
-            `consume() failed to save cursor for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
-          );
+    })
+      .subscribe((batch) => {
+        const queuedEvents = shouldApplyToLog
+          ? this.log.applyBatch(batch)
+          : batch;
+        if (shouldApplyToLog && queuedEvents.length > 0) {
+          this.persistLogState();
         }
-      }
+
+        for (const event of queuedEvents) {
+          queue.push({
+            event: parseEvent(event),
+            context: this.resolveEventContext(event.seq, replayCutoffSeq),
+          });
+        }
+
+        wake();
+      })
+      .catch((error) => {
+        failure = error;
+      })
+      .finally(() => {
+        done = true;
+        wake();
+      });
+
+    return {
+      next: async () => {
+        while (queue.length === 0 && !done && !failure) {
+          await new Promise<void>((resolve) => {
+            notify = resolve;
+          });
+          notify = undefined;
+        }
+
+        const next = queue.shift();
+        return next;
+      },
+      getFailure: () => failure,
+      dispose: async () => {
+        controller.abort();
+        detach();
+        await streamTask;
+      },
+    };
+  }
+
+  private async *iterateLiveTail<TEvent extends SessionEvent>({
+    parseEvent,
+    replayCutoffSeq,
+    startCursor,
+    tailOptions,
+  }: {
+    parseEvent: (event: SessionEvent) => TEvent;
+    replayCutoffSeq: number;
+    startCursor: number;
+    tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
+  }): AsyncGenerator<SessionTailItem<TEvent>> {
+    const runtime = this.createTailRuntime({
+      parseEvent,
+      replayCutoffSeq,
+      startCursor,
+      tailOptions,
     });
+
+    try {
+      while (true) {
+        const next = await runtime.next();
+        if (next) {
+          yield next;
+          continue;
+        }
+
+        const failure = runtime.getFailure();
+        if (failure) {
+          throw failure;
+        }
+
+        return;
+      }
+    } finally {
+      await runtime.dispose();
+    }
   }
 
   private emitStreamError(error: unknown): void {
@@ -358,43 +552,67 @@ export class StarciteSession {
   }
 
   private async runLiveSync(signal: AbortSignal): Promise<void> {
+    let shouldRunCatchUpPass = this.log.lastSeq === 0;
+
     while (!signal.aborted && this.eventSubscriptions.size > 0) {
-      const stream = new TailStream({
-        sessionId: this.id,
-        token: this.token,
-        websocketBaseUrl: this.transport.websocketBaseUrl,
-        websocketFactory: this.transport.websocketFactory,
-        options: {
-          cursor: this.log.lastSeq,
-          signal,
-        },
-      });
+      this.liveSyncCatchUpActive = shouldRunCatchUpPass;
 
       try {
-        await stream.subscribe((batch) => {
-          const appliedEvents = this.log.applyBatch(batch);
-          if (appliedEvents.length > 0) {
-            this.persistLogState();
-          }
-        });
+        await this.subscribeLiveSyncPass(signal, !shouldRunCatchUpPass);
+        shouldRunCatchUpPass = false;
       } catch (error) {
         if (signal.aborted) {
           return;
         }
 
         if (error instanceof SessionLogGapError) {
+          shouldRunCatchUpPass = true;
           continue;
         }
 
         throw error;
+      } finally {
+        this.liveSyncCatchUpActive = false;
       }
     }
   }
 
+  private async subscribeLiveSyncPass(
+    signal: AbortSignal,
+    follow: boolean
+  ): Promise<void> {
+    const stream = new TailStream({
+      sessionId: this.id,
+      token: this.token,
+      websocketBaseUrl: this.transport.websocketBaseUrl,
+      websocketFactory: this.transport.websocketFactory,
+      options: {
+        cursor: this.log.lastSeq,
+        follow,
+        signal,
+      },
+    });
+
+    await stream.subscribe((batch) => {
+      const appliedEvents = this.log.applyBatch(batch);
+      if (appliedEvents.length > 0) {
+        this.persistLogState();
+      }
+    });
+  }
+
   private persistLogState(): void {
+    if (!this.store) {
+      return;
+    }
+
     this.store.save(this.id, {
       cursor: this.log.cursor,
       events: [...this.log.events],
+      metadata: {
+        schemaVersion: 1,
+        updatedAtMs: Date.now(),
+      },
     });
   }
 }

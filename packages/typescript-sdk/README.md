@@ -23,7 +23,7 @@ The SDK normalizes the API URL to `/v1` automatically.
 
 - `Starcite`: tenant-scoped client
 - `StarciteIdentity`: `user` or `agent` principal tied to tenant
-- `StarciteSession`: session-scoped handle for append/tail/consume/live-sync
+- `StarciteSession`: session-scoped handle for append/tail/live-sync
 
 The key split:
 
@@ -39,15 +39,14 @@ This is the practical shape teams end up using in production.
 Use the identity flow. This creates or binds a session and mints a session token.
 
 ```ts
-import { InMemoryCursorStore, Starcite } from "@starcite/sdk";
+import { MemoryStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
+  // Use a durable SessionStore in production.
+  store: new MemoryStore(),
 });
-
-// Use a persistent store in production
-const cursorStore = new InMemoryCursorStore();
 
 export async function runPlanner(prompt: string, sessionId?: string) {
   const planner = starcite.agent({ id: "planner" });
@@ -61,17 +60,17 @@ export async function runPlanner(prompt: string, sessionId?: string) {
 
   await session.append({ text: `Planning started: ${prompt}` });
 
-  await session.consume({
-    cursorStore,
-    reconnectPolicy: { mode: "fixed", initialDelayMs: 500, maxAttempts: 20 },
-    handler: async (event) => {
-      if (event.type === "content") {
-        // Your business logic here.
-      }
-    },
+  const stop = session.on("event", async (event, context) => {
+    if (context.replayed) {
+      return;
+    }
+    if (event.type === "content") {
+      // Your business logic here.
+    }
   });
 
   await session.append({ text: "Planning complete." });
+  stop();
 
   return {
     sessionId: session.id,
@@ -215,7 +214,7 @@ const starcite = new Starcite({
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
   websocketFactory: (url) => new WebSocket(url),
-  store: new MemoryStore(), // cursor + event persistence (default: MemoryStore)
+  store: new MemoryStore(), // cursor + event persistence
 });
 
 // WebSocketFactory — simplified, auth is always in access_token query string.
@@ -295,7 +294,8 @@ This is designed for robust reconnect + resume semantics in long-running multi-a
 `new Starcite({ store })` accepts a `SessionStore` for cursor + retained-event
 persistence across session rebinds.
 
-- Default: `MemoryStore`
+- No default store is configured. When omitted, startup catch-up replays from
+  stream cursor `0`.
 - Bring your own by implementing:
   - `load(sessionId)`
   - `save(sessionId, { cursor, events })`

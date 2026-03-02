@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StarciteIdentity, type TailEvent } from "@starcite/sdk";
+import { StarciteIdentity } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import starciteCliPackage from "../package.json";
 import { buildProgram } from "../src/cli";
@@ -122,18 +122,22 @@ describe("starcite CLI", () => {
       last_seq: 1,
       deduped: false,
     });
-    fakeSession.tail.mockImplementation(
-      async (onEvent: (event: TailEvent) => void | Promise<void>) => {
-        await onEvent({
-          seq: 1,
-          type: "content",
-          payload: { text: "Drafting clause 4.2..." },
-          actor: "agent:drafter",
-          producer_id: "producer:drafter",
-          producer_seq: 1,
-        });
-      }
-    );
+    fakeSession.tail.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        await Promise.resolve();
+        yield {
+          event: {
+            seq: 1,
+            type: "content",
+            payload: { text: "Drafting clause 4.2..." },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 1,
+          },
+          context: { phase: "live", replayed: false },
+        };
+      },
+    }));
   });
 
   afterEach(() => {
@@ -1046,7 +1050,7 @@ describe("starcite CLI", () => {
     expect(session).toHaveBeenCalledWith({
       token: sessionToken,
     });
-    expect(fakeSession.tail).toHaveBeenCalledWith(expect.any(Function), {
+    expect(fakeSession.tail).toHaveBeenCalledWith({
       cursor: 0,
       batchSize: 256,
       agent: undefined,
@@ -1059,26 +1063,33 @@ describe("starcite CLI", () => {
   it("tail --limit applies a hard cap even when multiple events arrive in one callback stream", async () => {
     const { logger, info } = makeLogger();
 
-    fakeSession.tail.mockImplementation(
-      async (onEvent: (event: TailEvent) => void | Promise<void>) => {
-        await onEvent({
-          seq: 1,
-          type: "content",
-          payload: { text: "first event" },
-          actor: "agent:drafter",
-          producer_id: "producer:drafter",
-          producer_seq: 1,
-        });
-        await onEvent({
-          seq: 2,
-          type: "content",
-          payload: { text: "second event" },
-          actor: "agent:drafter",
-          producer_id: "producer:drafter",
-          producer_seq: 2,
-        });
-      }
-    );
+    fakeSession.tail.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        await Promise.resolve();
+        yield {
+          event: {
+            seq: 1,
+            type: "content",
+            payload: { text: "first event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 1,
+          },
+          context: { phase: "live", replayed: false },
+        };
+        yield {
+          event: {
+            seq: 2,
+            type: "content",
+            payload: { text: "second event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 2,
+          },
+          context: { phase: "live", replayed: false },
+        };
+      },
+    }));
 
     const program = buildProgram({
       logger,

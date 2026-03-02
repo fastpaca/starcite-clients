@@ -173,6 +173,75 @@ export type TailEvent = z.infer<typeof TailEventSchema>;
  * Canonical session event surfaced by the SDK.
  */
 export type SessionEvent = TailEvent;
+
+/**
+ * Listener dispatch phase for `session.on("event")`.
+ */
+export type SessionEventPhase = "replay" | "live";
+
+/**
+ * Context passed to `session.on("event")` listeners.
+ */
+export interface SessionEventContext {
+  /**
+   * Indicates whether this event originated from retained replay or live tail sync.
+   */
+  phase: SessionEventPhase;
+  /**
+   * Convenience flag for `phase === "replay"`.
+   */
+  replayed: boolean;
+}
+
+/**
+ * Session event listener signature.
+ */
+export type SessionEventListener<TEvent extends SessionEvent = SessionEvent> = (
+  event: TEvent,
+  context: SessionEventContext
+) => void | Promise<void>;
+
+/**
+ * Item yielded by `session.tail(...)` async iterators.
+ */
+export interface SessionTailItem<TEvent extends SessionEvent = SessionEvent> {
+  /**
+   * Canonical ordered event.
+   */
+  event: TEvent;
+  /**
+   * Replay/live classification for this event.
+   */
+  context: SessionEventContext;
+}
+
+/**
+ * Listener options for `session.on("event", ...)`.
+ */
+export interface SessionOnEventOptions<
+  TEvent extends SessionEvent = SessionEvent,
+> {
+  /**
+   * Whether retained in-memory events should be replayed to this listener.
+   *
+   * Defaults to `true`.
+   */
+  replay?: boolean;
+  /**
+   * Optional schema used to validate and narrow events before dispatch.
+   *
+   * Schema validation failures are surfaced as session `error` events.
+   */
+  schema?: z.ZodType<TEvent>;
+}
+
+/**
+ * Options for async iterator tails.
+ */
+export interface SessionTailIteratorOptions<
+  TEvent extends SessionEvent = SessionEvent,
+> extends SessionTailOptions,
+    SessionOnEventOptions<TEvent> {}
 /**
  * Raw tail event batch grouped by a single WebSocket frame.
  */
@@ -211,7 +280,21 @@ export interface SessionSnapshot {
 /**
  * Serializable persisted state for one session log.
  */
-export interface SessionStoreState {
+export interface SessionStoreMetadata {
+  /**
+   * Store payload schema version.
+   */
+  schemaVersion: 1;
+  /**
+   * Unix epoch milliseconds when this snapshot was written.
+   */
+  updatedAtMs: number;
+}
+
+/**
+ * Serializable persisted state for one session log.
+ */
+export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
   /**
    * Highest contiguous sequence applied for this session.
    */
@@ -219,15 +302,19 @@ export interface SessionStoreState {
   /**
    * Retained events snapshot used for immediate replay.
    */
-  events: TailEvent[];
+  events: TEvent[];
+  /**
+   * Optional metadata for versioning and operational introspection.
+   */
+  metadata?: SessionStoreMetadata;
 }
 
 /**
  * Persistence interface for session cursor + retained events.
  */
-export interface SessionStore {
-  load(sessionId: string): SessionStoreState | undefined;
-  save(sessionId: string, state: SessionStoreState): void;
+export interface SessionStore<TEvent extends TailEvent = TailEvent> {
+  load(sessionId: string): SessionStoreState<TEvent> | undefined;
+  save(sessionId: string, state: SessionStoreState<TEvent>): void;
   clear?(sessionId: string): void;
 }
 
@@ -400,41 +487,6 @@ export type TailLifecycleEvent =
     };
 
 /**
- * Storage adapter used by `session.consume*()` to persist the last processed cursor.
- */
-export interface SessionCursorStore {
-  /**
-   * Loads the last processed cursor for a session.
-   *
-   * Return `undefined` when no cursor has been stored yet.
-   */
-  load(sessionId: string): number | undefined | Promise<number | undefined>;
-  /**
-   * Persists the last processed cursor for a session.
-   */
-  save(sessionId: string, cursor: number): void | Promise<void>;
-}
-
-/**
- * Durable tail consumption options with automatic cursor checkpointing.
- */
-export interface SessionConsumeOptions
-  extends Omit<SessionTailOptions, "cursor"> {
-  /**
-   * Optional explicit starting cursor. When omitted, the SDK loads it from `cursorStore`.
-   */
-  cursor?: number;
-  /**
-   * Cursor storage adapter used for resume-safe processing.
-   */
-  cursorStore: SessionCursorStore;
-  /**
-   * Event handler. The cursor is checkpointed only after this handler succeeds.
-   */
-  handler: (event: TailEvent) => void | Promise<void>;
-}
-
-/**
  * Options for listing sessions.
  */
 export const SessionListOptionsSchema = z.object({
@@ -524,9 +576,9 @@ export interface StarciteOptions {
    */
   websocketFactory?: StarciteWebSocketFactory;
   /**
-   * Session store used for cursor + retained event persistence.
+   * Optional session store used for cursor + retained event persistence.
    *
-   * Defaults to an in-memory store.
+   * When omitted, fresh attaches start from cursor `0` and replay from server tail.
    */
   store?: SessionStore;
 }

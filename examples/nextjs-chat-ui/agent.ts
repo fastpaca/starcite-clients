@@ -37,8 +37,12 @@ async function runSessionAgent(sessionId: string): Promise<void> {
       title: "Next.js demo chat",
     });
 
-    session.on("event", async (event) => {
+    session.on("event", async (event, context) => {
       try {
+        if (context.replayed) {
+          return;
+        }
+
         if (event.type !== userEventType) {
           return;
         }

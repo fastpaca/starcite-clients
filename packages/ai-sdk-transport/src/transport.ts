@@ -14,6 +14,7 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
 
   constructor(options: StarciteChatTransportOptions) {
     this.session = options.session;
+    this.lastCursor = options.session.getSnapshot().lastSeq;
   }
 
   async sendMessages(
@@ -26,11 +27,18 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   reconnectToStream(
     _options: ReconnectToStreamOptions
   ): Promise<ReadableStream<ChatChunk> | null> {
-    if (this.lastCursor === 0) {
+    const snapshot = this.session.getSnapshot();
+    const inferredUserCursor = this.findLatestUserMessageCursor(
+      snapshot.events
+    );
+    if (inferredUserCursor === undefined && this.lastCursor === 0) {
       return Promise.resolve(null);
     }
 
-    return Promise.resolve(this.streamResponse(this.lastCursor));
+    const resumeCursor = Math.max(this.lastCursor, inferredUserCursor ?? 0);
+
+    this.lastCursor = resumeCursor;
+    return Promise.resolve(this.streamResponse(resumeCursor));
   }
 
   private async appendUserMessage(
@@ -85,6 +93,22 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
       },
       cancel: cleanup,
     });
+  }
+
+  private findLatestUserMessageCursor(
+    events: ReadonlyArray<{ seq: number; type: string }>
+  ): number | undefined {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event) {
+        continue;
+      }
+
+      if (event.type === "chat.user.message") {
+        return event.seq;
+      }
+    }
+    return undefined;
   }
 }
 
