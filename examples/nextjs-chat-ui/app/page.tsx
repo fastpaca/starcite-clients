@@ -10,7 +10,7 @@ import {
   type ChatTransport,
   type UIMessage,
 } from "ai";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -53,6 +53,7 @@ export default function Page() {
   const [sessionId, setSessionId] = useState(defaultSessionId);
   const [sessionIdInput, setSessionIdInput] = useState(defaultSessionId);
   const [token, setToken] = useState<string>();
+  const tokenRequestCounter = useRef(0);
 
   useEffect(() => {
     const cached = localStorage.getItem(sessionIdCacheKey);
@@ -63,14 +64,28 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    const requestCounter = tokenRequestCounter.current + 1;
+    tokenRequestCounter.current = requestCounter;
+    let active = true;
+
     localStorage.setItem(sessionIdCacheKey, sessionId);
+    setToken(undefined);
+
     fetchSessionToken(sessionId).then((nextSession) => {
+      if (!active || tokenRequestCounter.current !== requestCounter) {
+        return;
+      }
+
       setToken(nextSession.token);
       if (nextSession.sessionId !== sessionId) {
         setSessionId(nextSession.sessionId);
         setSessionIdInput(nextSession.sessionId);
       }
     });
+
+    return () => {
+      active = false;
+    };
   }, [sessionId]);
 
   const transport = useMemo(() => {
