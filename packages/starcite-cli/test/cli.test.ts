@@ -41,6 +41,19 @@ function makeLogger() {
   };
 }
 
+function makeStdout() {
+  const messages: string[] = [];
+
+  return {
+    messages,
+    stdout: {
+      write(message: string) {
+        messages.push(message);
+      },
+    },
+  };
+}
+
 function encodeJwt(payload: Record<string, unknown>): string {
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `test.${encoded}.sig`;
@@ -157,6 +170,37 @@ describe("starcite CLI", () => {
     expect(createdSessionInput?.id).toBeUndefined();
     expect(createdSessionInput?.title).toBe("Draft contract");
     expect(info).toEqual(["ses_123"]);
+  });
+
+  it("create --json writes JSON directly to stdout", async () => {
+    const { logger, info } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "--json",
+        "create",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const created = JSON.parse(messages.join("")) as { id?: string };
+    expect(created.id).toBe("ses_123");
+    expect(info).toEqual([]);
   });
 
   it("create --id persists an explicit session id", async () => {
@@ -324,6 +368,40 @@ describe("starcite CLI", () => {
       expectedSeq: undefined,
     });
     expect(info).toContain("seq=1 deduped=false");
+  });
+
+  it("append --json writes JSON directly to stdout", async () => {
+    const { logger, info } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "--json",
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--text",
+        "Found 8 relevant cases...",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const appendResult = JSON.parse(messages.join("")) as { seq?: number };
+    expect(appendResult.seq).toBe(1);
+    expect(info).toEqual([]);
   });
 
   it("auto-generates producer id when missing", async () => {
@@ -595,6 +673,33 @@ describe("starcite CLI", () => {
     ) as { baseUrl?: string };
 
     expect(configFile.baseUrl).toBe("https://tenant-a.starcite.io");
+  });
+
+  it("config show --json writes JSON directly to stdout", async () => {
+    const { logger, info } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "--json", "config", "show"],
+      {
+        from: "user",
+      }
+    );
+
+    const output = JSON.parse(messages.join("")) as {
+      endpoint?: string;
+      configDir?: string;
+    };
+
+    expect(output.endpoint).toBe("http://localhost:45187");
+    expect(output.configDir).toBe(configDir);
+    expect(info).toEqual([]);
   });
 
   it("config set api-key stores API key used by API commands", async () => {
@@ -889,9 +994,11 @@ describe("starcite CLI", () => {
 
   it("sessions list outputs JSON with --json", async () => {
     const { logger, info } = makeLogger();
+    const { stdout, messages } = makeStdout();
 
     const program = buildProgram({
       logger,
+      stdout,
       createClient: () => createFakeClient(),
     });
 
@@ -902,13 +1009,14 @@ describe("starcite CLI", () => {
       }
     );
 
-    const output = JSON.parse(info[0] ?? "{}") as {
+    const output = JSON.parse(messages.join("")) as {
       sessions?: Array<{ id?: string }>;
       next_cursor?: string | null;
     };
 
     expect(output.sessions?.[0]?.id).toBe("ses_123");
     expect(output.next_cursor).toBeNull();
+    expect(info).toEqual([]);
   });
 
   it("tails events and formats output", async () => {
@@ -994,6 +1102,42 @@ describe("starcite CLI", () => {
     );
 
     expect(info).toEqual(["[drafter] first event"]);
+  });
+
+  it("tail --json writes JSON directly to stdout", async () => {
+    const { logger, info } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "--json",
+        "tail",
+        "ses_123",
+        "--limit",
+        "1",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const event = JSON.parse(messages.join("").trim()) as {
+      actor?: string;
+      seq?: number;
+    };
+    expect(event.actor).toBe("agent:drafter");
+    expect(event.seq).toBe(1);
+    expect(info).toEqual([]);
   });
 
   it("up fails with install guidance when docker is missing", async () => {

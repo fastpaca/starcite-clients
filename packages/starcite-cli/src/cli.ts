@@ -44,9 +44,14 @@ export interface LoggerLike {
   error(message: string): void;
 }
 
+interface StdoutLike {
+  write(message: string): void;
+}
+
 interface CliDependencies {
   createClient?: (baseUrl: string, apiKey?: string) => Starcite;
   logger?: LoggerLike;
+  stdout?: StdoutLike;
   prompt?: PromptAdapter;
   runCommand?: CommandRunner;
 }
@@ -54,6 +59,11 @@ interface CliDependencies {
 type CliJsonObject = Record<string, unknown>;
 
 const defaultLogger: LoggerLike = createConsola();
+const defaultStdout: StdoutLike = {
+  write(message: string) {
+    process.stdout.write(message);
+  },
+};
 const cliVersion = starciteCliPackage.version;
 
 const nonNegativeIntegerSchema = z.coerce.number().int().nonnegative();
@@ -371,6 +381,19 @@ function toApiBaseUrlForContext(baseUrl: string): string {
   return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
+function writeJsonOutput(
+  stdout: StdoutLike,
+  value: unknown,
+  pretty = false
+): void {
+  const serialized = JSON.stringify(value, null, pretty ? 2 : undefined);
+  if (serialized === undefined) {
+    throw new Error("Failed to serialize JSON output");
+  }
+
+  stdout.write(`${serialized}\n`);
+}
+
 async function resolveSession(
   client: Starcite,
   apiKey: string | undefined,
@@ -420,6 +443,7 @@ function resolveCreateIdentity(
 class StarciteCliApp {
   private readonly createClient: (baseUrl: string, apiKey?: string) => Starcite;
   private readonly logger: LoggerLike;
+  private readonly stdout: StdoutLike;
   private readonly prompt: PromptAdapter;
   private readonly runCommand: CommandRunner;
 
@@ -432,6 +456,7 @@ class StarciteCliApp {
           apiKey,
         }));
     this.logger = deps.logger ?? defaultLogger;
+    this.stdout = deps.stdout ?? defaultStdout;
     this.prompt = deps.prompt ?? createDefaultPrompt();
     this.runCommand = deps.runCommand ?? defaultCommandRunner;
   }
@@ -439,6 +464,7 @@ class StarciteCliApp {
   buildProgram(): Command {
     const createClient = this.createClient;
     const logger = this.logger;
+    const stdout = this.stdout;
     const prompt = this.prompt;
     const runCommand = this.runCommand;
 
@@ -503,7 +529,7 @@ class StarciteCliApp {
         new Command("show")
           .description("Show current configuration")
           .action(async function (this: Command) {
-            const { baseUrl, store } = await resolveGlobalOptions(this);
+            const { baseUrl, json, store } = await resolveGlobalOptions(this);
             const config = await store.readConfig();
             const apiKey = await store.readApiKey();
             const fromEnv = trimString(process.env.STARCITE_API_KEY);
@@ -515,19 +541,20 @@ class StarciteCliApp {
               apiKeySource = "stored";
             }
 
-            logger.info(
-              JSON.stringify(
-                {
-                  endpoint: config.baseUrl ?? baseUrl,
-                  producerId: config.producerId ?? null,
-                  apiKey: apiKey ? "***" : null,
-                  apiKeySource,
-                  configDir: store.directory,
-                },
-                null,
-                2
-              )
-            );
+            const output = {
+              endpoint: config.baseUrl ?? baseUrl,
+              producerId: config.producerId ?? null,
+              apiKey: apiKey ? "***" : null,
+              apiKeySource,
+              configDir: store.directory,
+            };
+
+            if (json) {
+              writeJsonOutput(stdout, output, true);
+              return;
+            }
+
+            logger.info(JSON.stringify(output, null, 2));
           })
       );
 
@@ -572,7 +599,7 @@ class StarciteCliApp {
             });
 
             if (json) {
-              logger.info(JSON.stringify(page, null, 2));
+              writeJsonOutput(stdout, page, true);
               return;
             }
 
@@ -674,9 +701,7 @@ class StarciteCliApp {
         });
 
         if (json) {
-          logger.info(
-            JSON.stringify(session.record ?? { id: session.id }, null, 2)
-          );
+          writeJsonOutput(stdout, session.record ?? { id: session.id }, true);
           return;
         }
 
@@ -776,7 +801,7 @@ class StarciteCliApp {
               });
 
         if (json) {
-          logger.info(JSON.stringify(response, null, 2));
+          writeJsonOutput(stdout, response, true);
           return;
         }
 
@@ -828,7 +853,7 @@ class StarciteCliApp {
               }
 
               if (json) {
-                logger.info(JSON.stringify(event));
+                writeJsonOutput(stdout, event);
               } else {
                 logger.info(formatTailEvent(event));
               }

@@ -19,6 +19,7 @@ describeLive("starcite CLI live API integration", () => {
     }
 
     const infoMessages: string[] = [];
+    const stdoutMessages: string[] = [];
     const program = buildProgram({
       logger: {
         info(message: string) {
@@ -26,6 +27,11 @@ describeLive("starcite CLI live API integration", () => {
         },
         error(message: string) {
           throw new Error(message);
+        },
+      },
+      stdout: {
+        write(message: string) {
+          stdoutMessages.push(message);
         },
       },
     });
@@ -52,9 +58,10 @@ describeLive("starcite CLI live API integration", () => {
         { from: "user" }
       );
 
-      const created = JSON.parse(infoMessages.pop() ?? "{}") as {
+      const created = JSON.parse(stdoutMessages.join("")) as {
         id?: string;
       };
+      stdoutMessages.length = 0;
       expect(created.id).toMatch(SESSION_ID_PATTERN);
 
       await program.parseAsync(
@@ -98,10 +105,11 @@ describeLive("starcite CLI live API integration", () => {
         { from: "user" }
       );
 
-      const tailed = JSON.parse(infoMessages.pop() ?? "{}") as {
+      const tailed = JSON.parse(stdoutMessages.join("").trim()) as {
         actor?: string;
         seq?: number;
       };
+      stdoutMessages.length = 0;
       expect(tailed.actor).toBe("agent:tester");
       expect(tailed.seq).toBeGreaterThanOrEqual(1);
 
@@ -124,9 +132,10 @@ describeLive("starcite CLI live API integration", () => {
         { from: "user" }
       );
 
-      const listed = JSON.parse(infoMessages.pop() ?? "{}") as {
+      const listed = JSON.parse(stdoutMessages.join("")) as {
         sessions?: Array<{ id: string }>;
       };
+      stdoutMessages.length = 0;
       expect(
         listed.sessions?.some((session) => session.id === created.id)
       ).toBe(true);
