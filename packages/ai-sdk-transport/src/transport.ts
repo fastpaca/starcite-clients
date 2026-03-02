@@ -133,6 +133,34 @@ export function appendAssistantChunkEvent(
   });
 }
 
+/**
+ * Returns `true` when the session events contain an assistant generation that
+ * has not yet received a `finish` chunk — i.e. a generation is still
+ * in-progress and `reconnectToStream` should resume it.
+ */
+function hasIncompleteGeneration(
+  events: readonly { type: string; payload: unknown }[]
+): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (!event) {
+      continue;
+    }
+    if (event.type !== chatAssistantChunkEventType) {
+      continue;
+    }
+
+    const parsed = chatAssistantChunkEnvelopeSchema.safeParse(event.payload);
+    if (!parsed.success) {
+      continue;
+    }
+
+    return parsed.data.chunk.type !== "finish";
+  }
+
+  return false;
+}
+
 export class StarciteChatTransport implements ChatTransport<UIMessage> {
   private readonly session: StarciteSession;
   private lastCursor: number;
@@ -147,9 +175,19 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   private unsubEvent?: () => void;
   private unsubError?: () => void;
 
+  /**
+   * Tracks whether an assistant generation is currently in progress.
+   * Initialized from persisted session events (e.g. localStorage) and kept
+   * up-to-date as live events flow through the subscription.
+   */
+  private generationInProgress: boolean;
+
   constructor(options: StarciteChatTransportOptions) {
     this.session = options.session;
     this.lastCursor = options.session.state().lastSeq;
+    this.generationInProgress = hasIncompleteGeneration(
+      options.session.state().events
+    );
   }
 
   async sendMessages(
@@ -171,7 +209,11 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   reconnectToStream(
     _options: ReconnectToStreamOptions
   ): Promise<ReadableStream<ChatChunk> | null> {
-    return Promise.resolve(this.streamResponse(this.lastCursor || 0));
+    if (!this.generationInProgress) {
+      return Promise.resolve(null);
+    }
+
+    return Promise.resolve(this.streamResponse(this.lastCursor));
   }
 
   private ensureSubscribed(): void {
@@ -215,11 +257,12 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
       }
 
       const chunk = parsed.payload.chunk as ChatChunk;
+      this.generationInProgress = chunk.type !== "finish";
       controller.enqueue(chunk);
 
       if (chunk.type === "finish") {
         controller.close();
-        this.teardown();
+        this.activeController = undefined;
       }
     });
 
@@ -227,6 +270,11 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
       this.activeController?.error(error);
       this.teardown();
     });
+  }
+
+  /** Unsubscribe from the session and close any active stream. */
+  dispose(): void {
+    this.teardown();
   }
 
   private teardown(): void {

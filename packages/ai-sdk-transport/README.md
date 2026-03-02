@@ -47,9 +47,9 @@ const chat = useChat({
 Then it subscribes to the same session tail and forwards each event with
 `event.seq > cursor` as a `ReadableStream<ChatChunk>`.
 
-`reconnectToStream` replays from the last cursor when a previous
-`sendMessages` call has established one; otherwise it streams from the
-beginning of the session.
+`reconnectToStream` returns `null` when there is no in-progress generation
+(session events are empty or the last assistant chunk is a `finish`). When a
+generation was interrupted mid-stream it resumes from the last tracked cursor.
 
 ## Notes
 

@@ -1,7 +1,10 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
+import {
+  createStarciteChatTransport,
+  toUIMessagesFromEvents,
+} from "@starcite/ai-sdk-transport";
 import { LocalStorageSessionStore, Starcite } from "@starcite/sdk";
 import {
   isTextUIPart,
@@ -57,6 +60,8 @@ export default function Page() {
   const [sessionError, setSessionError] = useState<string>();
   const [isConnecting, setIsConnecting] = useState(false);
 
+  const [initialMessages, setInitialMessages] = useState<UIMessage[]>();
+
   const chat = useMemo(() => {
     if (!token) {
       return undefined;
@@ -75,8 +80,24 @@ export default function Page() {
   }, [token]);
 
   useEffect(() => {
+    if (!chat) {
+      setInitialMessages(undefined);
+      return () => {};
+    }
+
+    let cancelled = false;
+    const events = chat.session.state().events;
+
+    void toUIMessagesFromEvents(events).then((msgs) => {
+      if (cancelled) return;
+      setInitialMessages(
+        msgs.map((m, i) => ({ ...m, id: `history-${i}` }))
+      );
+    });
+
     return () => {
-      chat?.session.disconnect();
+      cancelled = true;
+      chat.session.disconnect();
     };
   }, [chat]);
 
@@ -131,8 +152,12 @@ export default function Page() {
         <p className="mt-2 text-xs text-muted-foreground">Active: {sessionId}</p>
       </header>
 
-      {chat ? (
-        <ChatThread sessionId={sessionId} transport={chat.transport} />
+      {chat && initialMessages ? (
+        <ChatThread
+          initialMessages={initialMessages}
+          sessionId={sessionId}
+          transport={chat.transport}
+        />
       ) : (
         <DisconnectedState
           description={sessionError ?? (isConnecting ? "Connecting..." : "Enter a session ID.")}
@@ -170,15 +195,18 @@ function DisconnectedState({ description }: { description: string }) {
 }
 
 function ChatThread({
+  initialMessages,
   sessionId,
   transport,
 }: {
+  initialMessages: UIMessage[];
   sessionId: string;
   transport: ChatTransport<UIMessage>;
 }) {
   const [input, setInput] = useState("");
   const { messages, sendMessage, status, stop } = useChat({
     id: sessionId,
+    messages: initialMessages,
     resume: true,
     transport,
   });

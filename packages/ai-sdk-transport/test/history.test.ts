@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  createAssistantChunkEnvelope,
-  createUserMessageEnvelope,
   toModelMessagesFromEvents,
   toUIMessagesFromEvents,
 } from "../src/index";
+import {
+  createAssistantChunkEnvelope,
+  createUserMessageEnvelope,
+} from "../src/transport";
 
 describe("history projection", () => {
   it("preserves extended message payload fields", async () => {

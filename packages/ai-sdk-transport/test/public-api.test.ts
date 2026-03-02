@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  createAssistantChunkEnvelope,
-  createUserMessageEnvelope,
   toModelMessagesFromEvents,
   toUIMessagesFromEvents,
 } from "../src/index";
+import {
+  createAssistantChunkEnvelope,
+  createUserMessageEnvelope,
+} from "../src/transport";
 
 function getTextPartText(
   payload: { parts: readonly { type: string }[] } | undefined
@@ -31,16 +33,9 @@ describe("public API", () => {
     const module = await import("../src/index");
 
     expect(Object.keys(module).sort()).toEqual([
-      "chatAssistantChunkEnvelopeKind",
-      "chatAssistantChunkEnvelopeSchema",
-      "chatAssistantChunkEventType",
-      "chatPayloadEnvelopeSchema",
-      "chatUserMessageEnvelopeKind",
-      "chatUserMessageEnvelopeSchema",
-      "chatUserMessageEventType",
-      "createAssistantChunkEnvelope",
+      "appendAssistantChunkEvent",
+      "appendUserMessageEvent",
       "createStarciteChatTransport",
-      "createUserMessageEnvelope",
       "toModelMessagesFromEvents",
       "toUIMessagesFromEvents",
     ]);
