@@ -5,7 +5,12 @@ import {
   createStarciteChatTransport,
   toUIMessagesFromEvents,
 } from "@starcite/ai-sdk-transport";
-import { Starcite, type StarciteSession } from "@starcite/sdk";
+import {
+  LocalStorageSessionStore,
+  Starcite,
+  type SessionEvent,
+  type StarciteSession,
+} from "@starcite/sdk";
 import {
   isReasoningUIPart,
   isTextUIPart,
@@ -40,9 +45,9 @@ const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultSessionId = "nextjs-demo-session";
 const sessionIdCacheKey = "starcite:nextjs-chat-ui:session-id";
 
-interface ChatBootstrap {
+interface ChatRuntime {
+  session: StarciteSession;
   transport: ChatTransport<UIMessage>;
-  initialMessages: UIMessage[];
 }
 
 async function fetchSessionToken(
@@ -57,31 +62,11 @@ async function fetchSessionToken(
   return (await response.json()) as { token: string; sessionId: string };
 }
 
-async function hydrateHistoryMessages(
-  session: StarciteSession
-): Promise<UIMessage[]> {
-  const events: Array<{ payload: unknown }> = [];
-  for await (const item of session.tail({
-    cursor: 0,
-    catchUpIdleMs: 10_000,
-    follow: false,
-    replay: true,
-  })) {
-    events.push(item.event);
-  }
-
-  const messages = await toUIMessagesFromEvents(events);
-  return messages.map((message, index) => ({
-    id: `history_${index + 1}`,
-    ...message,
-  }));
-}
-
 export default function Page() {
   const [sessionId, setSessionId] = useState(defaultSessionId);
   const [sessionIdInput, setSessionIdInput] = useState(defaultSessionId);
   const [token, setToken] = useState<string>();
-  const [chatBootstrap, setChatBootstrap] = useState<ChatBootstrap>();
+  const [chatRuntime, setChatRuntime] = useState<ChatRuntime>();
   const tokenRequestCounter = useRef(0);
 
   useEffect(() => {
@@ -119,33 +104,19 @@ export default function Page() {
 
   useEffect(() => {
     if (!token) {
-      setChatBootstrap(undefined);
+      setChatRuntime(undefined);
       return;
     }
 
-    let active = true;
     const baseUrl = process.env.NEXT_PUBLIC_STARCITE_BASE_URL || defaultBaseUrl;
-    const session = new Starcite({ baseUrl }).session({ token });
-
+    const store = new LocalStorageSessionStore({
+      keyPrefix: "starcite:nextjs-chat-ui",
+    });
+    const session = new Starcite({ baseUrl, store }).session({ token });
     const transport = createStarciteChatTransport({ session });
-    (async () => {
-      try {
-        const initialMessages = await hydrateHistoryMessages(session);
-        if (!active) {
-          return;
-        }
-        setChatBootstrap({ transport, initialMessages });
-      } catch (error) {
-        console.error("nextjs-chat-ui hydration failed", error);
-        if (!active) {
-          return;
-        }
-        setChatBootstrap({ transport, initialMessages: [] });
-      }
-    })();
+    setChatRuntime({ session, transport });
 
     return () => {
-      active = false;
       session.disconnect();
     };
   }, [token]);
@@ -174,11 +145,11 @@ export default function Page() {
         <p className="mt-2 text-xs text-muted-foreground">Active: {sessionId}</p>
       </header>
 
-      {chatBootstrap && token ? (
+      {chatRuntime && token ? (
         <ChatThread
-          initialMessages={chatBootstrap.initialMessages}
+          session={chatRuntime.session}
           sessionId={sessionId}
-          transport={chatBootstrap.transport}
+          transport={chatRuntime.transport}
         />
       ) : (
         <>
@@ -212,23 +183,69 @@ export default function Page() {
 }
 
 function ChatThread({
-  initialMessages,
+  session,
   sessionId,
   transport,
 }: {
-  initialMessages: UIMessage[];
+  session: StarciteSession;
   sessionId: string;
   transport: ChatTransport<UIMessage>;
 }) {
   const [input, setInput] = useState("");
-  const { messages, sendMessage, status, stop } = useChat({
+  const hydrationActiveRef = useRef(true);
+  const replayEventsRef = useRef<SessionEvent[]>([]);
+  const { messages, sendMessage, setMessages, status, stop } = useChat({
     id: sessionId,
-    messages: initialMessages,
     transport,
   });
   const isBusy = status === "submitted" || status === "streaming";
 
+  useEffect(() => {
+    let active = true;
+    replayEventsRef.current = [];
+    hydrationActiveRef.current = true;
+
+    const applyReplayProjection = async (): Promise<void> => {
+      const projected = await toUIMessagesFromEvents(replayEventsRef.current);
+      if (!active || !hydrationActiveRef.current) {
+        return;
+      }
+
+      setMessages(
+        projected.map((message, index) => ({
+          id: `history_${index + 1}`,
+          ...message,
+        }))
+      );
+    };
+
+    (async () => {
+      try {
+        for await (const item of session.tail({
+          cursor: 0,
+          replay: true,
+          follow: false,
+          catchUpIdleMs: 750,
+        })) {
+          replayEventsRef.current.push(item.event);
+          await applyReplayProjection();
+        }
+      } catch (error) {
+        console.error("nextjs-chat-ui hydration failed", error);
+      } finally {
+        if (active) {
+          hydrationActiveRef.current = false;
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [session, setMessages]);
+
   function onPromptSubmit(message: PromptInputMessage): void {
+    hydrationActiveRef.current = false;
     const text = message.text.trim();
     if (!text) {
       return;
