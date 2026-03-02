@@ -290,6 +290,62 @@ describe("Starcite", () => {
     expect(body.producer_seq).toBe(1);
   });
 
+  it("creates a session with an explicit id via createSession()", async () => {
+    const apiKey = makeApiKey();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_demo",
+          title: "Draft contract",
+          metadata: { integration: "sdk-test" },
+          last_seq: 0,
+          created_at: "2026-02-11T00:00:00Z",
+          updated_at: "2026-02-11T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    const created = await starcite.createSession({
+      id: "ses_demo",
+      title: "Draft contract",
+      metadata: { integration: "sdk-test" },
+      creator_principal: {
+        tenant_id: "tenant-a",
+        id: "starcite-cli",
+        type: "agent",
+      },
+    });
+
+    expect(created.id).toBe("ses_demo");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(requestInit.body as string);
+    expect(body).toEqual({
+      id: "ses_demo",
+      title: "Draft contract",
+      metadata: { integration: "sdk-test" },
+      creator_principal: {
+        tenant_id: "tenant-a",
+        id: "starcite-cli",
+        type: "agent",
+      },
+    });
+  });
+
   it("validates baseUrl at client construction", () => {
     expect(
       () =>

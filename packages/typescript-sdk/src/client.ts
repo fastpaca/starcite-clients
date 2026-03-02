@@ -17,6 +17,7 @@ import {
   toWebSocketBaseUrl,
 } from "./transport";
 import type {
+  CreateSessionInput,
   IssueSessionTokenInput,
   RequestOptions,
   SessionListOptions,
@@ -27,6 +28,7 @@ import type {
   StarciteOptions,
 } from "./types";
 import {
+  CreateSessionInputSchema,
   IssueSessionTokenResponseSchema,
   SessionListOptionsSchema,
   SessionListPageSchema,
@@ -205,6 +207,30 @@ export class Starcite {
     );
   }
 
+  /**
+   * Creates a session record in the API catalog.
+   *
+   * Use this when you need deterministic IDs (for example CLI/workflow
+   * orchestration) before appending events.
+   */
+  createSession(
+    input: CreateSessionInput = {},
+    requestOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    const parsed = CreateSessionInputSchema.parse(input);
+
+    return request(
+      this.transport,
+      "/sessions",
+      {
+        method: "POST",
+        body: JSON.stringify(parsed),
+        signal: requestOptions?.signal,
+      },
+      SessionRecordSchema
+    );
+  }
+
   private async sessionFromIdentity(input: {
     identity: StarciteIdentity;
     id?: string;
@@ -269,22 +295,6 @@ export class Starcite {
       ...this.transport,
       authorization: `Bearer ${token}`,
     };
-  }
-
-  private createSession(input: {
-    creator_principal?: { tenant_id: string; id: string; type: string };
-    title?: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<SessionRecord> {
-    return request(
-      this.transport,
-      "/sessions",
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-      },
-      SessionRecordSchema
-    );
   }
 
   private issueSessionToken(

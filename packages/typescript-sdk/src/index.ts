@@ -25,6 +25,7 @@ export type {
   AppendEventRequest,
   AppendEventResponse,
   AppendResult,
+  CreateSessionInput,
   RequestOptions,
   SessionAppendInput,
   SessionConsumeOptions,

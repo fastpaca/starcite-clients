@@ -49,6 +49,7 @@ function encodeJwt(payload: Record<string, unknown>): string {
 describe("starcite CLI", () => {
   const agent = vi.fn();
   const session = vi.fn();
+  const createSession = vi.fn();
   const listSessions = vi.fn();
   let configDir = "";
   const sessionToken = encodeJwt({
@@ -67,13 +68,14 @@ describe("starcite CLI", () => {
   };
 
   function createFakeClient() {
-    return { agent, session, listSessions } as never;
+    return { agent, session, createSession, listSessions } as never;
   }
 
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
     agent.mockReset();
     session.mockReset();
+    createSession.mockReset();
     listSessions.mockReset();
     fakeSession.append.mockReset();
     fakeSession.appendRaw.mockReset();
@@ -88,6 +90,14 @@ describe("starcite CLI", () => {
         })
     );
     session.mockReturnValue(fakeSession);
+    createSession.mockResolvedValue({
+      id: "ses_123",
+      title: "Draft contract",
+      metadata: {},
+      last_seq: 0,
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:00:00Z",
+    });
     listSessions.mockResolvedValue({
       sessions: [
         {
@@ -157,6 +167,54 @@ describe("starcite CLI", () => {
     expect(createdSessionInput?.id).toBeUndefined();
     expect(createdSessionInput?.title).toBe("Draft contract");
     expect(info).toEqual(["ses_123"]);
+  });
+
+  it("create --id persists an explicit session id", async () => {
+    const { logger, info } = makeLogger();
+
+    createSession.mockResolvedValueOnce({
+      id: "ses_demo",
+      title: "Draft contract",
+      metadata: {},
+      last_seq: 0,
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:00:00Z",
+    });
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "create",
+        "--id",
+        "ses_demo",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(createSession).toHaveBeenCalledWith({
+      id: "ses_demo",
+      title: "Draft contract",
+      metadata: undefined,
+      creator_principal: {
+        tenant_id: "acme",
+        id: "starcite-cli",
+        type: "agent",
+      },
+    });
+    expect(session).not.toHaveBeenCalled();
+    expect(info).toEqual(["ses_demo"]);
   });
 
   it("prints the CLI version", async () => {
