@@ -183,7 +183,10 @@ describe("StarciteChatTransport", () => {
     );
     expect(appendBody).toMatchObject({
       type: "chat.user.message",
-      payload: { parts: [{ type: "text", text: "Hello from UI" }] },
+      payload: {
+        role: "user",
+        parts: [{ type: "text", text: "Hello from UI" }],
+      },
       source: "use-chat",
     });
 

@@ -414,7 +414,7 @@ describe("Browser Multi-Agent Workflows", () => {
     expect(socket?.url).toContain("access_token=");
 
     socket?.emitClose({ code: 1000, reason: "done" });
-    await expect(tailDone).resolves.toBeUndefined();
+    await expect(tailDone).resolves.toEqual([]);
   });
 
   it("reconnects browser tails and resumes from the latest observed cursor", async () => {

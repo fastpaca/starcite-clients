@@ -16,7 +16,7 @@ npm install @starcite/ai-sdk-transport @starcite/sdk ai
 ```ts
 import { useChat } from "@ai-sdk/react";
 import { Starcite } from "@starcite/sdk";
-import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
+import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
 
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
@@ -27,7 +27,7 @@ const starcite = new Starcite({
 const { token } = await getSessionTokenSomehow();
 const session = starcite.session({ token });
 
-const transport = new StarciteChatTransport({
+const transport = createStarciteChatTransport({
   session,
 });
 
@@ -36,21 +36,13 @@ const chat = useChat({
 });
 ```
 
-You can also use the factory function:
-
-```ts
-import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
-
-const transport = createStarciteChatTransport({ session });
-```
-
 ## Transport Behavior
 
 `sendMessages` appends one outgoing message with:
 
 - `type: "chat.user.message"`
 - `source: "use-chat"`
-- `payload: { parts: message.parts }`
+- `payload: Omit<UIMessage, "id">` (single user message)
 
 Then it subscribes to the same session tail and forwards each event with
 `event.seq > cursor` as a `ReadableStream<ChatChunk>`.
@@ -63,15 +55,21 @@ Then it subscribes to the same session tail and forwards each event with
 - Payloads are not transformed.
 - Incoming event payloads are passed directly into `useChat` as `UIMessageChunk`.
 - The backend should emit valid AI SDK chunks (including `finish`) in event payloads.
+- Use `toUIMessagesFromEvents(...)` / `toModelMessagesFromEvents(...)` to reconstruct
+  full history from a Starcite session snapshot without custom protocol glue.
+- History helpers only project native AI SDK payloads (`Omit<UIMessage, "id">` and
+  `UIMessageChunk`); non-native payloads are ignored.
 
 ## Exported Shapes
 
-- `StarciteChatTransport` class
 - `createStarciteChatTransport`
 - `StarciteChatTransportOptions`
 - `SendMessagesOptions`
 - `ReconnectToStreamOptions`
 - `ChatChunk`
+- `toUIMessagesFromEvents`
+- `toModelMessagesFromEvents`
+- `ChatHistoryPayload`
 
 ## Example: factory with prebuilt session
 

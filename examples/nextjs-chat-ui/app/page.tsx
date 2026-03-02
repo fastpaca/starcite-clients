@@ -1,12 +1,13 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
+import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
 import { Starcite } from "@starcite/sdk";
 import {
   isReasoningUIPart,
   isTextUIPart,
   isToolOrDynamicToolUIPart,
+  type ChatTransport,
   type UIMessage,
 } from "ai";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
@@ -79,7 +80,7 @@ export default function Page() {
 
     const baseUrl = process.env.NEXT_PUBLIC_STARCITE_BASE_URL || defaultBaseUrl;
     const session = new Starcite({ baseUrl }).session({ token });
-    return new StarciteChatTransport({ session });
+    return createStarciteChatTransport({ session });
   }, [token]);
 
   function onSessionSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -127,7 +128,7 @@ export default function Page() {
             <PromptInputFooter>
               <PromptInputTools>
                 <span className="text-xs text-muted-foreground">
-                  Powered by useChat + StarciteChatTransport
+                  Powered by useChat + createStarciteChatTransport
                 </span>
               </PromptInputTools>
               <PromptInputSubmit disabled />
@@ -144,7 +145,7 @@ function ChatThread({
   transport,
 }: {
   sessionId: string;
-  transport: StarciteChatTransport;
+  transport: ChatTransport<UIMessage>;
 }) {
   const [input, setInput] = useState("");
   const { messages, sendMessage, status, stop } = useChat({
@@ -222,7 +223,7 @@ function ChatThread({
         <PromptInputFooter>
           <PromptInputTools>
             <span className="text-xs text-muted-foreground">
-              Powered by useChat + StarciteChatTransport
+              Powered by useChat + createStarciteChatTransport
             </span>
           </PromptInputTools>
           <PromptInputSubmit

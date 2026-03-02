@@ -1,13 +1,8 @@
 import { openai } from "@ai-sdk/openai";
-import {
-  convertToModelMessages,
-  readUIMessageStream,
-  streamText,
-  type UIMessage,
-  type UIMessageChunk,
-} from "ai";
+import { streamText } from "ai";
+import { toModelMessagesFromEvents } from "@starcite/ai-sdk-transport";
 import { decodeJwt } from "jose";
-import { Starcite, StarciteIdentity, type TailEvent } from "@starcite/sdk";
+import { Starcite, StarciteIdentity } from "@starcite/sdk";
 
 const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultModel = "gpt-4o-mini";
@@ -35,128 +30,6 @@ const identity = new StarciteIdentity({
 
 const sessions = new Set<string>();
 
-type HistoryMessage = Omit<UIMessage, "id">;
-
-interface HistoryMessageEntry {
-  seq: number;
-  message: HistoryMessage;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function toHistoryUserMessage(event: TailEvent): HistoryMessageEntry | undefined {
-  if (event.type !== userEventType) {
-    return undefined;
-  }
-
-  if (!isRecord(event.payload)) {
-    return undefined;
-  }
-
-  const parts = event.payload.parts;
-  if (!Array.isArray(parts)) {
-    return undefined;
-  }
-
-  return {
-    seq: event.seq,
-    message: {
-      role: "user",
-      parts: parts as UIMessage["parts"],
-    },
-  };
-}
-
-function toAssistantChunk(payload: unknown): UIMessageChunk | undefined {
-  if (!isRecord(payload)) {
-    return undefined;
-  }
-
-  if (typeof payload.type !== "string") {
-    return undefined;
-  }
-
-  return payload as UIMessageChunk;
-}
-
-function createChunkStream(
-  chunks: readonly UIMessageChunk[]
-): ReadableStream<UIMessageChunk> {
-  let index = 0;
-  return new ReadableStream<UIMessageChunk>({
-    pull(controller) {
-      if (index >= chunks.length) {
-        controller.close();
-        return;
-      }
-
-      controller.enqueue(chunks[index]);
-      index += 1;
-    },
-  });
-}
-
-async function buildConversationHistory(
-  events: readonly TailEvent[]
-): Promise<HistoryMessage[]> {
-  const historyEntries: HistoryMessageEntry[] = [];
-  const assistantChunks: UIMessageChunk[] = [];
-  const assistantMessageStartSeq = new Map<string, number>();
-
-  for (const event of events) {
-    const userMessage = toHistoryUserMessage(event);
-    if (userMessage) {
-      historyEntries.push(userMessage);
-      continue;
-    }
-
-    const assistantChunk = toAssistantChunk(event.payload);
-    if (!assistantChunk) {
-      continue;
-    }
-
-    assistantChunks.push(assistantChunk);
-
-    if (
-      assistantChunk.type === "start" &&
-      typeof assistantChunk.messageId === "string" &&
-      !assistantMessageStartSeq.has(assistantChunk.messageId)
-    ) {
-      assistantMessageStartSeq.set(assistantChunk.messageId, event.seq);
-    }
-  }
-
-  if (assistantChunks.length > 0) {
-    const assistantMessagesById = new Map<string, HistoryMessage>();
-    for await (const message of readUIMessageStream({
-      stream: createChunkStream(assistantChunks),
-      terminateOnError: false,
-    })) {
-      if (message.role !== "assistant") {
-        continue;
-      }
-
-      assistantMessagesById.set(message.id, {
-        role: "assistant",
-        parts: message.parts,
-        metadata: message.metadata,
-      });
-    }
-
-    for (const [messageId, message] of assistantMessagesById) {
-      historyEntries.push({
-        seq: assistantMessageStartSeq.get(messageId) ?? Number.MAX_SAFE_INTEGER,
-        message,
-      });
-    }
-  }
-
-  historyEntries.sort((left, right) => left.seq - right.seq);
-  return historyEntries.map((entry) => entry.message);
-}
-
 async function runSessionAgent(sessionId: string): Promise<void> {
   try {
     const session = await starcite.session({
@@ -168,19 +41,23 @@ async function runSessionAgent(sessionId: string): Promise<void> {
     session.on("event", async (event, context) => {
       try {
         if (context.replayed) {
+          // ignore replays because we've already processed them
           return;
         }
 
         if (event.type !== userEventType) {
+          // ignore our own events, otherwise we'll basically
+          // chatter to ourselves (fun)
           return;
         }
 
-        const history = await buildConversationHistory(session.getSnapshot().events);
-        if (history.length === 0) {
+        const messages = await toModelMessagesFromEvents(
+          session.getSnapshot().events
+        );
+        if (messages.length === 0) {
+          // nothing to do ..
           return;
         }
-
-        const messages = convertToModelMessages(history);
 
         const result = streamText({
           model: openai(process.env.OPENAI_MODEL || defaultModel),

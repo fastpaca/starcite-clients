@@ -49,10 +49,12 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
       throw new Error("sendMessages requires at least one message.");
     }
 
+    const { id: _id, ...payloadMessage } = message;
+
     const response = await this.session.append({
       type: "chat.user.message",
       source: "use-chat",
-      payload: { parts: message.parts },
+      payload: payloadMessage,
     });
 
     this.lastCursor = response.seq;
@@ -114,6 +116,6 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
 
 export function createStarciteChatTransport(
   options: StarciteChatTransportOptions
-): StarciteChatTransport {
+): ChatTransport<UIMessage> {
   return new StarciteChatTransport(options);
 }
