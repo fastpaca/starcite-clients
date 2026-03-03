@@ -194,6 +194,7 @@ describe("StarciteChatTransport", () => {
       payload: {
         kind: "chat.user.message",
         message: {
+          id: "msg_user",
           role: "user",
           parts: [{ type: "text", text: "Hello from UI" }],
         },

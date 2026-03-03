@@ -1,8 +1,8 @@
 import type { StarciteSession } from "@starcite/sdk";
 import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
 
-export type SendMessagesOptions = Parameters<
-  ChatTransport<UIMessage>["sendMessages"]
+export type SendMessagesOptions<T extends UIMessage = UIMessage> = Parameters<
+  ChatTransport<T>["sendMessages"]
 >[0];
 export type ReconnectToStreamOptions = Parameters<
   ChatTransport<UIMessage>["reconnectToStream"]

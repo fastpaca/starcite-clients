@@ -90,9 +90,7 @@ export default function Page() {
 
     void toUIMessagesFromEvents(events).then((msgs) => {
       if (cancelled) return;
-      setInitialMessages(
-        msgs.map((m, i) => ({ ...m, id: `history-${i}` }))
-      );
+      setInitialMessages(msgs);
     });
 
     return () => {

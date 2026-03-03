@@ -35,19 +35,7 @@ const chatPayloadEnvelopeSchema = z.discriminatedUnion("kind", [
   chatAssistantChunkEnvelopeSchema,
 ]);
 
-const chatEventSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal(chatUserMessageEventType),
-    payload: chatUserMessageEnvelopeSchema,
-  }),
-  z.object({
-    type: z.literal(chatAssistantChunkEventType),
-    payload: chatAssistantChunkEnvelopeSchema,
-  }),
-]);
-
 type ParsedChatPayloadEnvelope = z.infer<typeof chatPayloadEnvelopeSchema>;
-type ParsedChatEvent = z.infer<typeof chatEventSchema>;
 
 type SessionAppender = Pick<StarciteSession, "append">;
 
@@ -86,38 +74,15 @@ export function parseChatPayloadEnvelope(
   return parsed.data;
 }
 
-function parseChatEvent(event: {
-  type: string;
-  payload: unknown;
-}): ParsedChatEvent {
-  const parsed = chatEventSchema.safeParse(event);
-  if (!parsed.success) {
-    throw new Error(`Invalid chat event: ${parsed.error.message}`);
-  }
-
-  return parsed.data;
-}
-
-function toUserMessagePayload(
-  message: UIMessage | Omit<UIMessage, "id">
-): Omit<UIMessage, "id"> {
-  if ("id" in message) {
-    const { id: _id, ...payload } = message;
-    return payload;
-  }
-
-  return message;
-}
-
 export function appendUserMessageEvent(
   session: SessionAppender,
-  message: UIMessage | Omit<UIMessage, "id">,
+  message: UIMessage,
   options: { source?: string } = {}
 ) {
   return session.append({
     type: chatUserMessageEventType,
     source: options.source ?? "use-chat",
-    payload: createUserMessageEnvelope(toUserMessagePayload(message)),
+    payload: createUserMessageEnvelope(message),
   });
 }
 
@@ -161,7 +126,9 @@ function hasIncompleteGeneration(
   return false;
 }
 
-export class StarciteChatTransport implements ChatTransport<UIMessage> {
+export class StarciteChatTransport<T extends UIMessage = UIMessage>
+  implements ChatTransport<T>
+{
   private readonly session: StarciteSession;
   private lastCursor: number;
 
@@ -191,7 +158,7 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   }
 
   async sendMessages(
-    options: SendMessagesOptions
+    options: SendMessagesOptions<T>
   ): Promise<ReadableStream<ChatChunk>> {
     const message = options.messages.at(-1);
     if (!message) {
@@ -229,9 +196,9 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
 
       this.lastCursor = event.seq;
 
-      let parsed: ParsedChatEvent;
+      let envelope: ParsedChatPayloadEnvelope;
       try {
-        parsed = parseChatEvent(event);
+        envelope = parseChatPayloadEnvelope(event.payload);
       } catch (error) {
         controller.error(
           new Error(
@@ -242,21 +209,11 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
         return;
       }
 
-      if (parsed.type === chatUserMessageEventType) {
+      if (envelope.kind !== chatAssistantChunkEventType) {
         return;
       }
 
-      if (parsed.type !== chatAssistantChunkEventType) {
-        controller.error(
-          new Error(
-            `Unsupported chat event type at seq=${event.seq}: "${event.type}"`
-          )
-        );
-        this.teardown();
-        return;
-      }
-
-      const chunk = parsed.payload.chunk as ChatChunk;
+      const chunk = envelope.chunk as ChatChunk;
       this.generationInProgress = chunk.type !== "finish";
       controller.enqueue(chunk);
 
@@ -312,8 +269,8 @@ export class StarciteChatTransport implements ChatTransport<UIMessage> {
   }
 }
 
-export function createStarciteChatTransport(
+export function createStarciteChatTransport<T extends UIMessage = UIMessage>(
   options: StarciteChatTransportOptions
-): ChatTransport<UIMessage> {
-  return new StarciteChatTransport(options);
+): ChatTransport<T> {
+  return new StarciteChatTransport<T>(options);
 }
