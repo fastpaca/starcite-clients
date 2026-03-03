@@ -150,25 +150,44 @@ bun run starcite:compile
 
 This repo uses manual releases.
 
-1. Create release commit and tag:
+### One-command CLI publish
+
+Release the public CLI stack in one command (`@starcite/sdk`, all Bun binary packages, and the `starcite` launcher package):
+
+```bash
+bun run release:starcite -- --bump patch
+```
+
+Useful variants:
+
+```bash
+bun run release:starcite -- --bump minor
+bun run release:starcite -- --bump major
+bun run release:starcite -- --set-version 0.2.0
+bun run release:starcite:dry
+```
+
+The command:
+
+1. Optionally bumps version (`--bump` / `--set-version`)
+2. Runs SDK/CLI checks
+3. Builds the SDK, the JS fallback, and all compiled Bun binaries
+4. Publishes `@starcite/sdk` first
+5. Publishes platform binary packages
+6. Publishes `starcite` last
+
+### Optional Git tag workflow
+
+If you want a release commit + tag before publishing:
 
 ```bash
 bun run release:patch
-bun run release:minor
-bun run release:major
-```
-
-2. Push commit and tag:
-
-```bash
 git push origin main
 git push origin vX.Y.Z
 ```
 
-3. Publish manually:
+If `@starcite/react` changed in the same release, publish it separately:
 
 ```bash
-(cd packages/typescript-sdk && bun publish --access public)
 (cd packages/starcite-react && bun publish --access public)
-(cd packages/starcite-cli && bun publish --access public)
 ```

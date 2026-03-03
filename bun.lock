@@ -57,11 +57,11 @@
       "name": "starcite",
       "version": "0.0.7",
       "bin": {
-        "starcite": "./dist/index.js",
+        "starcite": "./bin/starcite.js",
       },
       "dependencies": {
         "@clack/prompts": "^1.0.1",
-        "@starcite/sdk": "^0.0.3",
+        "@starcite/sdk": "^0.0.7",
         "commander": "^13.1.0",
         "conf": "^15.1.0",
         "consola": "^3.4.2",
@@ -76,6 +76,64 @@
         "tsup": "^8.5.0",
         "typescript": "^5.8.3",
         "vitest": "^2.1.9",
+      },
+      "optionalDependencies": {
+        "@starcite/cli-darwin-arm64": "^0.0.7",
+        "@starcite/cli-darwin-x64": "^0.0.7",
+        "@starcite/cli-linux-arm64-gnu": "^0.0.7",
+        "@starcite/cli-linux-arm64-musl": "^0.0.7",
+        "@starcite/cli-linux-x64-gnu": "^0.0.7",
+        "@starcite/cli-linux-x64-musl": "^0.0.7",
+        "@starcite/cli-win32-x64": "^0.0.7",
+      },
+    },
+    "packages/starcite-cli-darwin-arm64": {
+      "name": "@starcite/cli-darwin-arm64",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-darwin-x64": {
+      "name": "@starcite/cli-darwin-x64",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-linux-arm64-gnu": {
+      "name": "@starcite/cli-linux-arm64-gnu",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-linux-arm64-musl": {
+      "name": "@starcite/cli-linux-arm64-musl",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-linux-x64-gnu": {
+      "name": "@starcite/cli-linux-x64-gnu",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-linux-x64-musl": {
+      "name": "@starcite/cli-linux-x64-musl",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite",
+      },
+    },
+    "packages/starcite-cli-win32-x64": {
+      "name": "@starcite/cli-win32-x64",
+      "version": "0.0.7",
+      "bin": {
+        "starcite": "./bin/starcite.exe",
       },
     },
     "packages/starcite-react": {
@@ -531,6 +589,20 @@
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.0.2", "", {}, "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@starcite/cli-darwin-arm64": ["@starcite/cli-darwin-arm64@workspace:packages/starcite-cli-darwin-arm64"],
+
+    "@starcite/cli-darwin-x64": ["@starcite/cli-darwin-x64@workspace:packages/starcite-cli-darwin-x64"],
+
+    "@starcite/cli-linux-arm64-gnu": ["@starcite/cli-linux-arm64-gnu@workspace:packages/starcite-cli-linux-arm64-gnu"],
+
+    "@starcite/cli-linux-arm64-musl": ["@starcite/cli-linux-arm64-musl@workspace:packages/starcite-cli-linux-arm64-musl"],
+
+    "@starcite/cli-linux-x64-gnu": ["@starcite/cli-linux-x64-gnu@workspace:packages/starcite-cli-linux-x64-gnu"],
+
+    "@starcite/cli-linux-x64-musl": ["@starcite/cli-linux-x64-musl@workspace:packages/starcite-cli-linux-x64-musl"],
+
+    "@starcite/cli-win32-x64": ["@starcite/cli-win32-x64@workspace:packages/starcite-cli-win32-x64"],
 
     "@starcite/nextjs-chat-ui-example": ["@starcite/nextjs-chat-ui-example@workspace:examples/nextjs-chat-ui"],
 
