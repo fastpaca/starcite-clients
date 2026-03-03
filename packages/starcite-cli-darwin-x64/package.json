@@ -1,0 +1,27 @@
+{
+  "name": "@starcite/cli-darwin-x64",
+  "version": "0.0.6",
+  "description": "Starcite CLI binary for darwin x64",
+  "license": "Apache-2.0",
+  "homepage": "https://starcite.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fastpaca/starcite-clients.git",
+    "directory": "packages/starcite-cli-darwin-x64"
+  },
+  "bugs": {
+    "url": "https://github.com/fastpaca/starcite-clients/issues"
+  },
+  "files": [
+    "bin"
+  ],
+  "bin": {
+    "starcite": "./bin/starcite"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ]
+}

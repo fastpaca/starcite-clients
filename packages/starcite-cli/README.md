@@ -31,6 +31,11 @@ Or with Bun:
 bunx starcite --help
 ```
 
+Install behavior:
+
+- npm installs a platform-matched prebuilt Bun binary package when available.
+- If no platform binary is available, the CLI falls back to the JS entrypoint.
+
 ## Requirements
 
 - Your Starcite API base URL (`https://<your-instance>.starcite.io`, or local/development URL)

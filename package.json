@@ -26,6 +26,10 @@
     "publish:dry": "bun run --workspaces --if-present publish:dry",
     "starcite": "bun run --cwd packages/starcite-cli dev",
     "starcite:compile": "bun run --cwd packages/starcite-cli compile",
+    "release:starcite": "node scripts/publish-starcite-cli.mjs",
+    "release:starcite:dry": "node scripts/publish-starcite-cli.mjs --dry-run",
+    "release:starcite-cli": "bun run release:starcite",
+    "release:starcite-cli:dry": "bun run release:starcite:dry",
     "lint:root": "ultracite check biome.jsonc package.json README.md scripts",
     "lint:workspaces": "bun run --workspaces --if-present lint",
     "format:root": "ultracite fix biome.jsonc package.json README.md scripts",
@@ -37,6 +41,13 @@
   "workspaces": [
     "packages/typescript-sdk",
     "packages/starcite-cli",
+    "packages/starcite-cli-darwin-arm64",
+    "packages/starcite-cli-darwin-x64",
+    "packages/starcite-cli-linux-x64-gnu",
+    "packages/starcite-cli-linux-x64-musl",
+    "packages/starcite-cli-linux-arm64-gnu",
+    "packages/starcite-cli-linux-arm64-musl",
+    "packages/starcite-cli-win32-x64",
     "packages/ai-sdk-transport",
     "examples/nextjs-chat-ui"
   ]

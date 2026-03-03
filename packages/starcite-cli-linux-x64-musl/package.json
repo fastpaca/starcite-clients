@@ -1,0 +1,30 @@
+{
+  "name": "@starcite/cli-linux-x64-musl",
+  "version": "0.0.6",
+  "description": "Starcite CLI binary for linux x64 (musl)",
+  "license": "Apache-2.0",
+  "homepage": "https://starcite.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fastpaca/starcite-clients.git",
+    "directory": "packages/starcite-cli-linux-x64-musl"
+  },
+  "bugs": {
+    "url": "https://github.com/fastpaca/starcite-clients/issues"
+  },
+  "files": [
+    "bin"
+  ],
+  "bin": {
+    "starcite": "./bin/starcite"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "musl"
+  ]
+}
