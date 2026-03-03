@@ -148,26 +148,39 @@ bun run starcite:compile
 
 This repo uses manual releases.
 
-1. Create release commit and tag:
+### One-command CLI publish
+
+Release all public Starcite packages in one command (`@starcite/sdk`, `@starcite/ai-sdk-transport`, all Bun binary packages, and `starcite` launcher package):
+
+```bash
+bun run release:starcite -- --bump patch
+```
+
+Useful variants:
+
+```bash
+bun run release:starcite -- --bump minor
+bun run release:starcite -- --bump major
+bun run release:starcite -- --set-version 0.2.0
+bun run release:starcite:dry
+```
+
+The command:
+
+1. Optionally bumps version (`--bump` / `--set-version`)
+2. Runs SDK/transport/CLI checks
+3. Builds SDK, transport package, JS fallback, and all compiled Bun binaries
+4. Publishes `@starcite/sdk` first
+5. Publishes `@starcite/ai-sdk-transport`
+6. Publishes platform binary packages
+7. Publishes `starcite` last
+
+### Optional Git tag workflow
+
+If you want a release commit + tag before publishing:
 
 ```bash
 bun run release:patch
-bun run release:minor
-bun run release:major
-```
-
-2. Push commit and tag:
-
-```bash
 git push origin main
 git push origin vX.Y.Z
 ```
-
-3. Publish via GitHub release:
-
-- Create GitHub release `vX.Y.Z`
-- `publish-npm.yml` publishes `@starcite/sdk` and `starcite` on `release.published`
-
-Required secret:
-
-- `NPM_TOKEN` (`Settings -> Secrets and variables -> Actions`)

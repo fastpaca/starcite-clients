@@ -21,16 +21,17 @@
   ],
   "type": "module",
   "bin": {
-    "starcite": "./dist/index.js"
+    "starcite": "./bin/starcite.js"
   },
   "files": [
+    "bin",
     "dist"
   ],
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsup",
     "dev": "bun run src/index.ts",
-    "compile": "bun run --cwd ../typescript-sdk build && bun build --compile src/index.ts --outfile dist/starcite",
+    "compile": "bun run --cwd ../typescript-sdk build && bun build --compile --minify src/index.ts --outfile dist/starcite",
     "test": "vitest run && bun run test:dist",
     "test:live": "vitest run test/live.api.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -40,6 +41,15 @@
     "lint": "ultracite check src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
     "format": "ultracite fix src test package.json tsconfig.json tsup.config.ts vitest.config.ts README.md",
     "check": "bun run lint && bun run typecheck && bun run test"
+  },
+  "optionalDependencies": {
+    "@starcite/cli-darwin-arm64": "^0.0.6",
+    "@starcite/cli-darwin-x64": "^0.0.6",
+    "@starcite/cli-linux-arm64-gnu": "^0.0.6",
+    "@starcite/cli-linux-arm64-musl": "^0.0.6",
+    "@starcite/cli-linux-x64-gnu": "^0.0.6",
+    "@starcite/cli-linux-x64-musl": "^0.0.6",
+    "@starcite/cli-win32-x64": "^0.0.6"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",

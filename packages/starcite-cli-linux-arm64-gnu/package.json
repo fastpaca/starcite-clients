@@ -1,0 +1,30 @@
+{
+  "name": "@starcite/cli-linux-arm64-gnu",
+  "version": "0.0.6",
+  "description": "Starcite CLI binary for linux arm64 (glibc)",
+  "license": "Apache-2.0",
+  "homepage": "https://starcite.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fastpaca/starcite-clients.git",
+    "directory": "packages/starcite-cli-linux-arm64-gnu"
+  },
+  "bugs": {
+    "url": "https://github.com/fastpaca/starcite-clients/issues"
+  },
+  "files": [
+    "bin"
+  ],
+  "bin": {
+    "starcite": "./bin/starcite"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

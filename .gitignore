@@ -16,6 +16,8 @@
 # production
 /build
 **/dist
+packages/starcite-cli-*/bin/starcite
+packages/starcite-cli-*/bin/starcite.exe
 
 # misc
 .DS_Store

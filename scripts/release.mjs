@@ -61,9 +61,8 @@ function main() {
   console.log("Next steps:");
   console.log("1. git push origin main");
   console.log(`2. git push origin ${tag}`);
-  console.log(
-    `3. Create a GitHub Release for ${tag} (this triggers npm publish).`
-  );
+  console.log("3. Publish SDK + public CLI packages:");
+  console.log("   bun run release:starcite");
 }
 
 main();
