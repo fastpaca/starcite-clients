@@ -845,33 +845,30 @@ class StarciteCliApp {
         try {
           let emitted = 0;
 
-          await session.tail(
-            (event) => {
-              if (options.limit !== undefined && emitted >= options.limit) {
-                abortController.abort();
-                return;
-              }
-
-              if (json) {
-                writeJsonOutput(stdout, event);
-              } else {
-                logger.info(formatTailEvent(event));
-              }
-
-              emitted += 1;
-
-              if (options.limit !== undefined && emitted >= options.limit) {
-                abortController.abort();
-              }
-            },
-            {
-              cursor: options.cursor ?? 0,
-              batchSize: DEFAULT_TAIL_BATCH_SIZE,
-              agent: options.agent,
-              follow: options.follow,
-              signal: abortController.signal,
+          for await (const { event } of session.tail({
+            cursor: options.cursor ?? 0,
+            batchSize: DEFAULT_TAIL_BATCH_SIZE,
+            agent: options.agent,
+            follow: options.follow,
+            signal: abortController.signal,
+          })) {
+            if (options.limit !== undefined && emitted >= options.limit) {
+              abortController.abort();
+              break;
             }
-          );
+
+            if (json) {
+              writeJsonOutput(stdout, event);
+            } else {
+              logger.info(formatTailEvent(event));
+            }
+
+            emitted += 1;
+
+            if (options.limit !== undefined && emitted >= options.limit) {
+              abortController.abort();
+            }
+          }
         } finally {
           process.removeListener("SIGINT", onSigint);
         }

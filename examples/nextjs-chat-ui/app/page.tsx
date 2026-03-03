@@ -1,12 +1,15 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
-import { Starcite } from "@starcite/sdk";
 import {
-  isReasoningUIPart,
+  createStarciteChatTransport,
+  toUIMessagesFromEvents,
+} from "@starcite/ai-sdk-transport";
+import { LocalStorageSessionStore, Starcite } from "@starcite/sdk";
+import {
   isTextUIPart,
   isToolOrDynamicToolUIPart,
+  type ChatTransport,
   type UIMessage,
 } from "ai";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
@@ -31,10 +34,9 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { defaultBaseUrl } from "@/lib/starcite-server";
 
-const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultSessionId = "nextjs-demo-session";
-const sessionIdCacheKey = "starcite:nextjs-chat-ui:session-id";
 
 async function fetchSessionToken(
   sessionId: string
@@ -45,46 +47,88 @@ async function fetchSessionToken(
     body: JSON.stringify({ sessionId }),
   });
 
+  if (!response.ok) {
+    throw new Error(`Session token request failed (${response.status}).`);
+  }
+
   return (await response.json()) as { token: string; sessionId: string };
 }
 
 export default function Page() {
   const [sessionId, setSessionId] = useState(defaultSessionId);
-  const [sessionIdInput, setSessionIdInput] = useState(defaultSessionId);
   const [token, setToken] = useState<string>();
+  const [sessionError, setSessionError] = useState<string>();
+  const [isConnecting, setIsConnecting] = useState(false);
 
-  useEffect(() => {
-    const cached = localStorage.getItem(sessionIdCacheKey);
-    if (cached) {
-      setSessionId(cached);
-      setSessionIdInput(cached);
-    }
-  }, []);
+  const [initialMessages, setInitialMessages] = useState<UIMessage[]>();
 
-  useEffect(() => {
-    localStorage.setItem(sessionIdCacheKey, sessionId);
-    fetchSessionToken(sessionId).then((nextSession) => {
-      setToken(nextSession.token);
-      if (nextSession.sessionId !== sessionId) {
-        setSessionId(nextSession.sessionId);
-        setSessionIdInput(nextSession.sessionId);
-      }
-    });
-  }, [sessionId]);
-
-  const transport = useMemo(() => {
+  const chat = useMemo(() => {
     if (!token) {
       return undefined;
     }
 
     const baseUrl = process.env.NEXT_PUBLIC_STARCITE_BASE_URL || defaultBaseUrl;
-    const session = new Starcite({ baseUrl }).session({ token });
-    return new StarciteChatTransport({ session });
+    const store = new LocalStorageSessionStore({
+      keyPrefix: "starcite:nextjs-chat-ui",
+    });
+    const session = new Starcite({ baseUrl, store }).session({ token });
+
+    return {
+      session,
+      transport: createStarciteChatTransport({ session }),
+    };
   }, [token]);
+
+  useEffect(() => {
+    if (!chat) {
+      setInitialMessages(undefined);
+      return () => {};
+    }
+
+    let cancelled = false;
+    const events = chat.session.state().events;
+
+    void toUIMessagesFromEvents(events).then((msgs) => {
+      if (cancelled) return;
+      setInitialMessages(msgs);
+    });
+
+    return () => {
+      cancelled = true;
+      chat.session.disconnect();
+    };
+  }, [chat]);
+
+  async function connectToSession(id: string): Promise<void> {
+    const normalizedId = id.trim();
+    if (normalizedId.length === 0) {
+      return;
+    }
+
+    setIsConnecting(true);
+    setSessionError(undefined);
+    setToken(undefined);
+
+    try {
+      const next = await fetchSessionToken(normalizedId);
+      setToken(next.token);
+      setSessionId(next.sessionId);
+    } catch (error) {
+      setSessionError(
+        error instanceof Error ? error.message : "Session initialization failed."
+      );
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
+  useEffect(() => {
+    void connectToSession(defaultSessionId);
+  }, []);
 
   function onSessionSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    setSessionId(sessionIdInput);
+    void connectToSession(sessionId);
   }
 
   return (
@@ -95,9 +139,9 @@ export default function Page() {
         </p>
         <form className="flex flex-col gap-2 sm:flex-row" onSubmit={onSessionSubmit}>
           <Input
-            onChange={(event) => setSessionIdInput(event.target.value)}
+            onChange={(event) => setSessionId(event.target.value)}
             placeholder="Session ID"
-            value={sessionIdInput}
+            value={sessionId}
           />
           <Button type="submit" variant="secondary">
             Use Session
@@ -106,58 +150,71 @@ export default function Page() {
         <p className="mt-2 text-xs text-muted-foreground">Active: {sessionId}</p>
       </header>
 
-      {transport && token ? (
-        <ChatThread sessionId={sessionId} transport={transport} />
+      {chat && initialMessages ? (
+        <ChatThread
+          initialMessages={initialMessages}
+          sessionId={sessionId}
+          transport={chat.transport}
+        />
       ) : (
-        <>
-          <section className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-card">
-            <Conversation className="h-full">
-              <ConversationContent>
-                <ConversationEmptyState
-                  description="Initializing session..."
-                  title="No messages yet"
-                />
-              </ConversationContent>
-              <ConversationScrollButton />
-            </Conversation>
-          </section>
-
-          <PromptInput className="rounded-xl border bg-card p-2" onSubmit={() => undefined}>
-            <PromptInputTextarea disabled placeholder="Initializing session..." />
-            <PromptInputFooter>
-              <PromptInputTools>
-                <span className="text-xs text-muted-foreground">
-                  Powered by useChat + StarciteChatTransport
-                </span>
-              </PromptInputTools>
-              <PromptInputSubmit disabled />
-            </PromptInputFooter>
-          </PromptInput>
-        </>
+        <DisconnectedState
+          description={sessionError ?? (isConnecting ? "Connecting..." : "Enter a session ID.")}
+        />
       )}
     </main>
   );
 }
 
+function DisconnectedState({ description }: { description: string }) {
+  return (
+    <>
+      <section className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-card">
+        <Conversation className="h-full">
+          <ConversationContent>
+            <ConversationEmptyState description={description} title="No messages yet" />
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
+      </section>
+
+      <PromptInput className="rounded-xl border bg-card p-2" onSubmit={() => undefined}>
+        <PromptInputTextarea disabled placeholder="Waiting for session..." />
+        <PromptInputFooter>
+          <PromptInputTools>
+            <span className="text-xs text-muted-foreground">
+              Powered by useChat + createStarciteChatTransport
+            </span>
+          </PromptInputTools>
+          <PromptInputSubmit disabled />
+        </PromptInputFooter>
+      </PromptInput>
+    </>
+  );
+}
+
 function ChatThread({
+  initialMessages,
   sessionId,
   transport,
 }: {
+  initialMessages: UIMessage[];
   sessionId: string;
-  transport: StarciteChatTransport;
+  transport: ChatTransport<UIMessage>;
 }) {
   const [input, setInput] = useState("");
   const { messages, sendMessage, status, stop } = useChat({
     id: sessionId,
+    messages: initialMessages,
+    resume: true,
     transport,
   });
-  const isBusy = status === "submitted" || status === "streaming";
 
   function onPromptSubmit(message: PromptInputMessage): void {
     const text = message.text.trim();
-    if (!text) {
+    if (text.length === 0) {
       return;
     }
+
     setInput("");
     void sendMessage({ text });
   }
@@ -173,30 +230,25 @@ function ChatThread({
                 title="No messages yet"
               />
             ) : (
-              messages.map((message) => (
-                <Message from={message.role} key={message.id}>
+              messages.map((message, messageIndex) => (
+                <Message from={message.role} key={`${message.id}-${messageIndex}`}>
                   <MessageContent>
                     {message.parts.map((part, index) => {
-                      const key = `${message.id}-${index}`;
+                      const key = `${message.id}-${messageIndex}-${index}`;
 
-                      if (isTextUIPart(part)) {
-                        return <MessageResponse key={key}>{part.text}</MessageResponse>;
-                      }
-
-                      if (isReasoningUIPart(part)) {
+                      if (isTextUIPart(part) || ("text" in part && part.type === "reasoning")) {
                         return (
-                          <MessageResponse key={key}>{part.text}</MessageResponse>
+                          <MessageResponse key={key}>
+                            {(part as { text: string }).text}
+                          </MessageResponse>
                         );
                       }
 
                       if (isToolOrDynamicToolUIPart(part)) {
                         return (
                           <MessageResponse key={key}>
-                            {part.errorText
-                              ? part.errorText
-                              : part.output
-                                ? JSON.stringify(part.output, null, 2)
-                                : JSON.stringify(part.input, null, 2)}
+                            {part.errorText ??
+                              JSON.stringify(part.output ?? part.input ?? {}, null, 2)}
                           </MessageResponse>
                         );
                       }
@@ -214,22 +266,17 @@ function ChatThread({
 
       <PromptInput className="rounded-xl border bg-card p-2" onSubmit={onPromptSubmit}>
         <PromptInputTextarea
-          disabled={isBusy}
-          onChange={(event) => setInput(event.currentTarget.value)}
-          placeholder="Ask something..."
+          onChange={(event) => setInput(event.target.value)}
+          placeholder="Ask a question..."
           value={input}
         />
         <PromptInputFooter>
           <PromptInputTools>
             <span className="text-xs text-muted-foreground">
-              Powered by useChat + StarciteChatTransport
+              Powered by useChat + createStarciteChatTransport
             </span>
           </PromptInputTools>
-          <PromptInputSubmit
-            disabled={status === "ready" && input.trim().length === 0}
-            onStop={stop}
-            status={status}
-          />
+          <PromptInputSubmit onStop={stop} status={status} />
         </PromptInputFooter>
       </PromptInput>
     </>

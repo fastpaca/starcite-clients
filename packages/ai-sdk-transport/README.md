@@ -16,7 +16,7 @@ npm install @starcite/ai-sdk-transport @starcite/sdk ai
 ```ts
 import { useChat } from "@ai-sdk/react";
 import { Starcite } from "@starcite/sdk";
-import { StarciteChatTransport } from "@starcite/ai-sdk-transport";
+import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
 
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
@@ -27,7 +27,7 @@ const starcite = new Starcite({
 const { token } = await getSessionTokenSomehow();
 const session = starcite.session({ token });
 
-const transport = new StarciteChatTransport({
+const transport = createStarciteChatTransport({
   session,
 });
 
@@ -36,42 +36,42 @@ const chat = useChat({
 });
 ```
 
-You can also use the factory function:
-
-```ts
-import { createStarciteChatTransport } from "@starcite/ai-sdk-transport";
-
-const transport = createStarciteChatTransport({ session });
-```
-
 ## Transport Behavior
 
 `sendMessages` appends one outgoing message with:
 
 - `type: "chat.user.message"`
 - `source: "use-chat"`
-- `payload: { parts: message.parts }`
+- `payload: { kind: "chat.user.message", message: Omit<UIMessage, "id"> }`
 
 Then it subscribes to the same session tail and forwards each event with
 `event.seq > cursor` as a `ReadableStream<ChatChunk>`.
 
-`reconnectToStream` replays from the last cursor only when a previous
-`sendMessages` call has established one; otherwise it returns `null`.
+`reconnectToStream` returns `null` when there is no in-progress generation
+(session events are empty or the last assistant chunk is a `finish`). When a
+generation was interrupted mid-stream it resumes from the last tracked cursor.
 
 ## Notes
 
-- Payloads are not transformed.
-- Incoming event payloads are passed directly into `useChat` as `UIMessageChunk`.
-- The backend should emit valid AI SDK chunks (including `finish`) in event payloads.
+- Payloads are wrapped in strict chat envelopes.
+- Incoming assistant events must carry:
+  - `{ kind: "chat.assistant.chunk", chunk: UIMessageChunk }`
+- `toUIMessagesFromEvents(...)` / `toModelMessagesFromEvents(...)` expect strict
+  envelope payloads and throw on invalid payloads.
+- Envelope, message, and chunk shapes are passthrough at runtime, so custom AI SDK
+  extensions are preserved.
 
 ## Exported Shapes
 
-- `StarciteChatTransport` class
 - `createStarciteChatTransport`
+- `appendUserMessageEvent`
+- `appendAssistantChunkEvent`
 - `StarciteChatTransportOptions`
 - `SendMessagesOptions`
 - `ReconnectToStreamOptions`
 - `ChatChunk`
+- `toUIMessagesFromEvents`
+- `toModelMessagesFromEvents`
 
 ## Example: factory with prebuilt session
 
@@ -89,10 +89,11 @@ Outgoing user append:
 
 Incoming assistant tail events:
 
-- Payloads are passed through directly to `useChat` as AI SDK `UIMessageChunk`.
-- No transport-level payload mapping or validation is applied.
+- Payloads must use `{ kind: "chat.assistant.chunk", chunk }` envelopes.
+- Transport validates the envelope and forwards `chunk` to `useChat`.
 
-Your backend should emit valid AI SDK chunks (including `finish`) in event payloads.
+Your backend should emit valid AI SDK chunks (including `finish`) wrapped in
+transport envelopes.
 
 ## Options
 

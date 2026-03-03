@@ -5,7 +5,6 @@ import {
   StarciteTokenExpiredError,
 } from "../../src/errors";
 import type {
-  SessionTailOptions,
   StarciteWebSocketCloseEvent,
   StarciteWebSocketEventMap,
   StarciteWebSocketMessageEvent,
@@ -133,44 +132,6 @@ async function waitForValues<T>(
   );
 }
 
-function startTail(
-  session: {
-    tail: (
-      onEvent: (event: TailEvent) => void | Promise<void>,
-      options?: SessionTailOptions
-    ) => Promise<void>;
-  },
-  options: SessionTailOptions = {}
-): { events: TailEvent[]; done: Promise<void> } {
-  const events: TailEvent[] = [];
-
-  return {
-    events,
-    done: session.tail((event) => {
-      events.push(event);
-    }, options),
-  };
-}
-
-function startTailBatches(
-  session: {
-    tailBatches: (
-      onBatch: (batch: TailEvent[]) => void | Promise<void>,
-      options?: SessionTailOptions
-    ) => Promise<void>;
-  },
-  options: SessionTailOptions = {}
-): { batches: TailEvent[][]; done: Promise<void> } {
-  const batches: TailEvent[][] = [];
-
-  return {
-    batches,
-    done: session.tailBatches((batch) => {
-      batches.push(batch);
-    }, options),
-  };
-}
-
 function base64UrlEncode(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let binary = "";
@@ -231,7 +192,13 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_access", "agent:planner"),
     });
 
-    const { events, done: tailDone } = startTail(session);
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail()) {
+        events.push(event);
+      }
+    })();
     await waitForSocketCount(1);
 
     const socket = FakeBrowserWebSocket.instances[0];
@@ -267,8 +234,18 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_multi", "agent:coordinator"),
     });
 
-    const plannerTail = startTail(session, { agent: "planner" });
-    const drafterTail = startTail(session, { agent: "drafter" });
+    const plannerEvents: TailEvent[] = [];
+    const plannerDone = (async () => {
+      for await (const { event } of session.tail({ agent: "planner" })) {
+        plannerEvents.push(event);
+      }
+    })();
+    const drafterEvents: TailEvent[] = [];
+    const drafterDone = (async () => {
+      for await (const { event } of session.tail({ agent: "drafter" })) {
+        drafterEvents.push(event);
+      }
+    })();
 
     await waitForSocketCount(2);
     const plannerSocket = FakeBrowserWebSocket.instances[0];
@@ -296,21 +273,21 @@ describe("Browser Multi-Agent Workflows", () => {
     plannerSocket?.emitMessage(mixedFrame);
     drafterSocket?.emitMessage(mixedFrame);
 
-    await waitForValues(plannerTail.events, 1);
-    await waitForValues(drafterTail.events, 1);
-    expect(plannerTail.events[0]).toMatchObject({
+    await waitForValues(plannerEvents, 1);
+    await waitForValues(drafterEvents, 1);
+    expect(plannerEvents[0]).toMatchObject({
       seq: 1,
       actor: "agent:planner",
     });
-    expect(drafterTail.events[0]).toMatchObject({
+    expect(drafterEvents[0]).toMatchObject({
       seq: 2,
       actor: "agent:drafter",
     });
 
     plannerSocket?.emitClose({ code: 1000, reason: "planner done" });
     drafterSocket?.emitClose({ code: 1000, reason: "drafter done" });
-    await expect(plannerTail.done).resolves.toBeUndefined();
-    await expect(drafterTail.done).resolves.toBeUndefined();
+    await expect(plannerDone).resolves.toBeUndefined();
+    await expect(drafterDone).resolves.toBeUndefined();
   });
 
   it("replays retained events to late browser subscribers without opening extra sockets", async () => {
@@ -427,7 +404,7 @@ describe("Browser Multi-Agent Workflows", () => {
     });
     const session = starcite.session({ token: sessionToken });
 
-    const { done: tailDone } = startTail(session);
+    const tailDone = Array.fromAsync(session.tail());
     await waitForCondition(
       () => sockets.length >= 1,
       "Timed out waiting for explicit access_token websocket socket"
@@ -437,7 +414,7 @@ describe("Browser Multi-Agent Workflows", () => {
     expect(socket?.url).toContain("access_token=");
 
     socket?.emitClose({ code: 1000, reason: "done" });
-    await expect(tailDone).resolves.toBeUndefined();
+    await expect(tailDone).resolves.toEqual([]);
   });
 
   it("reconnects browser tails and resumes from the latest observed cursor", async () => {
@@ -449,13 +426,19 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_reconnect", "agent:planner"),
     });
 
-    const { events, done: tailDone } = startTail(session, {
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 1,
-      },
-    });
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 1,
+        },
+      })) {
+        events.push(event);
+      }
+    })();
     await waitForSocketCount(1);
     const firstSocket = FakeBrowserWebSocket.instances[0];
 
@@ -503,7 +486,7 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_expired", "agent:planner"),
     });
 
-    const { done: tailDone } = startTail(session);
+    const tailDone = Array.fromAsync(session.tail());
     await waitForSocketCount(1);
 
     const socket = FakeBrowserWebSocket.instances[0];
@@ -530,14 +513,16 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_connect_retry_limit", "agent:planner"),
     });
 
-    const { done: tailDone } = startTail(session, {
-      reconnect: true,
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 0,
-      },
-    });
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+      })
+    );
 
     const error = await tailDone.catch((failure) => failure);
     expect(error).toBeInstanceOf(StarciteRetryLimitError);
@@ -554,14 +539,16 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_drop_retry_limit", "agent:planner"),
     });
 
-    const { done: tailDone } = startTail(session, {
-      reconnect: true,
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 0,
-      },
-    });
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+      })
+    );
 
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
@@ -583,14 +570,16 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_error_then_close", "agent:planner"),
     });
 
-    const { done: tailDone } = startTail(session, {
-      reconnect: true,
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 0,
-      },
-    });
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+      })
+    );
 
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
@@ -618,12 +607,14 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_lifecycle", "agent:planner"),
     });
 
-    const { done: tailDone } = startTail(session, {
-      reconnect: false,
-      onLifecycleEvent: () => {
-        throw new Error("lifecycle observer failed");
-      },
-    });
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: false,
+        onLifecycleEvent: () => {
+          throw new Error("lifecycle observer failed");
+        },
+      })
+    );
 
     await expect(tailDone).rejects.toThrow("lifecycle observer failed");
     expect(sockets).toHaveLength(0);
@@ -638,22 +629,32 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_isolated", "agent:coordinator"),
     });
 
-    const plannerTail = startTail(session, {
-      agent: "planner",
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 1,
-      },
-    });
-    const drafterTail = startTail(session, {
-      agent: "drafter",
-      reconnectPolicy: {
-        mode: "fixed",
-        initialDelayMs: 0,
-        maxAttempts: 1,
-      },
-    });
+    const plannerEvents: TailEvent[] = [];
+    const plannerDone = (async () => {
+      for await (const { event } of session.tail({
+        agent: "planner",
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 1,
+        },
+      })) {
+        plannerEvents.push(event);
+      }
+    })();
+    const drafterEvents: TailEvent[] = [];
+    const drafterDone = (async () => {
+      for await (const { event } of session.tail({
+        agent: "drafter",
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 1,
+        },
+      })) {
+        drafterEvents.push(event);
+      }
+    })();
     await waitForSocketCount(2);
 
     const plannerSocket = FakeBrowserWebSocket.instances[0];
@@ -680,13 +681,13 @@ describe("Browser Multi-Agent Workflows", () => {
       })
     );
 
-    await waitForValues(plannerTail.events, 1);
-    await waitForValues(drafterTail.events, 1);
-    expect(plannerTail.events[0]).toMatchObject({
+    await waitForValues(plannerEvents, 1);
+    await waitForValues(drafterEvents, 1);
+    expect(plannerEvents[0]).toMatchObject({
       seq: 1,
       actor: "agent:planner",
     });
-    expect(drafterTail.events[0]).toMatchObject({
+    expect(drafterEvents[0]).toMatchObject({
       seq: 2,
       actor: "agent:drafter",
     });
@@ -706,8 +707,8 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 2,
       })
     );
-    await waitForValues(drafterTail.events, 2);
-    expect(drafterTail.events[1]).toMatchObject({
+    await waitForValues(drafterEvents, 2);
+    expect(drafterEvents[1]).toMatchObject({
       seq: 3,
       actor: "agent:drafter",
     });
@@ -722,17 +723,17 @@ describe("Browser Multi-Agent Workflows", () => {
         producer_seq: 2,
       })
     );
-    await waitForValues(plannerTail.events, 2);
-    expect(plannerTail.events[1]).toMatchObject({
+    await waitForValues(plannerEvents, 2);
+    expect(plannerEvents[1]).toMatchObject({
       seq: 4,
       actor: "agent:planner",
     });
 
     plannerReconnectSocket?.emitClose({ code: 1000, reason: "planner done" });
-    await expect(plannerTail.done).resolves.toBeUndefined();
+    await expect(plannerDone).resolves.toBeUndefined();
 
     drafterSocket?.emitClose({ code: 1000, reason: "drafter done" });
-    await expect(drafterTail.done).resolves.toBeUndefined();
+    await expect(drafterDone).resolves.toBeUndefined();
   });
 
   it("keeps browser live-sync isolated across concurrent sessions", async () => {
@@ -791,12 +792,12 @@ describe("Browser Multi-Agent Workflows", () => {
       () => plannerSeqs.length === 1 && drafterSeqs.length === 1,
       "Timed out waiting for initial isolated live-sync frames"
     );
-    expect(
-      plannerSession.getSnapshot().events.map((event) => event.seq)
-    ).toEqual([1]);
-    expect(
-      drafterSession.getSnapshot().events.map((event) => event.seq)
-    ).toEqual([1]);
+    expect(plannerSession.state().events.map((event) => event.seq)).toEqual([
+      1,
+    ]);
+    expect(drafterSession.state().events.map((event) => event.seq)).toEqual([
+      1,
+    ]);
 
     plannerSession.disconnect();
     await waitForCondition(
@@ -894,9 +895,7 @@ describe("Browser Multi-Agent Workflows", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(observedSeqs).toEqual([1, 2, 3]);
-    expect(session.getSnapshot().events.map((event) => event.seq)).toEqual([
-      1, 2, 3,
-    ]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1, 2, 3]);
 
     session.disconnect();
   });
@@ -964,7 +963,13 @@ describe("Browser Multi-Agent Workflows", () => {
     });
     const session = starcite.session({ token: sessionToken });
 
-    const { events, done: tailDone } = startTail(session);
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail()) {
+        events.push(event);
+      }
+    })();
     await waitForCondition(
       () => sockets.length >= 1,
       "Timed out waiting for custom websocket factory call"
@@ -1051,7 +1056,7 @@ describe("Browser Multi-Agent Workflows", () => {
     expect(drafterBody.producer_seq).toBe(1);
   });
 
-  it("preserves batch framing in browser tailBatches with agent filtering", async () => {
+  it("supports batchSize framing controls in browser tail with agent filtering", async () => {
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -1060,10 +1065,16 @@ describe("Browser Multi-Agent Workflows", () => {
       token: makeTailSessionToken("ses_batches", "agent:coordinator"),
     });
 
-    const { batches, done: tailDone } = startTailBatches(session, {
-      agent: "planner",
-      batchSize: 2,
-    });
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        agent: "planner",
+        batchSize: 2,
+      })) {
+        events.push(event);
+      }
+    })();
     await waitForSocketCount(1);
     const socket = FakeBrowserWebSocket.instances[0];
     expect(socket?.url).toContain("batch_size=2");
@@ -1089,8 +1100,8 @@ describe("Browser Multi-Agent Workflows", () => {
       ])
     );
 
-    await waitForValues(batches, 1);
-    expect(batches[0]).toMatchObject([{ seq: 1, actor: "agent:planner" }]);
+    await waitForValues(events, 1);
+    expect(events[0]).toMatchObject({ seq: 1, actor: "agent:planner" });
 
     socket?.emitClose({ code: 1000, reason: "done" });
     await expect(tailDone).resolves.toBeUndefined();

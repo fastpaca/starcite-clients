@@ -10,11 +10,8 @@
 - Automatic bearer auth header on HTTP API requests
 - Tail reconnect controls: `reconnect` and `reconnectPolicy`
 - Tail frame batching support via `tail({ batchSize })` (`1..1000`)
-- Batch ingestion API: `tailBatches(onBatch, options?)`
 - Tail backpressure guardrails via `tail({ maxBufferedBatches })` to fail fast under sustained consumer lag
-- Durable stream consumption API: `session.consume(...)` with cursor-store checkpointing
-- New `SessionCursorStore` / consume option types for restart-safe event processing
-- Built-in cursor stores: `InMemoryCursorStore`, `WebStorageCursorStore`, and `LocalStorageCursorStore`
+- Built-in session stores: `MemoryStore`, `WebStorageSessionStore`, and `LocalStorageSessionStore`
 - `StarciteTailError` with structured tail failure context (`stage`, `sessionId`, `attempts`, close metadata)
 - `tail({ onLifecycleEvent })` hook for structured connect/reconnect/drop/end stream events
 
@@ -25,3 +22,6 @@
 - `tail()` now auto-recovers from abnormal disconnects and resumes from the last observed sequence
 - Tail streams now accept both single-event and batched WebSocket frame shapes
 - Internal tail transport loop is split into a single-connection runner plus reconnect orchestrator for clearer failure-state reasoning
+- BREAKING: removed `session.consume(...)` and cursor-store APIs (`SessionCursorStore`, `InMemoryCursorStore`, `WebStorageCursorStore`, `LocalStorageCursorStore`)
+- BREAKING: removed `session.tailBatches(...)`; `session.tail(options)` is now the single explicit streaming API and returns an async iterator
+- BREAKING: `Starcite` no longer defaults to an implicit in-memory store when `store` is omitted

@@ -160,7 +160,7 @@ export class SessionLog {
     return true;
   }
 
-  getSnapshot(syncing: boolean): SessionSnapshot {
+  state(syncing: boolean): SessionSnapshot {
     return {
       events: this.history.slice(),
       lastSeq: this.appliedSeq,

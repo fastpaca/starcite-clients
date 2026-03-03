@@ -5,8 +5,15 @@ import {
   type StarciteWebSocket,
 } from "@starcite/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { StarciteChatTransport } from "../src/transport";
+import {
+  createAssistantChunkEnvelope,
+  createUserMessageEnvelope,
+  StarciteChatTransport,
+} from "../src/transport";
 import type { ChatChunk } from "../src/types";
+
+const chatUserMessageEventType = "chat.user.message";
+const chatAssistantChunkEventType = "chat.assistant.chunk";
 
 class FakeWebSocket implements StarciteWebSocket {
   readonly url: string;
@@ -86,12 +93,13 @@ async function waitForSocketCount(
 
 function tailEvent(
   seq: number,
-  payload: Record<string, unknown>,
+  type: string,
+  payload: unknown,
   actor = "agent:assistant"
 ): string {
   return JSON.stringify({
     seq,
-    type: "content",
+    type,
     payload,
     actor,
     producer_id: `producer:${actor.split(":")[1]}`,
@@ -183,7 +191,14 @@ describe("StarciteChatTransport", () => {
     );
     expect(appendBody).toMatchObject({
       type: "chat.user.message",
-      payload: { parts: [{ type: "text", text: "Hello from UI" }] },
+      payload: {
+        kind: "chat.user.message",
+        message: {
+          id: "msg_user",
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        },
+      },
       source: "use-chat",
     });
 
@@ -194,13 +209,35 @@ describe("StarciteChatTransport", () => {
 
     // User's own event at seq=1 is skipped (seq <= cursor)
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "Hello from UI" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Hello from UI" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "start", messageId: "assistant_1" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_1",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(3, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     const chunks = await chunksPromise;
@@ -208,6 +245,9 @@ describe("StarciteChatTransport", () => {
       { type: "start", messageId: "assistant_1" },
       { type: "finish", finishReason: "stop" },
     ]);
+
+    transport.dispose();
+    session.disconnect();
   });
 
   it("forwards AI SDK chunks from tail payload when payload already matches schema", async () => {
@@ -241,26 +281,66 @@ describe("StarciteChatTransport", () => {
     const chunksPromise = collectChunks(stream);
 
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "Q" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Q" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "start", messageId: "m_assistant" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(3, { type: "text-start", id: "p_assistant" }),
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "p_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(4, {
-        type: "text-delta",
-        id: "p_assistant",
-        delta: "schema native",
-      }),
+      data: tailEvent(
+        4,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "p_assistant",
+          delta: "schema native",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(5, { type: "text-end", id: "p_assistant" }),
+      data: tailEvent(
+        5,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-end",
+          id: "p_assistant",
+        })
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(6, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        6,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     await expect(chunksPromise).resolves.toEqual([
@@ -270,10 +350,14 @@ describe("StarciteChatTransport", () => {
       { type: "text-end", id: "p_assistant" },
       { type: "finish", finishReason: "stop" },
     ]);
+
+    transport.dispose();
+    session.disconnect();
   });
 
-  it("reconnects using the last tracked cursor", async () => {
+  it("subscription survives finish — second sendMessages reuses connection", async () => {
     mockAppendResponse(1);
+    mockAppendResponse(3);
 
     const sockets: FakeWebSocket[] = [];
     const session = createTestSession({
@@ -288,7 +372,7 @@ describe("StarciteChatTransport", () => {
 
     const transport = new StarciteChatTransport({ session });
 
-    const stream = await transport.sendMessages({
+    const stream1 = await transport.sendMessages({
       chatId: "ses_ai",
       trigger: "submit-message",
       messageId: undefined,
@@ -301,56 +385,94 @@ describe("StarciteChatTransport", () => {
     await waitForSocketCount(sockets, 1);
     sockets[0]?.emit("open", undefined);
 
-    const firstChunksPromise = collectChunks(stream);
+    const firstChunksPromise = collectChunks(stream1);
 
     sockets[0]?.emit("message", {
-      data: tailEvent(1, { text: "first" }, "agent:user"),
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "first" }],
+        }),
+        "agent:user"
+      ),
     });
     sockets[0]?.emit("message", {
-      data: tailEvent(2, { type: "finish", finishReason: "stop" }),
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
     await expect(firstChunksPromise).resolves.toEqual([
       { type: "finish", finishReason: "stop" },
     ]);
 
-    // Allow the session's live sync promise chain to fully settle
-    // before reconnecting (liveSyncTask clears in .finally()).
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    const reconnectStream = await transport.reconnectToStream({
+    // Second sendMessages should work — subscription stays alive after finish.
+    const stream2 = await transport.sendMessages({
       chatId: "ses_ai",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+      ],
     });
 
-    expect(reconnectStream).not.toBeNull();
-    if (reconnectStream === null) {
-      throw new Error("Expected reconnect stream after sendMessages");
-    }
+    // No new websocket should have been opened.
+    expect(sockets).toHaveLength(1);
 
-    await waitForSocketCount(sockets, 2);
-    sockets[1]?.emit("open", undefined);
-    expect(sockets[1]?.url).toBe(
-      "ws://localhost:4000/v1/sessions/ses_ai/tail?cursor=2&access_token=test-token"
-    );
+    const secondChunksPromise = collectChunks(stream2);
 
-    const reconnectChunksPromise = collectChunks(reconnectStream);
-
-    sockets[1]?.emit("message", {
-      data: tailEvent(3, { type: "start", messageId: "m_reconnect" }),
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        3,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "second" }],
+        }),
+        "agent:user"
+      ),
     });
-    sockets[1]?.emit("message", {
-      data: tailEvent(4, { type: "finish", finishReason: "stop" }),
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        4,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_second",
+        })
+      ),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        5,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
     });
 
-    await expect(reconnectChunksPromise).resolves.toEqual([
-      { type: "start", messageId: "m_reconnect" },
+    await expect(secondChunksPromise).resolves.toEqual([
+      { type: "start", messageId: "m_second" },
       { type: "finish", finishReason: "stop" },
     ]);
+
+    transport.dispose();
+    session.disconnect();
   });
 
-  it("returns null on reconnect when no messages have been sent", async () => {
+  it("returns null from reconnectToStream when session has no events", async () => {
     const session = createTestSession({
-      id: "ses_unknown",
+      id: "ses_empty",
       fetchFn: fetchMock,
       websocketFactory: (url: string) => new FakeWebSocket(url),
     });
@@ -358,7 +480,259 @@ describe("StarciteChatTransport", () => {
     const transport = new StarciteChatTransport({ session });
 
     await expect(
-      transport.reconnectToStream({ chatId: "ses_unknown" })
+      transport.reconnectToStream({ chatId: "ses_empty" })
     ).resolves.toBeNull();
+  });
+
+  it("returns null from reconnectToStream when last assistant chunk is finish", async () => {
+    mockAppendResponse(1);
+
+    const sockets: FakeWebSocket[] = [];
+    const session = createTestSession({
+      id: "ses_finished",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({ session });
+
+    const stream = await transport.sendMessages({
+      chatId: "ses_finished",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "Hi" }] },
+      ],
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
+    const chunksPromise = collectChunks(stream);
+
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Hi" }],
+        }),
+        "agent:user"
+      ),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_done",
+        })
+      ),
+    });
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
+    });
+
+    await chunksPromise;
+    transport.dispose();
+    session.disconnect();
+
+    await expect(
+      transport.reconnectToStream({ chatId: "ses_finished" })
+    ).resolves.toBeNull();
+  });
+
+  it("reconnectToStream returns a stream for incomplete generation", async () => {
+    mockAppendResponse(1);
+
+    const sockets: FakeWebSocket[] = [];
+    const session = createTestSession({
+      id: "ses_partial",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({ session });
+
+    const stream = await transport.sendMessages({
+      chatId: "ses_partial",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "Hi" }] },
+      ],
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Hi" }],
+        }),
+        "agent:user"
+      ),
+    });
+    // Emit a start chunk but no finish — generation is still in progress.
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_in_progress",
+        })
+      ),
+    });
+
+    // Wait for the start chunk to arrive at the transport's controller.
+    // This ensures the session's async pipeline has propagated the event.
+    const reader = stream.getReader();
+    const firstChunk = await reader.read();
+    expect(firstChunk.value).toMatchObject({ type: "start" });
+    reader.releaseLock();
+
+    // reconnectToStream sees the incomplete generation and returns a stream.
+    // (This also closes the first stream via streamResponse.)
+    const reconnectStream = await transport.reconnectToStream({
+      chatId: "ses_partial",
+    });
+    expect(reconnectStream).not.toBeNull();
+
+    if (reconnectStream === null) {
+      throw new Error("Expected non-null reconnect stream");
+    }
+    const reconnectChunksPromise = collectChunks(reconnectStream);
+
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        3,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      ),
+    });
+
+    await expect(reconnectChunksPromise).resolves.toEqual([
+      { type: "finish", finishReason: "stop" },
+    ]);
+
+    transport.dispose();
+    session.disconnect();
+  });
+
+  it("closes the reconnect stream when sendMessages is called", async () => {
+    mockAppendResponse(1);
+    mockAppendResponse(3);
+
+    const sockets: FakeWebSocket[] = [];
+    const session = createTestSession({
+      id: "ses_cancel",
+      fetchFn: fetchMock,
+      websocketFactory: (url: string) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const transport = new StarciteChatTransport({ session });
+
+    // First send a message and leave the generation incomplete.
+    const stream = await transport.sendMessages({
+      chatId: "ses_cancel",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "Hi" }] },
+      ],
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("open", undefined);
+
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        1,
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          role: "user",
+          parts: [{ type: "text", text: "Hi" }],
+        }),
+        "agent:user"
+      ),
+    });
+    // Emit start but no finish — incomplete generation.
+    sockets[0]?.emit("message", {
+      data: tailEvent(
+        2,
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "m_in_progress",
+        })
+      ),
+    });
+
+    // Wait for the start chunk to arrive at the transport's controller.
+    const reader = stream.getReader();
+    const firstChunk = await reader.read();
+    expect(firstChunk.value).toMatchObject({ type: "start" });
+    reader.releaseLock();
+
+    // reconnectToStream returns a stream (incomplete generation).
+    // This also closes the first stream internally.
+    const reconnectStream = await transport.reconnectToStream({
+      chatId: "ses_cancel",
+    });
+    expect(reconnectStream).not.toBeNull();
+
+    if (reconnectStream === null) {
+      throw new Error("Expected non-null reconnect stream");
+    }
+    const reconnectReader = reconnectStream.getReader();
+
+    // Calling sendMessages should close the reconnect stream.
+    await transport.sendMessages({
+      chatId: "ses_cancel",
+      trigger: "submit-message",
+      messageId: undefined,
+      abortSignal: undefined,
+      messages: [
+        { id: "m2", role: "user", parts: [{ type: "text", text: "Bye" }] },
+      ],
+    });
+
+    const reconnectResult = await reconnectReader.read();
+    expect(reconnectResult.done).toBe(true);
+
+    transport.dispose();
+    session.disconnect();
   });
 });

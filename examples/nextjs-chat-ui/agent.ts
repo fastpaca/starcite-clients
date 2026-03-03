@@ -1,26 +1,17 @@
 import { openai } from "@ai-sdk/openai";
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import {
+  appendAssistantChunkEvent,
+  toModelMessagesFromEvents,
+} from "@starcite/ai-sdk-transport";
+import { StarciteIdentity } from "@starcite/sdk";
+import { streamText } from "ai";
 import { decodeJwt } from "jose";
-import { Starcite, StarciteIdentity } from "@starcite/sdk";
+import { getApiKey, getServerStarcite } from "@/lib/starcite-server";
 
-const defaultBaseUrl = "https://anor-ai.starcite.io";
 const defaultModel = "gpt-4o-mini";
-const userEventType = "chat.user.message";
+const userMessageEventType = "chat.user.message";
 
-interface AgentClaims {
-  tenant_id?: string;
-}
-
-function getApiKey(): string {
-  return process.env.STARCITE_API_KEY ?? process.env.STARCITE_API_TOKEN ?? "";
-}
-
-const apiKey = getApiKey();
-const claims = decodeJwt(apiKey) as AgentClaims;
-const starcite = new Starcite({
-  apiKey,
-  baseUrl: process.env.STARCITE_BASE_URL || defaultBaseUrl,
-});
+const claims = decodeJwt(getApiKey()) as { tenant_id?: string };
 const identity = new StarciteIdentity({
   tenantId: claims.tenant_id!,
   id: process.env.STARCITE_AGENT_ID || "nextjs-demo-agent",
@@ -31,29 +22,30 @@ const sessions = new Set<string>();
 
 async function runSessionAgent(sessionId: string): Promise<void> {
   try {
-    const session = await starcite.session({
+    const session = await getServerStarcite().session({
       identity,
       id: sessionId,
       title: "Next.js demo chat",
     });
 
-    session.on("event", async (event) => {
+    session.on("event", async (event, context) => {
       try {
-        if (event.type !== userEventType) {
+        if (context.replayed) {
+          // ignore replays because we've already processed them
           return;
         }
 
-        const parts = event.payload.parts;
-        if (!Array.isArray(parts)) {
+        if (event.type !== userMessageEventType) {
+          // ignore our own events, otherwise we'll basically
+          // chatter to ourselves (fun)
           return;
         }
 
-        const messages = convertToModelMessages([
-          {
-            role: "user",
-            parts: parts as UIMessage["parts"],
-          },
-        ]);
+        const messages = await toModelMessagesFromEvents(session.events());
+        if (messages.length === 0) {
+          // nothing to do ..
+          return;
+        }
 
         const result = streamText({
           model: openai(process.env.OPENAI_MODEL || defaultModel),
@@ -62,10 +54,7 @@ async function runSessionAgent(sessionId: string): Promise<void> {
         });
 
         for await (const chunk of result.toUIMessageStream()) {
-          await session.append({
-            source: "openai",
-            payload: chunk,
-          });
+          await appendAssistantChunkEvent(session, chunk, { source: "openai" });
         }
       } catch (error) {
         console.error("nextjs-chat-ui agent event handler failed", error);

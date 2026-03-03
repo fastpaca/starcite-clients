@@ -6,7 +6,6 @@ import {
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
-import { MemoryStore } from "./session-store";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
@@ -73,7 +72,7 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredIdentity?: StarciteIdentity;
-  private readonly store: SessionStore;
+  private readonly store: SessionStore | undefined;
 
   constructor(options: StarciteOptions = {}) {
     const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -96,7 +95,7 @@ export class Starcite {
 
     const websocketFactory =
       options.websocketFactory ?? defaultWebSocketFactory;
-    this.store = options.store ?? new MemoryStore();
+    this.store = options.store;
 
     this.transport = {
       baseUrl,
