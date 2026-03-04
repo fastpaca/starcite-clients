@@ -165,11 +165,10 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
-3. Publish via GitHub release:
+3. Publish manually:
 
-- Create GitHub release `vX.Y.Z`
-- `publish-npm.yml` publishes `@starcite/sdk`, `@starcite/react`, and `starcite` on `release.published`
-
-Required secret:
-
-- `NPM_TOKEN` (`Settings -> Secrets and variables -> Actions`)
+```bash
+(cd packages/typescript-sdk && bun publish --access public)
+(cd packages/starcite-react && bun publish --access public)
+(cd packages/starcite-cli && bun publish --access public)
+```

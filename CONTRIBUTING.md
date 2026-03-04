@@ -33,7 +33,7 @@ bun run check
 
 ## Releasing
 
-Release and publish are tag-driven from GitHub Actions.
+Release commit/tag creation is scripted, and publishing is manual.
 
 ```bash
 bun run release:patch
@@ -41,6 +41,8 @@ bun run release:patch
 
 git push origin main
 git push origin vX.Y.Z
-```
 
-Then publish from a GitHub Release for that tag (`vX.Y.Z`).
+(cd packages/typescript-sdk && bun publish --access public)
+(cd packages/starcite-react && bun publish --access public)
+(cd packages/starcite-cli && bun publish --access public)
+```

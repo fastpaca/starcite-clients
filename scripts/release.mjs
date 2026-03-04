@@ -57,13 +57,17 @@ function main() {
   run(`git tag ${tag}`);
 
   console.log("");
-  console.log(`Release commit and tag created for ${tag}.`);
+  console.log("Publishing packages from local shell...");
+  run("bun publish --access public", { cwd: "packages/typescript-sdk" });
+  run("bun publish --access public", { cwd: "packages/starcite-react" });
+  run("bun publish --access public", { cwd: "packages/starcite-cli" });
+
+  console.log("");
+  console.log(`Release complete for ${tag}.`);
   console.log("Next steps:");
-  console.log("1. git push origin main");
-  console.log(`2. git push origin ${tag}`);
-  console.log(
-    `3. Create a GitHub Release for ${tag} (this triggers npm publish).`
-  );
+  console.log("1. Verify published versions on npm");
+  console.log("2. git push origin main");
+  console.log(`3. git push origin ${tag}`);
 }
 
 main();
