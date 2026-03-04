@@ -17,6 +17,7 @@ Detailed package docs:
 - SDK guide: `packages/typescript-sdk/README.md`
 - React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
+- Reliability matrix: `docs/reliability-failure-modes.md`
 
 ## Public SDK Surface
 
@@ -137,6 +138,8 @@ bun run build
 bun run lint
 bun run typecheck
 bun run test
+bun run bench
+bun run perf:check
 ```
 
 Build a standalone CLI binary:

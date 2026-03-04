@@ -431,4 +431,232 @@ describe("useStarciteChat", () => {
 
     expect(result.current.status).toBe("ready");
   });
+
+  it("catches up replayed assistant chunks after a live reconnect gap", async () => {
+    const session = new FakeSession("ses_gap_replay");
+    const { result } = renderHook(() => useStarciteChat({ session }));
+
+    act(() => {
+      session.emitEvent(
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          id: "msg_user_gap",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_gap",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_gap",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_gap",
+          delta: "draft",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(assistantText(result.current.messages)).toBe("draft");
+    });
+
+    act(() => {
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_gap",
+          delta: " resumed",
+        })
+      );
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(assistantText(result.current.messages)).toBe("draft resumed");
+    });
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("keeps replay duplicates from rendering duplicate messages", async () => {
+    const session = new FakeSession("ses_duplicate_replay");
+    const { result } = renderHook(() => useStarciteChat({ session }));
+
+    act(() => {
+      session.emitEvent(
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          id: "msg_user_dup",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_dup",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_dup",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_dup",
+          delta: "reply",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages.map((message) => message.id)).toEqual([
+        "msg_user_dup",
+        "assistant_dup",
+      ]);
+    });
+
+    act(() => {
+      session.emitReplayEvent(
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          id: "msg_user_dup",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        })
+      );
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_dup",
+        })
+      );
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_dup_replay",
+        })
+      );
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_dup_replay",
+          delta: "reply",
+        })
+      );
+      session.emitReplayEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages.map((message) => message.id)).toEqual([
+        "msg_user_dup",
+        "assistant_dup",
+      ]);
+    });
+    expect(result.current.messages).toHaveLength(2);
+  });
+
+  it("keeps two hook subscribers converged for one session", async () => {
+    const session = new FakeSession("ses_tab_convergence");
+    const first = renderHook(() => useStarciteChat({ session }));
+    const second = renderHook(() => useStarciteChat({ session }));
+
+    act(() => {
+      session.emitEvent(
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          id: "msg_user_tabs",
+          role: "user",
+          parts: [{ type: "text", text: "hello tabs" }],
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_tabs",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_tabs",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_tabs",
+          delta: "same timeline",
+        })
+      );
+      session.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(
+        first.result.current.messages.map((message) => message.id)
+      ).toEqual(["msg_user_tabs", "assistant_tabs"]);
+    });
+
+    await waitFor(() => {
+      expect(
+        second.result.current.messages.map((message) => message.id)
+      ).toEqual(["msg_user_tabs", "assistant_tabs"]);
+    });
+
+    expect(first.result.current.messages).toEqual(
+      second.result.current.messages
+    );
+    expect(first.result.current.status).toBe(second.result.current.status);
+  });
 });

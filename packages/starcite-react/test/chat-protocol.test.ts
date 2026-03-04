@@ -131,4 +131,99 @@ describe("chat protocol", () => {
       },
     ]);
   });
+
+  it("deduplicates replayed chat messages by stable message id", async () => {
+    const events = [
+      {
+        type: chatUserMessageEventType,
+        payload: createUserMessageEnvelope({
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "a1",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_1",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_1",
+          delta: "first",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        }),
+      },
+      {
+        type: chatUserMessageEventType,
+        payload: createUserMessageEnvelope({
+          id: "u1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "a1",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_2",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_2",
+          delta: "second",
+        }),
+      },
+      {
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        }),
+      },
+    ] as const;
+
+    const messages = await toUIMessagesFromEvents(events);
+
+    expect(messages).toHaveLength(2);
+    expect(messages.map((message) => message.id)).toEqual(["u1", "a1"]);
+
+    const assistant = messages[1];
+    expect(assistant?.role).toBe("assistant");
+    expect(assistant?.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "text",
+          text: "second",
+        }),
+      ])
+    );
+  });
 });
