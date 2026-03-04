@@ -221,14 +221,38 @@ export async function toUIMessagesFromEvents(
   events: readonly { type: string; payload: unknown }[]
 ): Promise<UIMessage[]> {
   const messages: UIMessage[] = [];
+  const messageIndexById = new Map<string, number>();
   const bufferedChunks: UIMessageChunk[] = [];
+
+  const appendOrReplaceMessage = (message: UIMessage): void => {
+    const messageId =
+      typeof message.id === "string" && message.id.length > 0
+        ? message.id
+        : undefined;
+    if (!messageId) {
+      messages.push(message);
+      return;
+    }
+
+    const existingIndex = messageIndexById.get(messageId);
+    if (existingIndex === undefined) {
+      messageIndexById.set(messageId, messages.length);
+      messages.push(message);
+      return;
+    }
+
+    messages[existingIndex] = message;
+  };
 
   const flushBufferedChunks = async (): Promise<void> => {
     if (bufferedChunks.length === 0) {
       return;
     }
 
-    messages.push(...(await buildChunkMessages(bufferedChunks)));
+    const chunkMessages = await buildChunkMessages(bufferedChunks);
+    for (const message of chunkMessages) {
+      appendOrReplaceMessage(message);
+    }
     bufferedChunks.length = 0;
   };
 
@@ -247,7 +271,7 @@ export async function toUIMessagesFromEvents(
 
     if (envelope.kind === chatUserMessageEventType) {
       await flushBufferedChunks();
-      messages.push(envelope.message as unknown as UIMessage);
+      appendOrReplaceMessage(envelope.message as unknown as UIMessage);
       continue;
     }
 
