@@ -7,11 +7,11 @@ import type {
 } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { z } from "zod";
 import {
   appendUserMessageEvent,
   chatAssistantChunkEventType,
   isChatEventType,
-  isRecord,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
 
@@ -59,17 +59,14 @@ function isTerminalAssistantChunkType(type: string): boolean {
   return type === "finish" || type === "abort";
 }
 
+const assistantChunkPayloadSchema = z.object({
+  kind: z.literal(chatAssistantChunkEventType),
+  chunk: z.object({ type: z.string() }),
+});
+
 function readAssistantChunkType(payload: unknown): string | undefined {
-  if (!isRecord(payload) || payload.kind !== chatAssistantChunkEventType) {
-    return undefined;
-  }
-
-  const chunk = payload.chunk;
-  if (!isRecord(chunk)) {
-    return undefined;
-  }
-
-  return typeof chunk.type === "string" ? chunk.type : undefined;
+  const result = assistantChunkPayloadSchema.safeParse(payload);
+  return result.success ? result.data.chunk.type : undefined;
 }
 
 function hasTextInput<TMessage extends UIMessage>(

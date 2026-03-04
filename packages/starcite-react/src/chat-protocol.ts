@@ -1,47 +1,38 @@
 import type { AppendResult, SessionAppendInput } from "@starcite/sdk";
 import { readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
+import { z } from "zod";
 
 export const chatUserMessageEventType = "chat.user.message";
 export const chatAssistantChunkEventType = "chat.assistant.chunk";
 
-type ChatRole = "system" | "user" | "assistant";
+const chatMessageSchema = z.object({
+  role: z.enum(["system", "user", "assistant"]),
+  parts: z.array(z.unknown()),
+});
 
-export interface ChatMessageLike {
-  role: string;
-  parts: unknown[];
-  [key: string]: unknown;
-}
+const chatChunkSchema = z.object({
+  type: z.string().min(1),
+});
 
-export interface ChatChunkLike {
-  type: string;
-  [key: string]: unknown;
-}
+const userEnvelopeSchema = z.object({
+  kind: z.literal(chatUserMessageEventType),
+  message: chatMessageSchema.passthrough(),
+});
 
-export type ChatPayloadEnvelope<
-  TMessage = ChatMessageLike,
-  TChunk = ChatChunkLike,
-> =
-  | {
-      kind: typeof chatUserMessageEventType;
-      message: TMessage;
-      [key: string]: unknown;
-    }
-  | {
-      kind: typeof chatAssistantChunkEventType;
-      chunk: TChunk;
-      [key: string]: unknown;
-    };
+const assistantEnvelopeSchema = z.object({
+  kind: z.literal(chatAssistantChunkEventType),
+  chunk: chatChunkSchema.passthrough(),
+});
+
+const chatPayloadEnvelopeSchema = z.discriminatedUnion("kind", [
+  userEnvelopeSchema.passthrough(),
+  assistantEnvelopeSchema.passthrough(),
+]);
+
+export type ChatPayloadEnvelope = z.infer<typeof chatPayloadEnvelopeSchema>;
 
 interface SessionAppender {
   append: (input: SessionAppendInput) => Promise<AppendResult>;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isChatRole(value: unknown): value is ChatRole {
-  return value === "system" || value === "user" || value === "assistant";
 }
 
 export function isChatEventType(type: string): boolean {
@@ -53,66 +44,27 @@ export function isChatEventType(type: string): boolean {
 export function parseChatPayloadEnvelope(
   payload: unknown
 ): ChatPayloadEnvelope {
-  if (!isRecord(payload)) {
-    throw new Error("Invalid chat payload envelope: payload must be an object");
+  const result = chatPayloadEnvelopeSchema.safeParse(payload);
+  if (!result.success) {
+    throw new Error(
+      `Invalid chat payload envelope: ${result.error.issues[0]?.message ?? "unknown error"}`
+    );
   }
-
-  const { kind } = payload;
-
-  if (kind === chatUserMessageEventType) {
-    const message = payload.message;
-    if (!isRecord(message)) {
-      throw new Error("Invalid chat payload envelope: missing message");
-    }
-    if (!isChatRole(message.role)) {
-      throw new Error("Invalid chat payload envelope: invalid message role");
-    }
-    if (!Array.isArray(message.parts)) {
-      throw new Error("Invalid chat payload envelope: invalid message parts");
-    }
-    return payload as ChatPayloadEnvelope;
-  }
-
-  if (kind === chatAssistantChunkEventType) {
-    const chunk = payload.chunk;
-    if (!isRecord(chunk)) {
-      throw new Error("Invalid chat payload envelope: missing chunk");
-    }
-    if (typeof chunk.type !== "string" || chunk.type.length === 0) {
-      throw new Error("Invalid chat payload envelope: invalid chunk type");
-    }
-    return payload as ChatPayloadEnvelope;
-  }
-
-  throw new Error("Invalid chat payload envelope: unknown kind");
+  return result.data;
 }
 
 export function createUserMessageEnvelope<
   TMessage extends Record<string, unknown>,
 >(
   message: TMessage
-): {
-  kind: typeof chatUserMessageEventType;
-  message: TMessage;
-} {
-  return {
-    kind: chatUserMessageEventType,
-    message,
-  };
+): { kind: typeof chatUserMessageEventType; message: TMessage } {
+  return { kind: chatUserMessageEventType, message };
 }
 
 export function createAssistantChunkEnvelope<
   TChunk extends Record<string, unknown>,
->(
-  chunk: TChunk
-): {
-  kind: typeof chatAssistantChunkEventType;
-  chunk: TChunk;
-} {
-  return {
-    kind: chatAssistantChunkEventType,
-    chunk,
-  };
+>(chunk: TChunk): { kind: typeof chatAssistantChunkEventType; chunk: TChunk } {
+  return { kind: chatAssistantChunkEventType, chunk };
 }
 
 export function appendUserMessageEvent(

@@ -51,7 +51,8 @@
   },
   "dependencies": {
     "@starcite/sdk": "^0.0.7",
-    "ai": "^5.0.0"
+    "ai": "^5.0.0",
+    "zod": "^4.3.6"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
