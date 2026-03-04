@@ -77,12 +77,20 @@ describe("inferIdentityFromApiKey", () => {
     expect(inferIdentityFromApiKey(token)).toBeUndefined();
   });
 
-  it("returns undefined when principal_type is missing", () => {
+  it("defaults principal_type to user when missing", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
-      principal_id: "agent:planner",
+      principal_id: "user:planner",
     });
-    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+    const identity = inferIdentityFromApiKey(token);
+    expect(identity).toBeDefined();
+    expect(identity).toEqual(
+      expect.objectContaining({
+        tenantId: "acme",
+        id: "user:planner",
+        type: "user",
+      })
+    );
   });
 
   it("returns undefined when claims are empty", () => {

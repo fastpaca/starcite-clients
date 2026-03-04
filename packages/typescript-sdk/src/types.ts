@@ -402,7 +402,7 @@ export interface SessionTailOptions {
   /**
    * Maximum time to wait for websocket handshake/open before reconnecting or failing.
    *
-   * Defaults to `4000`.
+   * Defaults to `12000`.
    */
   connectionTimeoutMs?: number;
   /**

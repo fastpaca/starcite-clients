@@ -1,4 +1,4 @@
-// biome-ignore lint/performance/noBarrelFile: package entrypoint intentionally re-exports public API.
+/* biome-ignore-all lint/performance/noBarrelFile: package entrypoint intentionally re-exports public API. */
 export { Starcite } from "./client";
 export type { StarciteTailErrorStage } from "./errors";
 export {

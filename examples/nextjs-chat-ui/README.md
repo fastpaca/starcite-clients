@@ -1,16 +1,14 @@
 # Next.js Chat UI Example
 
-Minimal Next.js App Router demo based on `packages/usechat-streaming-example`.
-It is intentionally happy-path and minimal to showcase transport wiring.
-The UI uses AI Elements components so the chat UI stays clean with less hand-built markup.
+Minimal Next.js App Router demo for durable chat streaming.
+The example is intentionally small and reads like a `useChat` replacement tutorial.
 
-It shows the smallest useful setup for:
+It shows:
 
-- `useChat` from `@ai-sdk/react`
-- AI Elements UI components (`conversation`, `message`, `prompt-input`)
-- `createStarciteChatTransport` from `@starcite/ai-sdk-transport`
+- `useStarciteChat` from `@starcite/react`
 - server-side session creation with `@starcite/sdk`
 - server-side agent consumption with `streamText` from `ai`
+- off-the-shelf AI Elements UI primitives for conversation/input
 
 ## Run
 
@@ -18,20 +16,26 @@ From the repo root:
 
 ```bash
 bun install
+
+# edit this first
 cp examples/nextjs-chat-ui/.env.example examples/nextjs-chat-ui/.env.local
-export OPENAI_API_KEY="$(awk '/OPENAI_API_KEY/{print $4}' ~/.local/keys.fish)"
-export STARCITE_API_TOKEN="$(awk '/STARCITE_API_TOKEN/{print $4}' ~/.local/keys.fish)"
+
 bun run --cwd examples/nextjs-chat-ui dev
 ```
 
 Open `http://localhost:3000`.
 
-## What it covers
+## How it works
 
-- Browser requests `/api/starcite/session`.
-- Route handler creates or reuses a session using `STARCITE_API_KEY` or `STARCITE_API_TOKEN`.
-- Route handler registers that session in `agent.ts`.
-- Client reconstructs the session from token and uses `useChat({ transport })`.
-- `createStarciteChatTransport` appends user messages with a strict payload envelope and streams assistant chunk envelopes from Starcite websocket tail.
-- Backend agent consumes `chat.user.message` events and appends `streamText(...).toUIMessageStream()` chunks wrapped in the same envelope format.
-- Session ID is user-editable and cached in `localStorage` so refresh keeps the same session timeline.
+1. Browser reads `?sessionId=<id>`.
+2. Browser requests `/api/starcite/session` with optional `sessionId`.
+3. Route handler creates/reuses the session, registers `agent.ts`, and returns `{ token, sessionId }`.
+4. Client writes the returned `sessionId` to the query param.
+5. Client builds a session from the token and calls `useStarciteChat({ session, id: sessionId })`.
+6. Hook reads durable `session.events()` and updates on new `session.on("event")` events.
+
+## Manual durability checks
+
+1. Cold load with an existing `sessionId`: full history should render after connect.
+2. Send a new message in an existing session: status transitions (`submitted`/`streaming`/`ready`) and assistant output should stream in-place.
+3. Start a longer response, refresh mid-stream, keep same `sessionId`: stream should continue and finish without losing history.

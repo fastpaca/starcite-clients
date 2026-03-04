@@ -5,15 +5,17 @@ Clients for building and operating multi-agent systems on one ordered session ti
 ## Packages
 
 - `@starcite/sdk` (`packages/typescript-sdk`) for app and browser integration
+- `@starcite/react` (`packages/starcite-react`) for durable session chat hooks
 - `starcite` (`packages/starcite-cli`) for terminal workflows
 
 ## Examples
 
-- Next.js chat UI (`examples/nextjs-chat-ui`) for minimal `useChat` + Starcite transport wiring
+- Next.js chat UI (`examples/nextjs-chat-ui`) for minimal `useStarciteChat` durable session wiring
 - Vite chat UI (`packages/usechat-streaming-example`) for local proxy-driven streaming demos
 
 Detailed package docs:
 - SDK guide: `packages/typescript-sdk/README.md`
+- React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
 
 ## Public SDK Surface
@@ -166,7 +168,7 @@ git push origin vX.Y.Z
 3. Publish via GitHub release:
 
 - Create GitHub release `vX.Y.Z`
-- `publish-npm.yml` publishes `@starcite/sdk` and `starcite` on `release.published`
+- `publish-npm.yml` publishes `@starcite/sdk`, `@starcite/react`, and `starcite` on `release.published`
 
 Required secret:
 

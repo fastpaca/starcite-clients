@@ -13,8 +13,11 @@
     "noEmit": true,
     "paths": {
       "@/*": ["./*"],
-      "@starcite/ai-sdk-transport": [
-        "../../packages/ai-sdk-transport/src/index.ts"
+      "@starcite/react": [
+        "../../packages/starcite-react/src/index.ts"
+      ],
+      "@starcite/react/chat-protocol": [
+        "../../packages/starcite-react/src/chat-protocol.ts"
       ],
       "@starcite/sdk": ["../../packages/typescript-sdk/src/index.ts"]
     },

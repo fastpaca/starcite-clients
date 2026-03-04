@@ -22,6 +22,8 @@ jobs:
         package:
           - name: "@starcite/sdk"
             path: "packages/typescript-sdk"
+          - name: "@starcite/react"
+            path: "packages/starcite-react"
           - name: "starcite"
             path: "packages/starcite-cli"
 
