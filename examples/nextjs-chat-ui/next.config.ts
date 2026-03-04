@@ -9,9 +9,13 @@ const nextConfig: NextConfig = {
   webpack: (config) => {
     config.resolve.alias = {
       ...config.resolve.alias,
-      "@starcite/ai-sdk-transport": path.resolve(
+      "@starcite/react": path.resolve(
         __dirname,
-        "../../packages/ai-sdk-transport/src/index.ts"
+        "../../packages/starcite-react/src/index.ts"
+      ),
+      "@starcite/react/chat-protocol": path.resolve(
+        __dirname,
+        "../../packages/starcite-react/src/chat-protocol.ts"
       ),
       "@starcite/sdk": path.resolve(
         __dirname,

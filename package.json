@@ -27,9 +27,9 @@
     "starcite": "bun run --cwd packages/starcite-cli dev",
     "starcite:compile": "bun run --cwd packages/starcite-cli compile",
     "lint:root": "ultracite check biome.jsonc package.json README.md scripts",
-    "lint:workspaces": "bun run --workspaces --if-present lint",
+    "lint:workspaces": "bun run --cwd packages/typescript-sdk lint && bun run --cwd packages/starcite-cli lint && bun run --cwd packages/starcite-react lint",
     "format:root": "ultracite fix biome.jsonc package.json README.md scripts",
-    "format:workspaces": "bun run --workspaces --if-present format"
+    "format:workspaces": "bun run --cwd packages/typescript-sdk format && bun run --cwd packages/starcite-cli format && bun run --cwd packages/starcite-react format"
   },
   "devDependencies": {
     "ultracite": "^7.1.5"
@@ -37,7 +37,7 @@
   "workspaces": [
     "packages/typescript-sdk",
     "packages/starcite-cli",
-    "packages/ai-sdk-transport",
+    "packages/starcite-react",
     "examples/nextjs-chat-ui"
   ]
 }

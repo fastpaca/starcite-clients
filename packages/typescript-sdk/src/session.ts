@@ -73,6 +73,7 @@ export class StarciteSession {
     SessionEventListener,
     () => void
   >();
+  private appendTask: Promise<void> = Promise.resolve();
   private liveSyncController: AbortController | undefined;
   private liveSyncTask: Promise<void> | undefined;
   private liveSyncCatchUpActive = false;
@@ -98,33 +99,43 @@ export class StarciteSession {
    *
    * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
    */
-  async append(
+  append(
     input: SessionAppendInput,
     options?: RequestOptions
   ): Promise<AppendResult> {
     const parsed = SessionAppendInputSchema.parse(input);
-    this.producerSeq += 1;
+    const runAppend = this.appendTask.then(async () => {
+      this.producerSeq += 1;
 
-    const result = await this.appendRaw(
-      {
-        type: parsed.type ?? "content",
-        payload: parsed.payload ?? { text: parsed.text },
-        actor: parsed.actor ?? this.identity.toActor(),
-        producer_id: this.producerId,
-        producer_seq: this.producerSeq,
-        source: parsed.source ?? "agent",
-        metadata: parsed.metadata,
-        refs: parsed.refs,
-        idempotency_key: parsed.idempotencyKey,
-        expected_seq: parsed.expectedSeq,
-      },
-      options
+      const result = await this.appendRaw(
+        {
+          type: parsed.type ?? "content",
+          payload: parsed.payload ?? { text: parsed.text },
+          actor: parsed.actor ?? this.identity.toActor(),
+          producer_id: this.producerId,
+          producer_seq: this.producerSeq,
+          source: parsed.source ?? "agent",
+          metadata: parsed.metadata,
+          refs: parsed.refs,
+          idempotency_key: parsed.idempotencyKey,
+          expected_seq: parsed.expectedSeq,
+        },
+        options
+      );
+
+      return {
+        seq: result.seq,
+        deduped: result.deduped,
+      };
+    });
+
+    // Keep queue progression alive even if one append fails.
+    this.appendTask = runAppend.then(
+      () => undefined,
+      () => undefined
     );
 
-    return {
-      seq: result.seq,
-      deduped: result.deduped,
-    };
+    return runAppend;
   }
 
   /**
@@ -555,11 +566,15 @@ export class StarciteSession {
       .finally(() => {
         this.liveSyncTask = undefined;
         this.liveSyncController = undefined;
+        if (this.eventSubscriptions.size > 0) {
+          this.ensureLiveSync();
+        }
       });
   }
 
   private async runLiveSync(signal: AbortSignal): Promise<void> {
     let shouldRunCatchUpPass = this.log.lastSeq === 0;
+    let retryDelayMs = 250;
 
     while (!signal.aborted && this.eventSubscriptions.size > 0) {
       this.liveSyncCatchUpActive = shouldRunCatchUpPass;
@@ -567,6 +582,7 @@ export class StarciteSession {
       try {
         await this.subscribeLiveSyncPass(signal, !shouldRunCatchUpPass);
         shouldRunCatchUpPass = false;
+        retryDelayMs = 250;
       } catch (error) {
         if (signal.aborted) {
           return;
@@ -577,7 +593,10 @@ export class StarciteSession {
           continue;
         }
 
-        throw error;
+        this.emitStreamError(error);
+        shouldRunCatchUpPass = true;
+        await this.waitForLiveSyncRetry(retryDelayMs, signal);
+        retryDelayMs = Math.min(retryDelayMs * 2, 5000);
       } finally {
         this.liveSyncCatchUpActive = false;
       }
@@ -620,6 +639,39 @@ export class StarciteSession {
         schemaVersion: 1,
         updatedAtMs: Date.now(),
       },
+    });
+  }
+
+  private waitForLiveSyncRetry(
+    delayMs: number,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (delayMs <= 0 || signal.aborted) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+
+      const onAbort = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+
+      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 }

@@ -18,10 +18,12 @@
 ### Changed
 
 - `session.append()` now auto-manages `actor`, `producer_id`, and `producer_seq` for convenience
+- `session.append()` now serializes per-session append calls so `producer_seq` remains strictly ordered under concurrency
 - Raw append support is available through `appendRaw(...)` with explicit `producer_id` and `producer_seq` requirements
 - `tail()` now auto-recovers from abnormal disconnects and resumes from the last observed sequence
 - Tail streams now accept both single-event and batched WebSocket frame shapes
 - Internal tail transport loop is split into a single-connection runner plus reconnect orchestrator for clearer failure-state reasoning
+- Chat protocol helpers were removed from `@starcite/sdk` and moved to `@starcite/react/chat-protocol`
 - BREAKING: removed `session.consume(...)` and cursor-store APIs (`SessionCursorStore`, `InMemoryCursorStore`, `WebStorageCursorStore`, `LocalStorageCursorStore`)
 - BREAKING: removed `session.tailBatches(...)`; `session.tail(options)` is now the single explicit streaming API and returns an async iterator
 - BREAKING: `Starcite` no longer defaults to an implicit in-memory store when `store` is omitted

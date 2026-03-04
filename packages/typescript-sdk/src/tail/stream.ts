@@ -80,7 +80,7 @@ export class TailStream {
     // Catch-up mode (`follow: false`) is single-pass and never reconnects.
     this.shouldReconnect = follow ? (opts.reconnect ?? true) : false;
     this.catchUpIdleMs = opts.catchUpIdleMs ?? 1000;
-    this.connectionTimeoutMs = opts.connectionTimeoutMs ?? 4000;
+    this.connectionTimeoutMs = opts.connectionTimeoutMs ?? 12_000;
     this.inactivityTimeoutMs = opts.inactivityTimeoutMs;
     this.maxBufferedBatches = opts.maxBufferedBatches ?? 1024;
     this.signal = opts.signal;

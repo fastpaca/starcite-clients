@@ -252,6 +252,69 @@ describe("Starcite", () => {
     expect(body.producer_seq).toBe(1);
   });
 
+  it("serializes concurrent appends for a session producer", async () => {
+    const sessionToken = makeTailSessionToken("ses_serial", "agent:writer");
+    let releaseFirstAppend: (() => void) | undefined;
+    const firstAppendGate = new Promise<void>((resolve) => {
+      releaseFirstAppend = resolve;
+    });
+    let firstRequestObservedResolve: (() => void) | undefined;
+    const firstRequestObserved = new Promise<void>((resolve) => {
+      firstRequestObservedResolve = resolve;
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      expect(url).toBe("http://localhost:4000/v1/sessions/ses_serial/append");
+      const requestInit = init as RequestInit;
+      const body = JSON.parse(requestInit.body as string) as {
+        producer_seq: number;
+      };
+
+      if (body.producer_seq === 1) {
+        firstRequestObservedResolve?.();
+        await firstAppendGate;
+      }
+
+      return new Response(
+        JSON.stringify({
+          seq: body.producer_seq,
+          last_seq: body.producer_seq,
+          deduped: false,
+        }),
+        { status: 201 }
+      );
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const session = await starcite.session({ token: sessionToken });
+
+    const firstAppend = session.append({ text: "one" });
+    const secondAppend = session.append({ text: "two" });
+
+    await firstRequestObserved;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    releaseFirstAppend?.();
+    await expect(Promise.all([firstAppend, secondAppend])).resolves.toEqual([
+      { seq: 1, deduped: false },
+      { seq: 2, deduped: false },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
+    ) as { producer_seq: number };
+    const secondBody = JSON.parse(
+      (fetchMock.mock.calls[1]?.[1] as RequestInit).body as string
+    ) as { producer_seq: number };
+
+    expect(firstBody.producer_seq).toBe(1);
+    expect(secondBody.producer_seq).toBe(2);
+  });
+
   it("validates baseUrl at client construction", () => {
     expect(
       () =>
@@ -1780,6 +1843,69 @@ describe("Starcite", () => {
     expect(syncErrors).toHaveLength(1);
     expect(syncErrors[0]).toBeInstanceOf(StarciteError);
     expect(syncErrors[0]?.message).toContain("Session log conflict for seq 1");
+    session.disconnect();
+  });
+
+  it("retries live sync after non-gap catch-up failures", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("close", { code: 1006, reason: "dial failed" });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (sockets.length >= 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(sockets.length).toBeGreaterThanOrEqual(2);
+    expect(syncErrors).toHaveLength(1);
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await waitForValues(observedSeqs, 1);
+    expect(observedSeqs).toEqual([1]);
+    session.disconnect();
+  });
+
+  it("restarts live sync if listeners return while teardown is in flight", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    const firstUnsubscribe = session.on("event", () => undefined);
+    await waitForSocketCount(sockets, 1);
+
+    firstUnsubscribe();
+    session.on("event", () => undefined);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (sockets.length >= 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(sockets.length).toBeGreaterThanOrEqual(2);
     session.disconnect();
   });
 

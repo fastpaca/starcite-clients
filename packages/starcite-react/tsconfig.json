@@ -9,5 +9,5 @@
       "@starcite/sdk": ["../typescript-sdk/src/index.ts"]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]
 }

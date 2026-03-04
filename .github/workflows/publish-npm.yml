@@ -63,6 +63,10 @@ jobs:
         working-directory: packages/typescript-sdk
         run: bun publish --access public
 
+      - name: Publish @starcite/react
+        working-directory: packages/starcite-react
+        run: bun publish --access public
+
       - name: Publish starcite CLI
         working-directory: packages/starcite-cli
         run: bun publish --access public

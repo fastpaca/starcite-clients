@@ -1,36 +1,31 @@
-import { decodeJwt } from "jose";
-import { StarciteIdentity } from "@starcite/sdk";
 import { NextResponse } from "next/server";
 import { registerSession } from "@/agent";
-import { getApiKey, getServerStarcite } from "@/lib/starcite-server";
-
-export const runtime = "nodejs";
+import { Starcite } from "@starcite/sdk";
 
 export async function POST(request: Request): Promise<Response> {
+  const apiKey = process.env.STARCITE_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing STARCITE_API_KEY for /api/starcite/session");
+  }
+
+  const starcite = new Starcite({
+    apiKey,
+    baseUrl: process.env.STARCITE_BASE_URL || "https://api.starcite.io",
+  });
   const { sessionId } = (await request.json()) as { sessionId?: string };
-  const requestedSessionId = sessionId?.trim();
-  const claims = decodeJwt(getApiKey()) as {
-    tenant_id?: string;
-    principal_id?: string;
-    principal_type?: "user" | "agent";
-    sub?: string;
-  };
-
-  const identity = new StarciteIdentity({
-    tenantId: claims.tenant_id!,
-    id: claims.principal_id ?? claims.sub ?? "nextjs-demo-user",
-    type: claims.principal_type === "agent" ? "agent" : "user",
+  const user = starcite.user({
+    // in prod: use the actual user id here
+    id: "nextjs-demo-user",
   });
 
-  const session = await getServerStarcite().session({
-    identity,
-    id:
-      requestedSessionId && requestedSessionId.length > 0
-        ? requestedSessionId
-        : undefined,
-    title: "Next.js demo chat",
+  const session = await starcite.session({
+    identity: user,
+    id: sessionId,
   });
-  registerSession(session.id);
+
+  // register it locally with the web server so we can respond
+  // to user queries
+  await registerSession(session.id);
 
   return NextResponse.json({ token: session.token, sessionId: session.id });
 }

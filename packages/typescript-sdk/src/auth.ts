@@ -42,15 +42,16 @@ export function inferIdentityFromApiKey(
 
   const id = claims.principal_id ?? claims.sub;
   const tenantId = claims.tenant_id;
+  const type = claims.principal_type ?? "user";
 
-  if (!(tenantId && id && claims.principal_type)) {
+  if (!(tenantId && id)) {
     return undefined;
   }
 
   return new StarciteIdentity({
     tenantId,
     id,
-    type: claims.principal_type,
+    type,
   });
 }
 
