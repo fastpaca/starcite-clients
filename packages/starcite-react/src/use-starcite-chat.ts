@@ -7,10 +7,11 @@ import type {
 } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { z } from "zod";
 import {
   appendUserMessageEvent,
   chatAssistantChunkEventType,
-  chatUserMessageEventType,
+  isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
 
@@ -26,11 +27,11 @@ export interface StarciteChatSession {
   on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
-export type SendMessageInput =
+export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | {
       text: string;
     }
-  | (Omit<UIMessage, "id"> & { id?: string });
+  | (Omit<TMessage, "id"> & { id?: string });
 
 export interface UseStarciteChatOptions {
   session: StarciteChatSession;
@@ -39,69 +40,56 @@ export interface UseStarciteChatOptions {
   onError?: (error: Error) => void;
 }
 
-export interface UseStarciteChatResult {
-  messages: UIMessage[];
-  sendMessage: (message: SendMessageInput) => Promise<void>;
+export interface UseStarciteChatResult<TMessage extends UIMessage = UIMessage> {
+  messages: TMessage[];
+  sendMessage: (message: SendMessageInput<TMessage>) => Promise<void>;
   status: ChatStatus;
 }
 
-interface ChatStateSnapshot {
-  messages: UIMessage[];
+interface ChatStateSnapshot<TMessage extends UIMessage = UIMessage> {
+  messages: TMessage[];
   assistantOpen: boolean;
 }
 
 function createMessageId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-
-  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function isChatEventType(type: string): boolean {
-  return (
-    type === chatUserMessageEventType || type === chatAssistantChunkEventType
-  );
+  return crypto.randomUUID();
 }
 
 function isTerminalAssistantChunkType(type: string): boolean {
   return type === "finish" || type === "abort";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
+const assistantChunkPayloadSchema = z.object({
+  kind: z.literal(chatAssistantChunkEventType),
+  chunk: z.object({ type: z.string() }),
+});
 
 function readAssistantChunkType(payload: unknown): string | undefined {
-  if (!isRecord(payload) || payload.kind !== chatAssistantChunkEventType) {
-    return undefined;
-  }
-
-  const chunk = payload.chunk;
-  if (!isRecord(chunk)) {
-    return undefined;
-  }
-
-  return typeof chunk.type === "string" ? chunk.type : undefined;
+  const result = assistantChunkPayloadSchema.safeParse(payload);
+  return result.success ? result.data.chunk.type : undefined;
 }
 
-function hasTextInput(message: SendMessageInput): message is { text: string } {
+function hasTextInput<TMessage extends UIMessage>(
+  message: SendMessageInput<TMessage>
+): message is { text: string } {
   return "text" in message && !("parts" in message);
 }
 
-function normalizeOutgoingMessage(input: SendMessageInput): UIMessage {
+function normalizeOutgoingMessage<TMessage extends UIMessage = UIMessage>(
+  input: SendMessageInput<TMessage>
+): TMessage {
   if (hasTextInput(input)) {
     return {
       id: createMessageId(),
       role: "user",
       parts: [{ type: "text", text: input.text }],
-    };
+    } as TMessage;
   }
 
   return {
     ...input,
     id: input.id ?? createMessageId(),
-  };
+  } as TMessage;
 }
 
 function normalizeError(error: unknown): Error {
@@ -112,10 +100,10 @@ function normalizeError(error: unknown): Error {
   return new Error(String(error));
 }
 
-async function readChatState(
+async function readChatState<TMessage extends UIMessage = UIMessage>(
   events: readonly SessionEvent[]
-): Promise<ChatStateSnapshot> {
-  const messages = await toUIMessagesFromEvents(events);
+): Promise<ChatStateSnapshot<TMessage>> {
+  const messages = await toUIMessagesFromEvents<TMessage>(events);
   let assistantOpen = false;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
@@ -138,14 +126,14 @@ async function readChatState(
   };
 }
 
-export function useStarciteChat(
+export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   options: UseStarciteChatOptions
-): UseStarciteChatResult {
+): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
 
   const sessionResetKey = id ?? session.id;
 
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
 
   const refreshVersionRef = useRef(0);
@@ -173,7 +161,7 @@ export function useStarciteChat(
 
     const snapshot = [...session.events()];
 
-    readChatState(snapshot)
+    readChatState<TMessage>(snapshot)
       .then((chatState) => {
         if (refreshVersionRef.current !== version) {
           return;
@@ -217,16 +205,16 @@ export function useStarciteChat(
   }, [refreshFromSession]);
 
   const sendMessage = useCallback(
-    async (message: SendMessageInput): Promise<void> => {
+    async (message: SendMessageInput<TMessage>): Promise<void> => {
       const requestSessionKey = sessionKeyRef.current;
-      const outgoingMessage = normalizeOutgoingMessage(message);
+      const outgoingMessage = normalizeOutgoingMessage<TMessage>(message);
 
       setStatus("submitted");
 
       try {
         await appendUserMessageEvent(
           session,
-          outgoingMessage as unknown as Record<string, unknown>,
+          outgoingMessage as Record<string, unknown>,
           {
             source: userMessageSource,
           }
@@ -278,7 +266,7 @@ export function useStarciteChat(
     refreshFromSession();
 
     const offEvent = session.on("event", onSessionEvent, { replay: false });
-    const offError = session.on("error", (error) => {
+    const offError = session.on("error", (error: Error) => {
       onErrorRef.current?.(normalizeError(error));
     });
 
