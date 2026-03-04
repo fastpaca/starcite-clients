@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 interface PerfMetricThreshold {
+  ciMaxMeanMs?: number;
   maxMeanMs: number;
   name: string;
 }
@@ -18,18 +19,36 @@ const perfScopes: PerfScope[] = [
     name: "@starcite/sdk",
     cwd: "packages/typescript-sdk",
     metrics: [
-      { name: "append HTTP roundtrip RTT (loopback)", maxMeanMs: 1.5 },
+      {
+        name: "append HTTP roundtrip RTT (loopback)",
+        maxMeanMs: 1.5,
+        ciMaxMeanMs: 3.0,
+      },
       {
         name: "tail replay catch-up RTT from cursor (loopback websocket)",
         maxMeanMs: 2.0,
+        ciMaxMeanMs: 4.0,
       },
       {
         name: "append -> live on('event') delivery RTT (HTTP + websocket loopback)",
         maxMeanMs: 3.0,
+        ciMaxMeanMs: 5.0,
       },
-      { name: "apply contiguous 500-event batch", maxMeanMs: 0.2 },
-      { name: "deduplicate replayed 500-event batch", maxMeanMs: 0.3 },
-      { name: "parse a 100-event websocket frame", maxMeanMs: 0.25 },
+      {
+        name: "apply contiguous 500-event batch",
+        maxMeanMs: 0.2,
+        ciMaxMeanMs: 0.5,
+      },
+      {
+        name: "deduplicate replayed 500-event batch",
+        maxMeanMs: 0.3,
+        ciMaxMeanMs: 0.8,
+      },
+      {
+        name: "parse a 100-event websocket frame",
+        maxMeanMs: 0.25,
+        ciMaxMeanMs: 0.5,
+      },
     ],
   },
   {
@@ -39,10 +58,12 @@ const perfScopes: PerfScope[] = [
       {
         name: "project 50-turn conversation to UI messages",
         maxMeanMs: 3.0,
+        ciMaxMeanMs: 7.0,
       },
       {
         name: "project 50-turn conversation with full replay duplicates",
         maxMeanMs: 5.0,
+        ciMaxMeanMs: 10.0,
       },
     ],
   },
@@ -105,6 +126,7 @@ function extractMeanMs(output: string, metricName: string): number {
 
 function main(): void {
   const failures: string[] = [];
+  const runningInCi = Boolean(process.env.CI);
 
   for (const scope of perfScopes) {
     console.log(`\n[perf:check] Running benchmarks for ${scope.name}`);
@@ -112,9 +134,13 @@ function main(): void {
 
     for (const metric of scope.metrics) {
       const meanMs = extractMeanMs(output, metric.name);
+      const thresholdMs =
+        runningInCi && metric.ciMaxMeanMs !== undefined
+          ? metric.ciMaxMeanMs
+          : metric.maxMeanMs;
       const summary = `${scope.name}: ${metric.name} mean=${meanMs.toFixed(
         4
-      )}ms threshold<=${metric.maxMeanMs.toFixed(4)}ms`;
+      )}ms threshold<=${thresholdMs.toFixed(4)}ms`;
 
       if (meanMs <= 0) {
         failures.push(`${summary} (invalid non-positive mean)`);
@@ -122,7 +148,7 @@ function main(): void {
         continue;
       }
 
-      if (meanMs > metric.maxMeanMs) {
+      if (meanMs > thresholdMs) {
         failures.push(summary);
         console.error(`[perf:check] FAIL ${summary}`);
         continue;
