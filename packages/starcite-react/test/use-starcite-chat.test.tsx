@@ -300,7 +300,7 @@ describe("useStarciteChat", () => {
     const { result } = renderHook(() =>
       useStarciteChat({
         session,
-        onError: (error) => {
+        onError: (error: Error) => {
           errors.push(error);
         },
       })
