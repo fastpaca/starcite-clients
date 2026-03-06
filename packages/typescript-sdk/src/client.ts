@@ -18,6 +18,7 @@ import {
 import type {
   IssueSessionTokenInput,
   RequestOptions,
+  SessionAppendOptions,
   SessionListOptions,
   SessionListPage,
   SessionLogOptions,
@@ -59,6 +60,28 @@ function resolveAuthBaseUrl(
   return undefined;
 }
 
+function mergeAppendOptions(
+  defaults: SessionAppendOptions | undefined,
+  overrides: SessionAppendOptions | undefined
+): SessionAppendOptions | undefined {
+  if (!defaults) {
+    return overrides;
+  }
+
+  if (!overrides) {
+    return defaults;
+  }
+
+  return {
+    ...defaults,
+    ...overrides,
+    retryPolicy: {
+      ...defaults.retryPolicy,
+      ...overrides.retryPolicy,
+    },
+  };
+}
+
 /**
  * Tenant-scoped Starcite client.
  *
@@ -73,6 +96,7 @@ export class Starcite {
   private readonly authBaseUrl?: string;
   private readonly inferredIdentity?: StarciteIdentity;
   private readonly store: SessionStore | undefined;
+  private readonly appendOptions: SessionAppendOptions | undefined;
 
   constructor(options: StarciteOptions = {}) {
     const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -96,6 +120,7 @@ export class Starcite {
     const websocketFactory =
       options.websocketFactory ?? defaultWebSocketFactory;
     this.store = options.store;
+    this.appendOptions = options.appendOptions;
 
     this.transport = {
       baseUrl,
@@ -141,6 +166,7 @@ export class Starcite {
   session(input: {
     token: string;
     logOptions?: SessionLogOptions;
+    appendOptions?: SessionAppendOptions;
   }): StarciteSession;
   session(input: {
     identity: StarciteIdentity;
@@ -148,20 +174,30 @@ export class Starcite {
     title?: string;
     metadata?: Record<string, unknown>;
     logOptions?: SessionLogOptions;
+    appendOptions?: SessionAppendOptions;
   }): Promise<StarciteSession>;
   session(
     input:
-      | { token: string; logOptions?: SessionLogOptions }
+      | {
+          token: string;
+          logOptions?: SessionLogOptions;
+          appendOptions?: SessionAppendOptions;
+        }
       | {
           identity: StarciteIdentity;
           id?: string;
           title?: string;
           metadata?: Record<string, unknown>;
           logOptions?: SessionLogOptions;
+          appendOptions?: SessionAppendOptions;
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
-      return this.sessionFromToken(input.token, input.logOptions);
+      return this.sessionFromToken(
+        input.token,
+        input.logOptions,
+        input.appendOptions
+      );
     }
 
     return this.sessionFromIdentity(input);
@@ -210,6 +246,7 @@ export class Starcite {
     title?: string;
     metadata?: Record<string, unknown>;
     logOptions?: SessionLogOptions;
+    appendOptions?: SessionAppendOptions;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
@@ -250,12 +287,17 @@ export class Starcite {
       store: this.store,
       record,
       logOptions: input.logOptions,
+      appendOptions: mergeAppendOptions(
+        this.appendOptions,
+        input.appendOptions
+      ),
     });
   }
 
   private sessionFromToken(
     token: string,
-    logOptions?: SessionLogOptions
+    logOptions?: SessionLogOptions,
+    appendOptions?: SessionAppendOptions
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
     const sessionId = decoded.sessionId;
@@ -273,6 +315,7 @@ export class Starcite {
       transport: this.buildSessionTransport(token),
       store: this.store,
       logOptions,
+      appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
