@@ -460,6 +460,103 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("ready");
   });
 
+  it("rehydrates a refreshed session and continues an active assistant stream", async () => {
+    const seedEvents = [
+      {
+        seq: 1,
+        type: chatUserMessageEventType,
+        payload: createUserMessageEnvelope({
+          id: "msg_user_refresh",
+          role: "user",
+          parts: [{ type: "text", text: "refresh me" }],
+        }),
+        actor: "user:test",
+        producer_id: "producer:user",
+        producer_seq: 1,
+      },
+      {
+        seq: 2,
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "start",
+          messageId: "assistant_refresh",
+        }),
+        actor: "agent:test",
+        producer_id: "producer:agent",
+        producer_seq: 2,
+      },
+      {
+        seq: 3,
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-start",
+          id: "part_refresh",
+        }),
+        actor: "agent:test",
+        producer_id: "producer:agent",
+        producer_seq: 3,
+      },
+      {
+        seq: 4,
+        type: chatAssistantChunkEventType,
+        payload: createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_refresh",
+          delta: "hello",
+        }),
+        actor: "agent:test",
+        producer_id: "producer:agent",
+        producer_seq: 4,
+      },
+    ] as SessionEvent[];
+
+    const firstSession = new FakeSession("ses_refresh", seedEvents);
+    const { result, rerender } = renderHook(
+      ({ session }) => useStarciteChat({ session }),
+      {
+        initialProps: { session: firstSession },
+      }
+    );
+
+    await waitFor(() => {
+      expect(assistantText(result.current.messages)).toBe("hello");
+    });
+    expect(result.current.status).toBe("streaming");
+
+    const refreshedSession = new FakeSession("ses_refresh", [
+      ...firstSession.events(),
+    ]);
+    rerender({ session: refreshedSession });
+
+    await waitFor(() => {
+      expect(assistantText(result.current.messages)).toBe("hello");
+    });
+    expect(result.current.status).toBe("streaming");
+
+    act(() => {
+      refreshedSession.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "text-delta",
+          id: "part_refresh",
+          delta: " world",
+        })
+      );
+      refreshedSession.emitEvent(
+        chatAssistantChunkEventType,
+        createAssistantChunkEnvelope({
+          type: "finish",
+          finishReason: "stop",
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(assistantText(result.current.messages)).toBe("hello world");
+    });
+    expect(result.current.status).toBe("ready");
+  });
+
   it("does not enter error state when durable chunks are malformed", async () => {
     const session = new FakeSession("ses_malformed_chunks", [
       {
