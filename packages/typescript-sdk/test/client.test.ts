@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
 import {
+  StarciteApiError,
   StarciteBackpressureError,
   StarciteConnectionError,
   StarciteError,
@@ -313,6 +314,283 @@ describe("Starcite", () => {
 
     expect(firstBody.producer_seq).toBe(1);
     expect(secondBody.producer_seq).toBe(2);
+  });
+
+  it("retries transient append connection failures with the same producer sequence", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const sessionToken = makeTailSessionToken(
+        "ses_retry_append",
+        "agent:writer"
+      );
+
+      fetchMock
+        .mockRejectedValueOnce(new Error("temporary network failure"))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ seq: 1, last_seq: 1, deduped: false }),
+            {
+              status: 201,
+            }
+          )
+        );
+
+      const starcite = new Starcite({
+        baseUrl: "http://localhost:4000",
+        fetch: fetchMock,
+      });
+      const session = await starcite.session({ token: sessionToken });
+
+      const appendPromise = session.append({ text: "retry me" });
+
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(appendPromise).resolves.toEqual({ seq: 1, deduped: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const firstBody = JSON.parse(
+        (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string
+      ) as { producer_seq: number; payload: { text: string } };
+      const secondBody = JSON.parse(
+        (fetchMock.mock.calls[1]?.[1] as RequestInit).body as string
+      ) as { producer_seq: number; payload: { text: string } };
+
+      expect(firstBody.producer_seq).toBe(1);
+      expect(secondBody.producer_seq).toBe(1);
+      expect(secondBody.payload.text).toBe("retry me");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("queues later appends behind a recovering append until connectivity returns", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const sessionToken = makeTailSessionToken(
+        "ses_append_queue",
+        "agent:writer"
+      );
+      let shouldFailFirstAttempt = true;
+
+      fetchMock.mockImplementation((url, init) => {
+        expect(url).toBe(
+          "http://localhost:4000/v1/sessions/ses_append_queue/append"
+        );
+        const requestInit = init as RequestInit;
+        const body = JSON.parse(requestInit.body as string) as {
+          producer_seq: number;
+        };
+
+        if (body.producer_seq === 1 && shouldFailFirstAttempt) {
+          shouldFailFirstAttempt = false;
+          throw new Error("temporary network failure");
+        }
+
+        return new Response(
+          JSON.stringify({
+            seq: body.producer_seq,
+            last_seq: body.producer_seq,
+            deduped: false,
+          }),
+          { status: 201 }
+        );
+      });
+
+      const starcite = new Starcite({
+        baseUrl: "http://localhost:4000",
+        fetch: fetchMock,
+      });
+      const session = await starcite.session({ token: sessionToken });
+
+      const firstAppend = session.append({ text: "one" });
+      const secondAppend = session.append({ text: "two" });
+
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(Promise.all([firstAppend, secondAppend])).resolves.toEqual([
+        { seq: 1, deduped: false },
+        { seq: 2, deduped: false },
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const requestBodies = fetchMock.mock.calls.map((call) => {
+        return JSON.parse((call[1] as RequestInit).body as string) as {
+          producer_seq: number;
+        };
+      });
+
+      expect(requestBodies.map((body) => body.producer_seq)).toEqual([1, 1, 2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries retryable append API responses before succeeding", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const sessionToken = makeTailSessionToken(
+        "ses_retryable_status",
+        "agent:writer"
+      );
+
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              error: "upstream_unavailable",
+              message: "please retry",
+            }),
+            { status: 503, statusText: "Service Unavailable" }
+          )
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ seq: 1, last_seq: 1, deduped: false }),
+            {
+              status: 201,
+            }
+          )
+        );
+
+      const starcite = new Starcite({
+        baseUrl: "http://localhost:4000",
+        fetch: fetchMock,
+      });
+      const session = await starcite.session({ token: sessionToken });
+
+      const appendPromise = session.append({ text: "retry 503" });
+
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(appendPromise).resolves.toEqual({ seq: 1, deduped: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry non-retryable append API failures and still releases the queue", async () => {
+    const sessionToken = makeTailSessionToken(
+      "ses_hard_failure",
+      "agent:writer"
+    );
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "invalid_event",
+            message: "payload rejected",
+          }),
+          { status: 400, statusText: "Bad Request" }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ seq: 2, last_seq: 2, deduped: false }), {
+          status: 201,
+        })
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const session = await starcite.session({ token: sessionToken });
+
+    const firstAppend = session.append({ text: "bad payload" });
+    const secondAppend = session.append({ text: "still send next" });
+
+    await expect(firstAppend).rejects.toBeInstanceOf(StarciteApiError);
+    await expect(secondAppend).resolves.toEqual({ seq: 2, deduped: false });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const requestBodies = fetchMock.mock.calls.map((call) => {
+      return JSON.parse((call[1] as RequestInit).body as string) as {
+        producer_seq: number;
+      };
+    });
+
+    expect(requestBodies.map((body) => body.producer_seq)).toEqual([1, 2]);
+  });
+
+  it("aborts a retrying append and lets later queued appends proceed", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const sessionToken = makeTailSessionToken(
+        "ses_abort_retry",
+        "agent:writer"
+      );
+      const abortController = new AbortController();
+
+      fetchMock.mockImplementation((url, init) => {
+        expect(url).toBe(
+          "http://localhost:4000/v1/sessions/ses_abort_retry/append"
+        );
+        const requestInit = init as RequestInit;
+        const body = JSON.parse(requestInit.body as string) as {
+          producer_seq: number;
+        };
+
+        if (body.producer_seq === 1) {
+          throw new Error("temporary network failure");
+        }
+
+        return new Response(
+          JSON.stringify({
+            seq: body.producer_seq,
+            last_seq: body.producer_seq,
+            deduped: false,
+          }),
+          { status: 201 }
+        );
+      });
+
+      const starcite = new Starcite({
+        baseUrl: "http://localhost:4000",
+        fetch: fetchMock,
+      });
+      const session = await starcite.session({ token: sessionToken });
+
+      const firstAppend = session.append(
+        { text: "cancel me" },
+        { signal: abortController.signal }
+      );
+      const secondAppend = session.append({ text: "send after abort" });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      abortController.abort();
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(firstAppend).rejects.toThrow("append() aborted");
+      await expect(secondAppend).resolves.toEqual({ seq: 2, deduped: false });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const requestBodies = fetchMock.mock.calls.map((call) => {
+        return JSON.parse((call[1] as RequestInit).body as string) as {
+          producer_seq: number;
+        };
+      });
+
+      expect(requestBodies.map((body) => body.producer_seq)).toEqual([1, 2]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("validates baseUrl at client construction", () => {
@@ -1606,6 +1884,132 @@ describe("Starcite", () => {
     expect(replayedSeqs).toEqual([1, 2]);
     stopReplay();
     secondSession.disconnect();
+  });
+
+  it("ignores corrupt persisted session state and clears the cache", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const clearStore = vi.fn();
+    const store = {
+      load() {
+        return {
+          cursor: 1,
+          events: [
+            {
+              seq: 2,
+              type: "content",
+              payload: { text: "corrupt cached frame" },
+              actor: "agent:drafter",
+              producer_id: "producer:drafter",
+              producer_seq: 2,
+            },
+          ],
+        };
+      },
+      save() {
+        return;
+      },
+      clear: clearStore,
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    expect(session.log.cursor).toBe(0);
+    expect(session.log.events).toEqual([]);
+    expect(clearStore).toHaveBeenCalledWith("ses_tail");
+
+    session.on("event", () => undefined);
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+      )
+    );
+
+    session.disconnect();
+  });
+
+  it("continues live sync when session store save fails", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let shouldFailSave = true;
+    const saveStore = vi.fn(() => {
+      if (shouldFailSave) {
+        shouldFailSave = false;
+        throw new Error("quota exceeded");
+      }
+    });
+    const store = {
+      load() {
+        return undefined;
+      },
+      save: saveStore,
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await waitForValues(observedSeqs, 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2]);
+    expect(syncErrors).toHaveLength(1);
+    expect(syncErrors[0]?.message).toContain("Session store save failed");
+    expect(saveStore).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(1);
+
+    session.disconnect();
   });
 
   it("marks cold-start catch-up events as replay before switching to live", async () => {

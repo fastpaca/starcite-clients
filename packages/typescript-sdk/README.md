@@ -254,6 +254,7 @@ session.log.cursor; // number — highest applied seq
 await session.append({ text: "hello" });
 await session.append({ payload: { ok: true }, type: "custom", source: "user" });
 // -> Promise<AppendResult> = { seq: number, deduped: boolean }
+// transient transport failures are retried with backoff while preserving append order
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 

@@ -1,5 +1,9 @@
 import EventEmitter from "eventemitter3";
-import { StarciteError } from "./errors";
+import {
+  StarciteApiError,
+  StarciteConnectionError,
+  StarciteError,
+} from "./errors";
 import type { StarciteIdentity } from "./identity";
 import { SessionLog, SessionLogGapError } from "./session-log";
 import { TailStream } from "./tail/stream";
@@ -47,6 +51,12 @@ interface TailRuntime<TEvent extends SessionEvent> {
   dispose: () => Promise<void>;
 }
 
+const APPEND_RETRY_INITIAL_DELAY_MS = 250;
+const APPEND_RETRY_MAX_DELAY_MS = 5000;
+const RETRYABLE_APPEND_STATUS_CODES = new Set([
+  408, 425, 429, 500, 502, 503, 504,
+]);
+
 /**
  * Session-scoped client bound to a specific identity and session token.
  *
@@ -88,10 +98,7 @@ export class StarciteSession {
     this.store = options.store;
     this.log = new SessionLog(options.logOptions);
 
-    const storedState = this.store?.load(this.id);
-    if (storedState !== undefined) {
-      this.log.hydrate(storedState);
-    }
+    this.restorePersistedLogState();
   }
 
   /**
@@ -145,16 +152,7 @@ export class StarciteSession {
     input: AppendEventRequest,
     options?: RequestOptions
   ): Promise<AppendEventResponse> {
-    return request(
-      this.transport,
-      `/sessions/${encodeURIComponent(this.id)}/append`,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        signal: options?.signal,
-      },
-      AppendEventResponseSchema
-    );
+    return this.appendRawWithRetry(input, options);
   }
 
   /**
@@ -627,18 +625,153 @@ export class StarciteSession {
     });
   }
 
+  private async appendRawWithRetry(
+    input: AppendEventRequest,
+    options?: RequestOptions
+  ): Promise<AppendEventResponse> {
+    let retryDelayMs = APPEND_RETRY_INITIAL_DELAY_MS;
+
+    while (true) {
+      if (options?.signal?.aborted) {
+        throw new StarciteError(
+          `append() aborted for session '${this.id}' before the request could be sent`
+        );
+      }
+
+      try {
+        return await request(
+          this.transport,
+          `/sessions/${encodeURIComponent(this.id)}/append`,
+          {
+            method: "POST",
+            body: JSON.stringify(input),
+            signal: options?.signal,
+          },
+          AppendEventResponseSchema
+        );
+      } catch (error) {
+        if (!this.isRetryableAppendError(error, options?.signal)) {
+          throw error;
+        }
+
+        await this.waitForAppendRetry(retryDelayMs, options?.signal);
+        retryDelayMs = Math.min(retryDelayMs * 2, APPEND_RETRY_MAX_DELAY_MS);
+      }
+    }
+  }
+
+  private restorePersistedLogState(): void {
+    if (!this.store) {
+      return;
+    }
+
+    let storedState: ReturnType<SessionStore["load"]>;
+    try {
+      storedState = this.store.load(this.id);
+    } catch {
+      return;
+    }
+
+    if (storedState === undefined) {
+      return;
+    }
+
+    try {
+      // Persisted session state is a cache boundary and must not brick session startup.
+      this.log.hydrate(storedState);
+    } catch {
+      this.clearPersistedLogState();
+    }
+  }
+
   private persistLogState(): void {
     if (!this.store) {
       return;
     }
 
-    this.store.save(this.id, {
-      cursor: this.log.cursor,
-      events: [...this.log.events],
-      metadata: {
-        schemaVersion: 1,
-        updatedAtMs: Date.now(),
-      },
+    try {
+      this.store.save(this.id, {
+        cursor: this.log.cursor,
+        events: [...this.log.events],
+        metadata: {
+          schemaVersion: 1,
+          updatedAtMs: Date.now(),
+        },
+      });
+    } catch (error) {
+      const storeError =
+        error instanceof Error
+          ? new StarciteError(
+              `Session store save failed for session '${this.id}': ${error.message}`
+            )
+          : new StarciteError(
+              `Session store save failed for session '${this.id}': ${String(error)}`
+            );
+
+      if (this.lifecycle.listenerCount("error") > 0) {
+        this.lifecycle.emit("error", storeError);
+      }
+    }
+  }
+
+  private clearPersistedLogState(): void {
+    try {
+      this.store?.clear?.(this.id);
+    } catch {
+      // Ignore cache-clear failures; the live stream can still recover state.
+    }
+  }
+
+  private isRetryableAppendError(
+    error: unknown,
+    signal: AbortSignal | undefined
+  ): boolean {
+    if (signal?.aborted) {
+      return false;
+    }
+
+    if (error instanceof StarciteConnectionError) {
+      return true;
+    }
+
+    return (
+      error instanceof StarciteApiError &&
+      RETRYABLE_APPEND_STATUS_CODES.has(error.status)
+    );
+  }
+
+  private waitForAppendRetry(
+    delayMs: number,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
+    if (delayMs <= 0 || signal?.aborted) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+
+      const onAbort = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 

@@ -78,10 +78,8 @@ export class SessionLog {
       );
     }
 
-    this.history.length = 0;
-    this.canonicalBySeq.clear();
-    this.appliedSeq = state.cursor;
-
+    const nextHistory: TailEvent[] = [];
+    const nextCanonicalBySeq = new Map<number, string>();
     let previousSeq: number | undefined;
     for (const event of state.events) {
       if (event.seq > state.cursor) {
@@ -96,11 +94,18 @@ export class SessionLog {
         );
       }
 
-      this.history.push(event);
-      this.canonicalBySeq.set(event.seq, JSON.stringify(event));
+      nextHistory.push(event);
+      nextCanonicalBySeq.set(event.seq, JSON.stringify(event));
       previousSeq = event.seq;
     }
 
+    this.history.length = 0;
+    this.history.push(...nextHistory);
+    this.canonicalBySeq.clear();
+    for (const [seq, canonical] of nextCanonicalBySeq.entries()) {
+      this.canonicalBySeq.set(seq, canonical);
+    }
+    this.appliedSeq = state.cursor;
     this.enforceRetention();
   }
 

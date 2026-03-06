@@ -27,11 +27,19 @@ export interface StarciteChatSession {
   on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
+type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
+  TMessage,
+  "id" | "role"
+> & {
+  id?: string;
+  role?: "user";
+};
+
 export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | {
       text: string;
     }
-  | (Omit<TMessage, "id"> & { id?: string });
+  | SendUserMessageInput<TMessage>;
 
 export interface UseStarciteChatOptions {
   session: StarciteChatSession;
@@ -86,8 +94,15 @@ function normalizeOutgoingMessage<TMessage extends UIMessage = UIMessage>(
     } as TMessage;
   }
 
+  if ("role" in input && input.role && input.role !== "user") {
+    throw new Error(
+      `sendMessage() only accepts user messages; received role '${input.role}'`
+    );
+  }
+
   return {
     ...input,
+    role: "user",
     id: input.id ?? createMessageId(),
   } as TMessage;
 }
@@ -139,7 +154,9 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   const refreshVersionRef = useRef(0);
   const sessionKeyRef = useRef(sessionResetKey);
   const onErrorRef = useRef(onError);
-  const liveRefreshScheduledRef = useRef(false);
+  const liveRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const replayRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -156,6 +173,11 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   }, []);
 
   const refreshFromSession = useCallback(() => {
+    const refreshSessionKey = sessionResetKey;
+    if (sessionKeyRef.current !== refreshSessionKey) {
+      return;
+    }
+
     const version = refreshVersionRef.current + 1;
     refreshVersionRef.current = version;
 
@@ -163,7 +185,10 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
     readChatState<TMessage>(snapshot)
       .then((chatState) => {
-        if (refreshVersionRef.current !== version) {
+        if (
+          refreshVersionRef.current !== version ||
+          sessionKeyRef.current !== refreshSessionKey
+        ) {
           return;
         }
 
@@ -173,41 +198,67 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
             return "streaming";
           }
 
-          return current === "submitted" ? "submitted" : "ready";
+          if (current === "submitted" || current === "error") {
+            return current;
+          }
+
+          return "ready";
         });
       })
       .catch((error) => {
+        if (
+          refreshVersionRef.current !== version ||
+          sessionKeyRef.current !== refreshSessionKey
+        ) {
+          return;
+        }
+
         reportError(error);
       });
-  }, [reportError, session]);
+  }, [reportError, session, sessionResetKey]);
 
   const scheduleLiveRefreshFromSession = useCallback(() => {
-    if (liveRefreshScheduledRef.current) {
+    const scheduledSessionKey = sessionResetKey;
+    if (liveRefreshTimeoutRef.current !== null) {
       return;
     }
 
-    liveRefreshScheduledRef.current = true;
-    setTimeout(() => {
-      liveRefreshScheduledRef.current = false;
+    liveRefreshTimeoutRef.current = setTimeout(() => {
+      liveRefreshTimeoutRef.current = null;
+      if (sessionKeyRef.current !== scheduledSessionKey) {
+        return;
+      }
+
       refreshFromSession();
     }, 16);
-  }, [refreshFromSession]);
+  }, [refreshFromSession, sessionResetKey]);
 
   const scheduleReplayRefreshFromSession = useCallback(() => {
+    const scheduledSessionKey = sessionResetKey;
     if (replayRefreshTimeoutRef.current !== null) {
       clearTimeout(replayRefreshTimeoutRef.current);
     }
 
     replayRefreshTimeoutRef.current = setTimeout(() => {
       replayRefreshTimeoutRef.current = null;
+      if (sessionKeyRef.current !== scheduledSessionKey) {
+        return;
+      }
+
       refreshFromSession();
     }, 120);
-  }, [refreshFromSession]);
+  }, [refreshFromSession, sessionResetKey]);
 
   const sendMessage = useCallback(
     async (message: SendMessageInput<TMessage>): Promise<void> => {
       const requestSessionKey = sessionKeyRef.current;
-      const outgoingMessage = normalizeOutgoingMessage<TMessage>(message);
+      let outgoingMessage: TMessage;
+
+      try {
+        outgoingMessage = normalizeOutgoingMessage<TMessage>(message);
+      } catch (error) {
+        throw reportError(error);
+      }
 
       setStatus("submitted");
 
@@ -226,6 +277,10 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
         refreshFromSession();
       } catch (error) {
+        if (sessionKeyRef.current !== requestSessionKey) {
+          throw normalizeError(error);
+        }
+
         refreshVersionRef.current += 1;
         throw reportError(error);
       }
@@ -273,7 +328,11 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     return () => {
       refreshVersionRef.current += 1;
 
-      liveRefreshScheduledRef.current = false;
+      if (liveRefreshTimeoutRef.current !== null) {
+        clearTimeout(liveRefreshTimeoutRef.current);
+        liveRefreshTimeoutRef.current = null;
+      }
+
       if (replayRefreshTimeoutRef.current !== null) {
         clearTimeout(replayRefreshTimeoutRef.current);
         replayRefreshTimeoutRef.current = null;

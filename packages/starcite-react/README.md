@@ -62,6 +62,7 @@ export function Chat({ token }: { token: string }) {
   - `chat.user.message`
   - `chat.assistant.chunk`
 - Appends outgoing user messages as strict chat envelopes.
+- When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
 
 ## Exports

@@ -15,6 +15,7 @@ import {
   createUserMessageEnvelope,
 } from "../src/chat-protocol";
 import {
+  type SendMessageInput,
   type StarciteChatSession,
   useStarciteChat,
 } from "../src/use-starcite-chat";
@@ -117,16 +118,19 @@ class FakeSession implements StarciteChatSession {
   }
 }
 
-function assistantText(messages: readonly UIMessage[]): string {
-  const assistant = [...messages].reverse().find((message) => {
-    return message.role === "assistant";
+function messageText(
+  messages: readonly UIMessage[],
+  role: UIMessage["role"]
+): string {
+  const target = [...messages].reverse().find((message) => {
+    return message.role === role;
   });
 
-  if (!assistant) {
+  if (!target) {
     return "";
   }
 
-  for (const part of assistant.parts) {
+  for (const part of target.parts) {
     if (
       part.type === "text" &&
       "text" in part &&
@@ -137,6 +141,10 @@ function assistantText(messages: readonly UIMessage[]): string {
   }
 
   return "";
+}
+
+function assistantText(messages: readonly UIMessage[]): string {
+  return messageText(messages, "assistant");
 }
 
 describe("useStarciteChat", () => {
@@ -294,6 +302,27 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("error");
   });
 
+  it("rejects non-user sendMessage payloads before appending", async () => {
+    const session = new FakeSession("ses_invalid_outgoing_role");
+    const { result } = renderHook(() => useStarciteChat({ session }));
+
+    const invalidMessage = {
+      role: "assistant",
+      parts: [{ type: "text", text: "should never append" }],
+    } as unknown as SendMessageInput<UIMessage>;
+
+    await act(async () => {
+      await expect(result.current.sendMessage(invalidMessage)).rejects.toThrow(
+        "sendMessage() only accepts user messages"
+      );
+    });
+
+    expect(session.appendCalls).toEqual([]);
+    await waitFor(() => {
+      expect(result.current.status).toBe("error");
+    });
+  });
+
   it("forwards session stream errors without forcing error status", () => {
     const session = new FakeSession("ses_runtime_error");
     const errors: Error[] = [];
@@ -370,6 +399,64 @@ describe("useStarciteChat", () => {
     });
 
     expect(assistantText(result.current.messages)).toBe("replayed response");
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("ignores scheduled live refreshes from a previous session", async () => {
+    vi.useFakeTimers();
+
+    const firstSession = new FakeSession("ses_old");
+    const secondSession = new FakeSession("ses_new", [
+      {
+        seq: 1,
+        type: chatUserMessageEventType,
+        payload: createUserMessageEnvelope({
+          id: "msg_user_new",
+          role: "user",
+          parts: [{ type: "text", text: "new session message" }],
+        }),
+        actor: "user:test",
+        producer_id: "producer:user",
+        producer_seq: 1,
+      },
+    ] as SessionEvent[]);
+
+    const { result, rerender } = renderHook(
+      ({ session }) => useStarciteChat({ session }),
+      {
+        initialProps: { session: firstSession },
+      }
+    );
+
+    act(() => {
+      firstSession.emitEvent(
+        chatUserMessageEventType,
+        createUserMessageEnvelope({
+          id: "msg_user_old",
+          role: "user",
+          parts: [{ type: "text", text: "stale message" }],
+        })
+      );
+      rerender({ session: secondSession });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(messageText(result.current.messages, "user")).toBe(
+      "new session message"
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    expect(messageText(result.current.messages, "user")).toBe(
+      "new session message"
+    );
+    expect(result.current.messages).toHaveLength(1);
     expect(result.current.status).toBe("ready");
   });
 
