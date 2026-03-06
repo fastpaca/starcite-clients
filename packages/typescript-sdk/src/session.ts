@@ -102,101 +102,6 @@ const RETRYABLE_APPEND_STATUS_CODES = new Set([
   408, 425, 429, 500, 502, 503, 504,
 ]);
 
-function resolvePositiveInteger(
-  name: string,
-  value: number | undefined,
-  fallback: number
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new StarciteError(`${name} must be a positive integer`);
-  }
-
-  return value;
-}
-
-function resolveNonNegativeInteger(
-  name: string,
-  value: number | undefined,
-  fallback: number
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  if (!Number.isInteger(value) || value < 0) {
-    throw new StarciteError(`${name} must be a non-negative integer`);
-  }
-
-  return value;
-}
-
-function resolveSessionAppendOptions(
-  options: SessionAppendOptions | undefined,
-  hasStore: boolean
-): ResolvedSessionAppendOptions {
-  const retryPolicyOptions = options?.retryPolicy;
-  const mode = retryPolicyOptions?.mode ?? "exponential";
-  if (mode !== "fixed" && mode !== "exponential") {
-    throw new StarciteError(
-      "appendOptions.retryPolicy.mode must be 'fixed' or 'exponential'"
-    );
-  }
-
-  const initialDelayMs = resolvePositiveInteger(
-    "appendOptions.retryPolicy.initialDelayMs",
-    retryPolicyOptions?.initialDelayMs,
-    APPEND_RETRY_INITIAL_DELAY_MS
-  );
-  const maxDelayMs = resolvePositiveInteger(
-    "appendOptions.retryPolicy.maxDelayMs",
-    retryPolicyOptions?.maxDelayMs,
-    APPEND_RETRY_MAX_DELAY_MS
-  );
-  const multiplier = resolvePositiveInteger(
-    "appendOptions.retryPolicy.multiplier",
-    retryPolicyOptions?.multiplier,
-    APPEND_RETRY_MULTIPLIER
-  );
-  const jitterRatio =
-    retryPolicyOptions?.jitterRatio ?? APPEND_RETRY_JITTER_RATIO;
-  if (jitterRatio < 0 || jitterRatio > 1) {
-    throw new StarciteError(
-      "appendOptions.retryPolicy.jitterRatio must be between 0 and 1"
-    );
-  }
-
-  const maxAttempts = resolveNonNegativeInteger(
-    "appendOptions.retryPolicy.maxAttempts",
-    retryPolicyOptions?.maxAttempts,
-    Number.POSITIVE_INFINITY
-  );
-
-  const terminalFailureMode = options?.terminalFailureMode ?? "pause";
-  if (terminalFailureMode !== "pause" && terminalFailureMode !== "clear") {
-    throw new StarciteError(
-      "appendOptions.terminalFailureMode must be 'pause' or 'clear'"
-    );
-  }
-
-  return {
-    retryPolicy: {
-      mode,
-      initialDelayMs,
-      maxDelayMs,
-      multiplier,
-      jitterRatio,
-      maxAttempts,
-    },
-    persist: hasStore && (options?.persist ?? true),
-    autoFlush: options?.autoFlush ?? true,
-    terminalFailureMode,
-  };
-}
-
 function calculateAppendRetryDelay(
   retryAttempt: number,
   policy: ResolvedSessionAppendRetryPolicy
@@ -311,10 +216,23 @@ export class StarciteSession {
     this.transport = options.transport;
     this.record = options.record;
     this.store = options.store;
-    this.appendOptions = resolveSessionAppendOptions(
-      options.appendOptions,
-      this.store !== undefined
-    );
+    const retryPolicy = options.appendOptions?.retryPolicy;
+    this.appendOptions = {
+      retryPolicy: {
+        mode: retryPolicy?.mode ?? "exponential",
+        initialDelayMs:
+          retryPolicy?.initialDelayMs ?? APPEND_RETRY_INITIAL_DELAY_MS,
+        maxDelayMs: retryPolicy?.maxDelayMs ?? APPEND_RETRY_MAX_DELAY_MS,
+        multiplier: retryPolicy?.multiplier ?? APPEND_RETRY_MULTIPLIER,
+        jitterRatio: retryPolicy?.jitterRatio ?? APPEND_RETRY_JITTER_RATIO,
+        maxAttempts: retryPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY,
+      },
+      persist:
+        this.store !== undefined && (options.appendOptions?.persist ?? true),
+      autoFlush: options.appendOptions?.autoFlush ?? true,
+      terminalFailureMode:
+        options.appendOptions?.terminalFailureMode ?? "pause",
+    };
     this.appendProducerId = crypto.randomUUID();
     this.log = new SessionLog(options.logOptions);
 

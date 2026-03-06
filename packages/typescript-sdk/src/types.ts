@@ -525,7 +525,7 @@ export const SessionAppendInputSchema = z
     text: z.string().optional(),
     payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),
-    actor: z.string().trim().min(1).optional(),
+    actor: z.string().min(1).optional(),
     source: z.string().optional(),
     metadata: ArbitraryObjectSchema.optional(),
     refs: ArbitraryObjectSchema.optional(),
@@ -687,10 +687,8 @@ export type TailLifecycleEvent =
  */
 export const SessionListOptionsSchema = z.object({
   limit: z.number().int().positive().optional(),
-  cursor: z.string().trim().min(1).optional(),
-  metadata: z
-    .record(z.string().trim().min(1), z.string().trim().min(1))
-    .optional(),
+  cursor: z.string().min(1).optional(),
+  metadata: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 
 export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;

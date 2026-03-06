@@ -108,7 +108,7 @@ export class Starcite {
       ? (input, init) => userFetch(input, init)
       : (input, init) => fetch(input, init);
     const headers = new Headers(options.headers);
-    const apiKey = options.apiKey?.trim();
+    const apiKey = options.apiKey;
     let authorization: string | undefined;
 
     if (apiKey) {

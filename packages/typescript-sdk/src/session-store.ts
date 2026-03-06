@@ -144,7 +144,7 @@ export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
     options: WebStorageSessionStoreOptions<TEvent> = {}
   ) {
     this.storage = storage;
-    const prefix = options.keyPrefix?.trim() || DEFAULT_KEY_PREFIX;
+    const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
     this.keyForSession =
       options.keyForSession ??
       ((sessionId) => `${prefix}:${sessionId}:sessionStore`);
