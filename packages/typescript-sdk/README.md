@@ -255,6 +255,18 @@ await session.append({ text: "hello" });
 await session.append({ payload: { ok: true }, type: "custom", source: "user" });
 // -> Promise<AppendResult> = { seq: number, deduped: boolean }
 // transient transport failures are retried with backoff while preserving append order
+// terminal failures pause the queue by default so later appends cannot skip producer_seq
+
+session.appendState();
+// -> { status, pending, producerId, lastAcknowledgedProducerSeq, ... }
+
+session.on("append", (event) => {
+  console.log(event.type);
+  // queued | attempt_started | retry_scheduled | acknowledged | paused | cleared | resumed | reset
+});
+
+session.resumeAppendQueue(); // retry a paused or restored queue
+session.resetAppendQueue(); // drop queued appends and rotate managed producer identity
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
@@ -292,8 +304,8 @@ This is designed for robust reconnect + resume semantics in long-running multi-a
 
 ## Session Stores
 
-`new Starcite({ store })` accepts a `SessionStore` for cursor + retained-event
-persistence across session rebinds.
+`new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
+and the append outbox across session rebinds.
 
 - No default store is configured. When omitted, startup catch-up replays from
   stream cursor `0`.
@@ -301,6 +313,10 @@ persistence across session rebinds.
   - `load(sessionId)`
   - `save(sessionId, { cursor, events })`
   - optional `clear(sessionId)`
+- `MemoryStore` and `LocalStorageSessionStore` persist the append queue through
+  the same contract.
+- Paused terminal failures are persisted, so a restarted session does not
+  auto-replay a poisoned head append until you explicitly resume or reset it.
 
 ## Error Types You Should Handle
 
