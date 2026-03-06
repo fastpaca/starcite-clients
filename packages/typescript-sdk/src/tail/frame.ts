@@ -33,7 +33,7 @@ function toFrameText(data: unknown): string | undefined {
 }
 
 /**
- * Parses one websocket tail frame into a normalized event batch.
+ * Parses one websocket tail frame into a canonical event batch.
  */
 export function parseTailFrame(data: unknown): TailEvent[] {
   const frameText = toFrameText(data);

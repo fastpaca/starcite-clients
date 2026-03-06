@@ -59,10 +59,6 @@ interface ChatStateSnapshot<TMessage extends UIMessage = UIMessage> {
   assistantOpen: boolean;
 }
 
-function createMessageId(): string {
-  return crypto.randomUUID();
-}
-
 function isTerminalAssistantChunkType(type: string): boolean {
   return type === "finish" || type === "abort";
 }
@@ -75,44 +71,6 @@ const assistantChunkPayloadSchema = z.object({
 function readAssistantChunkType(payload: unknown): string | undefined {
   const result = assistantChunkPayloadSchema.safeParse(payload);
   return result.success ? result.data.chunk.type : undefined;
-}
-
-function hasTextInput<TMessage extends UIMessage>(
-  message: SendMessageInput<TMessage>
-): message is { text: string } {
-  return "text" in message && !("parts" in message);
-}
-
-function normalizeOutgoingMessage<TMessage extends UIMessage = UIMessage>(
-  input: SendMessageInput<TMessage>
-): TMessage {
-  if (hasTextInput(input)) {
-    return {
-      id: createMessageId(),
-      role: "user",
-      parts: [{ type: "text", text: input.text }],
-    } as TMessage;
-  }
-
-  if ("role" in input && input.role && input.role !== "user") {
-    throw new Error(
-      `sendMessage() only accepts user messages; received role '${input.role}'`
-    );
-  }
-
-  return {
-    ...input,
-    role: "user",
-    id: input.id ?? createMessageId(),
-  } as TMessage;
-}
-
-function normalizeError(error: unknown): Error {
-  if (error instanceof Error) {
-    return error;
-  }
-
-  return new Error(String(error));
 }
 
 async function readChatState<TMessage extends UIMessage = UIMessage>(
@@ -166,10 +124,11 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   }, [onError]);
 
   const reportError = useCallback((error: unknown): Error => {
-    const normalized = normalizeError(error);
+    const reportedError =
+      error instanceof Error ? error : new Error(String(error));
     setStatus("error");
-    onErrorRef.current?.(normalized);
-    return normalized;
+    onErrorRef.current?.(reportedError);
+    return reportedError;
   }, []);
 
   const refreshFromSession = useCallback(() => {
@@ -255,7 +214,26 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
       let outgoingMessage: TMessage;
 
       try {
-        outgoingMessage = normalizeOutgoingMessage<TMessage>(message);
+        if ("text" in message && !("parts" in message)) {
+          outgoingMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            parts: [{ type: "text", text: message.text }],
+          } as TMessage;
+        } else {
+          if ("role" in message && message.role && message.role !== "user") {
+            throw new Error(
+              `sendMessage() only accepts user messages; received role '${message.role}'`
+            );
+          }
+
+          const messageId = "id" in message ? message.id : undefined;
+          outgoingMessage = {
+            ...message,
+            role: "user",
+            id: messageId ?? crypto.randomUUID(),
+          } as TMessage;
+        }
       } catch (error) {
         throw reportError(error);
       }
@@ -278,7 +256,7 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
         refreshFromSession();
       } catch (error) {
         if (sessionKeyRef.current !== requestSessionKey) {
-          throw normalizeError(error);
+          throw error instanceof Error ? error : new Error(String(error));
         }
 
         refreshVersionRef.current += 1;
@@ -322,7 +300,9 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
     const offEvent = session.on("event", onSessionEvent, { replay: false });
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(normalizeError(error));
+      onErrorRef.current?.(
+        error instanceof Error ? error : new Error(String(error))
+      );
     });
 
     return () => {

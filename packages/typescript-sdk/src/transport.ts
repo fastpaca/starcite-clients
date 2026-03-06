@@ -23,36 +23,30 @@ export interface TransportConfig {
   readonly websocketFactory: (url: string) => StarciteWebSocket;
 }
 
-/**
- * Validates and normalizes an absolute HTTP URL used for SDK endpoints.
- */
-export function normalizeAbsoluteHttpUrl(
-  value: string,
-  context: string
-): string {
-  const parsed = new URL(value);
+function parseHttpUrl(value: string, context: string): URL {
+  const url = new URL(value);
 
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new StarciteError(`${context} must use http:// or https://`);
   }
 
-  // Strip trailing slashes for consistent path joining.
-  return parsed.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return url;
 }
 
 /**
  * Converts a Starcite base URL to the `/v1` API root used by this SDK.
  */
 export function toApiBaseUrl(baseUrl: string): string {
-  const normalized = normalizeAbsoluteHttpUrl(baseUrl, "baseUrl");
-  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+  const url = parseHttpUrl(baseUrl, "baseUrl");
+  const value = url.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return value.endsWith("/v1") ? value : `${value}/v1`;
 }
 
 /**
  * Converts HTTP API base URL to its websocket equivalent.
  */
 export function toWebSocketBaseUrl(apiBaseUrl: string): string {
-  const url = new URL(apiBaseUrl);
+  const url = parseHttpUrl(apiBaseUrl, "apiBaseUrl");
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString().replace(TRAILING_SLASHES_REGEX, "");
 }

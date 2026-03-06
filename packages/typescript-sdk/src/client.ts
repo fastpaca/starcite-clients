@@ -9,7 +9,6 @@ import { StarciteSession } from "./session";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
-  normalizeAbsoluteHttpUrl,
   request,
   requestWithBaseUrl,
   toApiBaseUrl,
@@ -36,6 +35,7 @@ import {
 const DEFAULT_BASE_URL =
   globalThis.process?.env?.STARCITE_BASE_URL ?? "http://localhost:4000";
 const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
+const TRAILING_SLASHES_REGEX = /\/+$/;
 
 /**
  * Resolves auth issuer base URL in this order:
@@ -45,19 +45,20 @@ function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
   apiKey: string | undefined
 ): string | undefined {
-  if (explicitAuthUrl) {
-    return normalizeAbsoluteHttpUrl(explicitAuthUrl, "authUrl");
+  const value =
+    explicitAuthUrl ??
+    DEFAULT_AUTH_URL ??
+    (apiKey ? inferIssuerAuthorityFromApiKey(apiKey) : undefined);
+  if (!value) {
+    return undefined;
   }
 
-  if (DEFAULT_AUTH_URL) {
-    return normalizeAbsoluteHttpUrl(DEFAULT_AUTH_URL, "STARCITE_AUTH_URL");
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new StarciteError("authUrl must use http:// or https://");
   }
 
-  if (apiKey) {
-    return inferIssuerAuthorityFromApiKey(apiKey);
-  }
-
-  return undefined;
+  return url.toString().replace(TRAILING_SLASHES_REGEX, "");
 }
 
 function mergeAppendOptions(

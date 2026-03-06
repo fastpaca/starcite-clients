@@ -1383,10 +1383,10 @@ export class StarciteSession {
       };
     }
 
-    const normalizedError = this.toError(error);
+    const appendError = this.toError(error);
     return {
-      name: normalizedError.name,
-      message: normalizedError.message,
+      name: appendError.name,
+      message: appendError.message,
       retryable,
       terminal,
       occurredAtMs: Date.now(),
