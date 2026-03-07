@@ -151,4 +151,18 @@ describe("SessionLog", () => {
       log.setMaxEvents(1.5);
     }).toThrow(StarciteError);
   });
+
+  it("does not retain partial state when hydrate validation fails", () => {
+    const log = new SessionLog();
+
+    expect(() => {
+      log.hydrate({
+        cursor: 1,
+        events: [makeEvent(2, "invalid cached event")],
+      });
+    }).toThrow(StarciteError);
+
+    expect(log.lastSeq).toBe(0);
+    expect(log.events).toEqual([]);
+  });
 });

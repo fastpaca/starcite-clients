@@ -277,6 +277,198 @@ export interface SessionSnapshot {
   syncing: boolean;
 }
 
+export type SessionAppendQueueStatus =
+  | "idle"
+  | "flushing"
+  | "retrying"
+  | "paused";
+
+export interface SessionAppendRetryPolicy {
+  /**
+   * Retry mode. `fixed` uses a constant delay, `exponential` grows the delay between attempts.
+   *
+   * Defaults to `exponential`.
+   */
+  mode?: "fixed" | "exponential";
+  /**
+   * Initial retry delay in milliseconds.
+   *
+   * Defaults to `250`.
+   */
+  initialDelayMs?: number;
+  /**
+   * Maximum retry delay in milliseconds.
+   *
+   * Defaults to `5000`.
+   */
+  maxDelayMs?: number;
+  /**
+   * Exponential growth factor applied after each retry attempt.
+   *
+   * Defaults to `2`.
+   */
+  multiplier?: number;
+  /**
+   * Optional jitter ratio (`0..1`) applied around the computed delay.
+   *
+   * Defaults to `0`.
+   */
+  jitterRatio?: number;
+  /**
+   * Maximum retry attempts before the queue enters terminal handling.
+   *
+   * Defaults to unlimited retries.
+   */
+  maxAttempts?: number;
+}
+
+export interface SessionAppendOptions {
+  /**
+   * Retry policy used for transient append failures.
+   */
+  retryPolicy?: SessionAppendRetryPolicy;
+  /**
+   * Whether queued appends should be persisted through the configured `SessionStore`.
+   *
+   * Defaults to `true` when a store is configured.
+   */
+  persist?: boolean;
+  /**
+   * Whether persisted pending appends should start flushing automatically when a session is created.
+   *
+   * Defaults to `true`.
+   */
+  autoFlush?: boolean;
+  /**
+   * How the queue should behave after a terminal append failure.
+   *
+   * `pause` preserves pending appends and blocks later items until the caller
+   * resumes or resets the queue. `clear` drops the queue and rotates producer identity.
+   *
+   * Defaults to `pause`.
+   */
+  terminalFailureMode?: "pause" | "clear";
+}
+
+export interface SessionAppendFailureSnapshot {
+  name: string;
+  message: string;
+  retryable: boolean;
+  terminal: boolean;
+  occurredAtMs: number;
+  status?: number;
+  code?: string;
+}
+
+export const SessionAppendFailureSnapshotSchema = z.object({
+  name: z.string().min(1),
+  message: z.string().min(1),
+  retryable: z.boolean(),
+  terminal: z.boolean(),
+  occurredAtMs: z.number().int().nonnegative(),
+  status: z.number().int().nonnegative().optional(),
+  code: z.string().min(1).optional(),
+});
+
+export interface SessionPendingAppend {
+  id: string;
+  request: AppendEventRequest;
+  enqueuedAtMs: number;
+  retryAttempt: number;
+}
+
+export interface SessionAppendQueueState {
+  status: SessionAppendQueueStatus;
+  producerId: string;
+  lastAcknowledgedProducerSeq: number;
+  pending: SessionPendingAppend[];
+  inFlightItemId?: string;
+  retryAttempt?: number;
+  nextRetryAtMs?: number;
+  lastFailure?: SessionAppendFailureSnapshot;
+}
+
+export type SessionAppendLifecycleEvent =
+  | {
+      type: "queued";
+      sessionId: string;
+      item: SessionPendingAppend;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "attempt_started";
+      sessionId: string;
+      itemId: string;
+      attempt: number;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "retry_scheduled";
+      sessionId: string;
+      itemId: string;
+      attempt: number;
+      delayMs: number;
+      failure: SessionAppendFailureSnapshot;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "acknowledged";
+      sessionId: string;
+      itemId: string;
+      seq: number;
+      deduped: boolean;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "paused";
+      sessionId: string;
+      itemId: string;
+      failure: SessionAppendFailureSnapshot;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "cleared";
+      sessionId: string;
+      itemId: string;
+      failure: SessionAppendFailureSnapshot;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "resumed";
+      sessionId: string;
+      queue: SessionAppendQueueState;
+    }
+  | {
+      type: "reset";
+      sessionId: string;
+      queue: SessionAppendQueueState;
+    };
+
+export type SessionAppendListener = (
+  event: SessionAppendLifecycleEvent
+) => void | Promise<void>;
+
+export const SessionStoredAppendSchema = z.object({
+  id: z.string().min(1),
+  request: AppendEventRequestSchema,
+  enqueuedAtMs: z.number().int().nonnegative(),
+  retryAttempt: z.number().int().nonnegative().optional().default(0),
+});
+
+export type SessionStoredAppend = z.infer<typeof SessionStoredAppendSchema>;
+
+export const SessionAppendStoreStateSchema = z.object({
+  producerId: z.string().min(1),
+  lastAcknowledgedProducerSeq: z.number().int().nonnegative(),
+  pending: z.array(SessionStoredAppendSchema),
+  status: z.enum(["idle", "paused"]).optional(),
+  lastFailure: SessionAppendFailureSnapshotSchema.optional(),
+});
+
+export type SessionAppendStoreState = z.infer<
+  typeof SessionAppendStoreStateSchema
+>;
+
 /**
  * Serializable persisted state for one session log.
  */
@@ -284,7 +476,7 @@ export interface SessionStoreMetadata {
   /**
    * Store payload schema version.
    */
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   /**
    * Unix epoch milliseconds when this snapshot was written.
    */
@@ -303,6 +495,10 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
    * Retained events snapshot used for immediate replay.
    */
   events: TEvent[];
+  /**
+   * Optional persisted append queue + producer state.
+   */
+  append?: SessionAppendStoreState;
   /**
    * Optional metadata for versioning and operational introspection.
    */
@@ -329,7 +525,7 @@ export const SessionAppendInputSchema = z
     text: z.string().optional(),
     payload: ArbitraryObjectSchema.optional(),
     type: z.string().optional(),
-    actor: z.string().trim().min(1).optional(),
+    actor: z.string().min(1).optional(),
     source: z.string().optional(),
     metadata: ArbitraryObjectSchema.optional(),
     refs: ArbitraryObjectSchema.optional(),
@@ -491,10 +687,8 @@ export type TailLifecycleEvent =
  */
 export const SessionListOptionsSchema = z.object({
   limit: z.number().int().positive().optional(),
-  cursor: z.string().trim().min(1).optional(),
-  metadata: z
-    .record(z.string().trim().min(1), z.string().trim().min(1))
-    .optional(),
+  cursor: z.string().min(1).optional(),
+  metadata: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 
 export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
@@ -581,6 +775,10 @@ export interface StarciteOptions {
    * When omitted, fresh attaches start from cursor `0` and replay from server tail.
    */
   store?: SessionStore;
+  /**
+   * Default append queue behavior for sessions created by this client.
+   */
+  appendOptions?: SessionAppendOptions;
 }
 
 /**

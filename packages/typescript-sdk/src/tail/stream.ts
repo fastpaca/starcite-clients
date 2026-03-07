@@ -75,7 +75,7 @@ export class TailStream {
 
     this.cursor = opts.cursor ?? 0;
     this.batchSize = opts.batchSize;
-    this.agent = opts.agent?.trim();
+    this.agent = opts.agent;
     this.follow = follow;
     // Catch-up mode (`follow: false`) is single-pass and never reconnects.
     this.shouldReconnect = follow ? (opts.reconnect ?? true) : false;

@@ -27,11 +27,19 @@ export interface StarciteChatSession {
   on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
+type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
+  TMessage,
+  "id" | "role"
+> & {
+  id?: string;
+  role?: "user";
+};
+
 export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | {
       text: string;
     }
-  | (Omit<TMessage, "id"> & { id?: string });
+  | SendUserMessageInput<TMessage>;
 
 export interface UseStarciteChatOptions {
   session: StarciteChatSession;
@@ -51,10 +59,6 @@ interface ChatStateSnapshot<TMessage extends UIMessage = UIMessage> {
   assistantOpen: boolean;
 }
 
-function createMessageId(): string {
-  return crypto.randomUUID();
-}
-
 function isTerminalAssistantChunkType(type: string): boolean {
   return type === "finish" || type === "abort";
 }
@@ -67,37 +71,6 @@ const assistantChunkPayloadSchema = z.object({
 function readAssistantChunkType(payload: unknown): string | undefined {
   const result = assistantChunkPayloadSchema.safeParse(payload);
   return result.success ? result.data.chunk.type : undefined;
-}
-
-function hasTextInput<TMessage extends UIMessage>(
-  message: SendMessageInput<TMessage>
-): message is { text: string } {
-  return "text" in message && !("parts" in message);
-}
-
-function normalizeOutgoingMessage<TMessage extends UIMessage = UIMessage>(
-  input: SendMessageInput<TMessage>
-): TMessage {
-  if (hasTextInput(input)) {
-    return {
-      id: createMessageId(),
-      role: "user",
-      parts: [{ type: "text", text: input.text }],
-    } as TMessage;
-  }
-
-  return {
-    ...input,
-    id: input.id ?? createMessageId(),
-  } as TMessage;
-}
-
-function normalizeError(error: unknown): Error {
-  if (error instanceof Error) {
-    return error;
-  }
-
-  return new Error(String(error));
 }
 
 async function readChatState<TMessage extends UIMessage = UIMessage>(
@@ -139,7 +112,9 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   const refreshVersionRef = useRef(0);
   const sessionKeyRef = useRef(sessionResetKey);
   const onErrorRef = useRef(onError);
-  const liveRefreshScheduledRef = useRef(false);
+  const liveRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const replayRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -149,13 +124,19 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   }, [onError]);
 
   const reportError = useCallback((error: unknown): Error => {
-    const normalized = normalizeError(error);
+    const reportedError =
+      error instanceof Error ? error : new Error(String(error));
     setStatus("error");
-    onErrorRef.current?.(normalized);
-    return normalized;
+    onErrorRef.current?.(reportedError);
+    return reportedError;
   }, []);
 
   const refreshFromSession = useCallback(() => {
+    const refreshSessionKey = sessionResetKey;
+    if (sessionKeyRef.current !== refreshSessionKey) {
+      return;
+    }
+
     const version = refreshVersionRef.current + 1;
     refreshVersionRef.current = version;
 
@@ -163,7 +144,10 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
     readChatState<TMessage>(snapshot)
       .then((chatState) => {
-        if (refreshVersionRef.current !== version) {
+        if (
+          refreshVersionRef.current !== version ||
+          sessionKeyRef.current !== refreshSessionKey
+        ) {
           return;
         }
 
@@ -173,41 +157,86 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
             return "streaming";
           }
 
-          return current === "submitted" ? "submitted" : "ready";
+          if (current === "submitted" || current === "error") {
+            return current;
+          }
+
+          return "ready";
         });
       })
       .catch((error) => {
+        if (
+          refreshVersionRef.current !== version ||
+          sessionKeyRef.current !== refreshSessionKey
+        ) {
+          return;
+        }
+
         reportError(error);
       });
-  }, [reportError, session]);
+  }, [reportError, session, sessionResetKey]);
 
   const scheduleLiveRefreshFromSession = useCallback(() => {
-    if (liveRefreshScheduledRef.current) {
+    const scheduledSessionKey = sessionResetKey;
+    if (liveRefreshTimeoutRef.current !== null) {
       return;
     }
 
-    liveRefreshScheduledRef.current = true;
-    setTimeout(() => {
-      liveRefreshScheduledRef.current = false;
+    liveRefreshTimeoutRef.current = setTimeout(() => {
+      liveRefreshTimeoutRef.current = null;
+      if (sessionKeyRef.current !== scheduledSessionKey) {
+        return;
+      }
+
       refreshFromSession();
     }, 16);
-  }, [refreshFromSession]);
+  }, [refreshFromSession, sessionResetKey]);
 
   const scheduleReplayRefreshFromSession = useCallback(() => {
+    const scheduledSessionKey = sessionResetKey;
     if (replayRefreshTimeoutRef.current !== null) {
       clearTimeout(replayRefreshTimeoutRef.current);
     }
 
     replayRefreshTimeoutRef.current = setTimeout(() => {
       replayRefreshTimeoutRef.current = null;
+      if (sessionKeyRef.current !== scheduledSessionKey) {
+        return;
+      }
+
       refreshFromSession();
     }, 120);
-  }, [refreshFromSession]);
+  }, [refreshFromSession, sessionResetKey]);
 
   const sendMessage = useCallback(
     async (message: SendMessageInput<TMessage>): Promise<void> => {
       const requestSessionKey = sessionKeyRef.current;
-      const outgoingMessage = normalizeOutgoingMessage<TMessage>(message);
+      let outgoingMessage: TMessage;
+
+      try {
+        if ("text" in message && !("parts" in message)) {
+          outgoingMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            parts: [{ type: "text", text: message.text }],
+          } as TMessage;
+        } else {
+          if ("role" in message && message.role && message.role !== "user") {
+            throw new Error(
+              `sendMessage() only accepts user messages; received role '${message.role}'`
+            );
+          }
+
+          const messageId = "id" in message ? message.id : undefined;
+          outgoingMessage = {
+            ...message,
+            role: "user",
+            id: messageId ?? crypto.randomUUID(),
+          } as TMessage;
+        }
+      } catch (error) {
+        throw reportError(error);
+      }
 
       setStatus("submitted");
 
@@ -226,6 +255,10 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
         refreshFromSession();
       } catch (error) {
+        if (sessionKeyRef.current !== requestSessionKey) {
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+
         refreshVersionRef.current += 1;
         throw reportError(error);
       }
@@ -267,13 +300,19 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
     const offEvent = session.on("event", onSessionEvent, { replay: false });
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(normalizeError(error));
+      onErrorRef.current?.(
+        error instanceof Error ? error : new Error(String(error))
+      );
     });
 
     return () => {
       refreshVersionRef.current += 1;
 
-      liveRefreshScheduledRef.current = false;
+      if (liveRefreshTimeoutRef.current !== null) {
+        clearTimeout(liveRefreshTimeoutRef.current);
+        liveRefreshTimeoutRef.current = null;
+      }
+
       if (replayRefreshTimeoutRef.current !== null) {
         clearTimeout(replayRefreshTimeoutRef.current);
         replayRefreshTimeoutRef.current = null;

@@ -46,9 +46,9 @@ export default function Page() {
     let cancelled = false;
 
     void (async () => {
-      const fromQuery = new URLSearchParams(window.location.search)
-        .get("sessionId")
-        ?.trim();
+      const fromQuery = new URLSearchParams(window.location.search).get(
+        "sessionId"
+      );
 
       const response = await fetch("/api/starcite/session", {
         method: "POST",

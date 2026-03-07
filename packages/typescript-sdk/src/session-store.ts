@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { StarciteError } from "./errors";
 import {
+  type AppendEventRequest,
+  type SessionAppendStoreState,
+  SessionAppendStoreStateSchema,
   type SessionStore,
   type SessionStoreState,
   type TailEvent,
@@ -10,13 +13,14 @@ import {
 const DEFAULT_KEY_PREFIX = "starcite";
 
 const SessionStoreMetadataSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   updatedAtMs: z.number().int().nonnegative(),
 });
 
 const SessionStoreStateSchema = z.object({
   cursor: z.number().int().nonnegative(),
   events: z.array(TailEventSchema),
+  append: SessionAppendStoreStateSchema.optional(),
   metadata: SessionStoreMetadataSchema.optional(),
 });
 
@@ -72,7 +76,31 @@ function cloneState<TEvent extends TailEvent>(
   return {
     cursor: state.cursor,
     events: cloneEvents(state.events),
+    append: cloneAppendState(state.append),
     metadata: state.metadata ? { ...state.metadata } : undefined,
+  };
+}
+
+function cloneAppendState(
+  state: SessionAppendStoreState | undefined
+): SessionAppendStoreState | undefined {
+  if (!state) {
+    return undefined;
+  }
+
+  return {
+    producerId: state.producerId,
+    lastAcknowledgedProducerSeq: state.lastAcknowledgedProducerSeq,
+    status: state.status,
+    lastFailure: state.lastFailure ? { ...state.lastFailure } : undefined,
+    pending: state.pending.map((append) => {
+      return {
+        id: append.id,
+        request: structuredClone(append.request) as AppendEventRequest,
+        enqueuedAtMs: append.enqueuedAtMs,
+        retryAttempt: append.retryAttempt,
+      };
+    }),
   };
 }
 
@@ -116,7 +144,7 @@ export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
     options: WebStorageSessionStoreOptions<TEvent> = {}
   ) {
     this.storage = storage;
-    const prefix = options.keyPrefix?.trim() || DEFAULT_KEY_PREFIX;
+    const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
     this.keyForSession =
       options.keyForSession ??
       ((sessionId) => `${prefix}:${sessionId}:sessionStore`);

@@ -5,8 +5,14 @@ import { defineConfig } from "vitest/config";
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "react",
+  },
   resolve: {
     alias: {
+      "@": resolve(currentDirectory, "../../examples/nextjs-chat-ui"),
+      "@starcite/react": resolve(currentDirectory, "./src/index.ts"),
       "@starcite/sdk": resolve(
         currentDirectory,
         "../typescript-sdk/src/index.ts"
