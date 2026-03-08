@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+import type { SessionStore, SessionStoreState, TailEvent } from "@starcite/sdk";
 import Conf from "conf";
 import { cosmiconfig, defaultLoaders } from "cosmiconfig";
 import { lock } from "proper-lockfile";
@@ -35,8 +36,40 @@ const IdentityFileSchema = z.object({
   createdAt: z.string(),
 });
 
+const StoredTailEventSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  type: z.string().min(1),
+  payload: z.record(z.unknown()),
+  actor: z.string().min(1),
+  producer_id: z.string().min(1),
+  producer_seq: z.number().int().positive(),
+  source: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  refs: z.record(z.unknown()).optional(),
+  idempotency_key: z.string().nullable().optional(),
+  inserted_at: z.string().optional(),
+});
+
+const StoredSessionStoreStateSchema = z.object({
+  cursor: z.number().int().nonnegative(),
+  events: z.array(StoredTailEventSchema),
+  producer: z
+    .object({
+      id: z.string().trim().min(1),
+      seq: z.number().int().nonnegative(),
+    })
+    .optional(),
+  metadata: z
+    .object({
+      schemaVersion: z.union([z.literal(1), z.literal(2)]),
+      updatedAtMs: z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+
 const StateFileSchema = z.object({
   nextSeqByContext: z.record(z.number().int().positive()).default({}),
+  sessionStateBySessionId: z.record(StoredSessionStoreStateSchema).default({}),
 });
 
 const CredentialsFileSchema = z.object({
@@ -99,7 +132,7 @@ export function buildSeqContextKey(
   return `${baseUrl}::${sessionId}::${producerId}`;
 }
 
-export class StarciteCliStore {
+export class StarciteCliStore implements SessionStore<TailEvent> {
   readonly directory: string;
   private readonly lockPath: string;
   private readonly configExplorer = cosmiconfig("starcite", {
@@ -136,7 +169,7 @@ export class StarciteCliStore {
       clearInvalidConfig: true,
       configName: STATE_FILENAME,
       fileExtension: "json",
-      defaults: { nextSeqByContext: {} },
+      defaults: { nextSeqByContext: {}, sessionStateBySessionId: {} },
     });
   }
 
@@ -314,6 +347,31 @@ export class StarciteCliStore {
     return Promise.resolve();
   }
 
+  load(sessionId: string): SessionStoreState<TailEvent> | undefined {
+    const state = this.readState();
+    const storedState = state.sessionStateBySessionId[sessionId];
+    return storedState ? structuredClone(storedState) : undefined;
+  }
+
+  save(sessionId: string, sessionState: SessionStoreState<TailEvent>): void {
+    const state = this.readState();
+    this.stateStore.set("sessionStateBySessionId", {
+      ...state.sessionStateBySessionId,
+      [sessionId]: structuredClone(sessionState),
+    });
+  }
+
+  clear(sessionId: string): void {
+    const state = this.readState();
+    if (!(sessionId in state.sessionStateBySessionId)) {
+      return;
+    }
+
+    const sessionStateBySessionId = { ...state.sessionStateBySessionId };
+    Reflect.deleteProperty(sessionStateBySessionId, sessionId);
+    this.stateStore.set("sessionStateBySessionId", sessionStateBySessionId);
+  }
+
   private readState(): StateFile {
     const parsed = StateFileSchema.safeParse(this.stateStore.store);
 
@@ -322,7 +380,7 @@ export class StarciteCliStore {
     }
 
     this.stateStore.clear();
-    return { nextSeqByContext: {} };
+    return { nextSeqByContext: {}, sessionStateBySessionId: {} };
   }
 
   private readCredentials(): CredentialsFile {

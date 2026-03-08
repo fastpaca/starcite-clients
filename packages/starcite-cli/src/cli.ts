@@ -50,7 +50,11 @@ interface StdoutLike {
 }
 
 interface CliDependencies {
-  createClient?: (baseUrl: string, apiKey?: string) => Starcite;
+  createClient?: (
+    baseUrl: string,
+    apiKey?: string,
+    store?: StarciteCliStore
+  ) => Starcite;
   logger?: LoggerLike;
   stdout?: StdoutLike;
   prompt?: PromptAdapter;
@@ -555,7 +559,11 @@ function resolveCreateIdentity(
 }
 
 class StarciteCliApp {
-  private readonly createClient: (baseUrl: string, apiKey?: string) => Starcite;
+  private readonly createClient: (
+    baseUrl: string,
+    apiKey?: string,
+    store?: StarciteCliStore
+  ) => Starcite;
   private readonly logger: LoggerLike;
   private readonly stdout: StdoutLike;
   private readonly prompt: PromptAdapter;
@@ -564,10 +572,11 @@ class StarciteCliApp {
   constructor(deps: CliDependencies = {}) {
     this.createClient =
       deps.createClient ??
-      ((baseUrl: string, apiKey?: string) =>
+      ((baseUrl: string, apiKey?: string, store?: StarciteCliStore) =>
         new Starcite({
           baseUrl,
           apiKey,
+          store,
         }));
     this.logger = deps.logger ?? defaultLogger;
     this.stdout = deps.stdout ?? defaultStdout;
@@ -694,8 +703,8 @@ class StarciteCliApp {
             const resolved = await resolveGlobalOptions(this);
             const { json } = resolved;
             const client = resolved.apiKey
-              ? createClient(resolved.baseUrl, resolved.apiKey)
-              : createClient(resolved.baseUrl);
+              ? createClient(resolved.baseUrl, resolved.apiKey, resolved.store)
+              : createClient(resolved.baseUrl, undefined, resolved.store);
 
             const metadata = options.metadata
               ? parseSessionMetadataFilters(options.metadata)
@@ -802,8 +811,8 @@ class StarciteCliApp {
         const resolved = await resolveGlobalOptions(this);
         const { json } = resolved;
         const client = resolved.apiKey
-          ? createClient(resolved.baseUrl, resolved.apiKey)
-          : createClient(resolved.baseUrl);
+          ? createClient(resolved.baseUrl, resolved.apiKey, resolved.store)
+          : createClient(resolved.baseUrl, undefined, resolved.store);
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
           : undefined;
@@ -854,8 +863,8 @@ class StarciteCliApp {
         const { baseUrl, apiKey, json, store } =
           await resolveGlobalOptions(this);
         const client = apiKey
-          ? createClient(baseUrl, apiKey)
-          : createClient(baseUrl);
+          ? createClient(baseUrl, apiKey, store)
+          : createClient(baseUrl, undefined, store);
 
         const metadata = options.metadata
           ? parseJsonObject(options.metadata, "--metadata")
@@ -878,17 +887,14 @@ class StarciteCliApp {
 
         const response =
           mode.kind === "high-level"
-            ? await appendWithPersistedProducerState({
-                session,
-                store,
-                baseUrl,
-                sessionId,
-                options,
-                actor: session.identity.toActor(),
-                payload: { text: mode.text },
+            ? await session.append({
+                type: options.type,
+                text: mode.text,
+                source: options.source,
                 metadata,
                 refs,
-                source: options.source ?? "agent",
+                idempotencyKey: options.idempotencyKey,
+                expectedSeq: options.expectedSeq,
               })
             : await appendWithPersistedProducerState({
                 session,
@@ -932,10 +938,11 @@ class StarciteCliApp {
           follow: boolean;
         }
       ) {
-        const { baseUrl, apiKey, json } = await resolveGlobalOptions(this);
+        const { baseUrl, apiKey, json, store } =
+          await resolveGlobalOptions(this);
         const client = apiKey
-          ? createClient(baseUrl, apiKey)
-          : createClient(baseUrl);
+          ? createClient(baseUrl, apiKey, store)
+          : createClient(baseUrl, undefined, store);
         const session = await resolveSession(client, apiKey, sessionId);
 
         const abortController = new AbortController();

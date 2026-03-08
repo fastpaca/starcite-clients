@@ -7,10 +7,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SessionStoreState, TailEvent } from "@starcite/sdk";
 import { StarciteIdentity } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import starciteCliPackage from "../package.json";
 import { buildProgram } from "../src/cli";
+import { StarciteCliStore } from "../src/store";
 import type { CommandResult, PromptAdapter } from "../src/up";
 
 const GENERATED_PRODUCER_ID_PATTERN = /^cli:/;
@@ -389,19 +391,16 @@ describe("starcite CLI", () => {
     expect(session).toHaveBeenCalledWith({
       token: sessionToken,
     });
-    expect(fakeSession.append).not.toHaveBeenCalled();
-    expect(fakeSession.appendRaw).toHaveBeenCalledWith({
+    expect(fakeSession.append).toHaveBeenCalledWith({
       type: "content",
-      payload: { text: "Found 8 relevant cases..." },
-      actor: "agent:researcher",
-      producer_id: expect.stringMatching(GENERATED_PRODUCER_ID_PATTERN),
-      producer_seq: 1,
-      source: "agent",
+      text: "Found 8 relevant cases...",
+      source: undefined,
       metadata: undefined,
       refs: undefined,
-      idempotency_key: undefined,
-      expected_seq: undefined,
+      idempotencyKey: undefined,
+      expectedSeq: undefined,
     });
+    expect(fakeSession.appendRaw).not.toHaveBeenCalled();
     expect(info).toContain("seq=1 deduped=false");
   });
 
@@ -545,69 +544,49 @@ describe("starcite CLI", () => {
     }
   });
 
-  it("rehydrates producer identity and sequence for high-level appends", async () => {
+  it("passes the CLI store into the SDK client for high-level appends", async () => {
     const { logger } = makeLogger();
-    const previousProducerId = process.env.STARCITE_PRODUCER_ID;
-    Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
-
-    try {
-      const program = buildProgram({
-        logger,
-        createClient: () => createFakeClient(),
-      });
-
-      await program.parseAsync(
-        [
-          "--config-dir",
-          configDir,
-          "--token",
-          sessionToken,
-          "append",
-          "ses_123",
-          "--agent",
-          "researcher",
-          "--text",
-          "same text",
-        ],
-        { from: "user" }
-      );
-
-      await program.parseAsync(
-        [
-          "--config-dir",
-          configDir,
-          "--token",
-          sessionToken,
-          "append",
-          "ses_123",
-          "--agent",
-          "researcher",
-          "--text",
-          "same text",
-        ],
-        { from: "user" }
-      );
-
-      const firstCall = fakeSession.appendRaw.mock.calls[0]?.[0] as
-        | { actor?: string; producer_id?: string; producer_seq?: number }
-        | undefined;
-      const secondCall = fakeSession.appendRaw.mock.calls[1]?.[0] as
-        | { actor?: string; producer_id?: string; producer_seq?: number }
-        | undefined;
-
-      expect(firstCall?.actor).toBe("agent:researcher");
-      expect(secondCall?.actor).toBe("agent:researcher");
-      expect(firstCall?.producer_id).toMatch(GENERATED_PRODUCER_ID_PATTERN);
-      expect(secondCall?.producer_id).toBe(firstCall?.producer_id);
-      expect(firstCall?.producer_seq).toBe(1);
-      expect(secondCall?.producer_seq).toBe(2);
-    } finally {
-      if (previousProducerId === undefined) {
-        Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
-      } else {
-        process.env.STARCITE_PRODUCER_ID = previousProducerId;
+    const createClient = vi.fn(
+      (
+        _baseUrl: string,
+        _apiKey?: string,
+        store?: {
+          load: (sessionId: string) => SessionStoreState<TailEvent> | undefined;
+          save: (
+            sessionId: string,
+            state: SessionStoreState<TailEvent>
+          ) => void;
+        }
+      ) => {
+        expect(store).toBeDefined();
+        expect(typeof store?.load).toBe("function");
+        expect(typeof store?.save).toBe("function");
+        return createFakeClient();
       }
-    }
+    );
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        sessionToken,
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--text",
+        "same text",
+      ],
+      { from: "user" }
+    );
+
+    expect(createClient).toHaveBeenCalled();
   });
 
   it("reads base URL from config file", async () => {
@@ -644,7 +623,8 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenCalledWith(
       "http://config.local:4100",
-      sessionToken
+      sessionToken,
+      expect.any(StarciteCliStore)
     );
   });
 
@@ -682,7 +662,8 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenCalledWith(
       "http://config-toml.local:4200",
-      sessionToken
+      sessionToken,
+      expect.any(StarciteCliStore)
     );
   });
 
@@ -840,7 +821,8 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
-      authToken
+      authToken,
+      expect.any(StarciteCliStore)
     );
   });
 
@@ -891,7 +873,8 @@ describe("starcite CLI", () => {
     expect(appendSessionInput?.identity.toActor()).toBe("agent:researcher");
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
-      serviceToken
+      serviceToken,
+      expect.any(StarciteCliStore)
     );
     expect(info).toContain("seq=1 deduped=false");
   });
@@ -1018,7 +1001,8 @@ describe("starcite CLI", () => {
     });
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
-      opaqueToken
+      opaqueToken,
+      expect.any(StarciteCliStore)
     );
     expect(info).toContain("seq=1 deduped=false");
   });
@@ -1061,7 +1045,8 @@ describe("starcite CLI", () => {
     expect(tailSessionInput?.id).toBe("ses_123");
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
-      serviceToken
+      serviceToken,
+      expect.any(StarciteCliStore)
     );
     expect(info).toContain("[drafter] Drafting clause 4.2...");
   });
@@ -1111,7 +1096,8 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenLastCalledWith(
       "http://localhost:45187",
-      overrideToken
+      overrideToken,
+      expect.any(StarciteCliStore)
     );
   });
 
