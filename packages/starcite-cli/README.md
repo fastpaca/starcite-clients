@@ -217,9 +217,9 @@ starcite append ses_demo \
 By default the CLI uses `~/.starcite`:
 
 - `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`, `apiKey`)
-- `credentials.json`: saved API key (`apiKey`)
+- `credentials.json`: saved API key plus cached session tokens
 - `identity.json`: generated stable default producer id (`cli:<hostname>:<uuid>`)
-- `state.json`: persisted `nextSeqByContext` dictionary
+- `state.json`: session-scoped store state (retained events, cursors, and producer state)
 
 Use `--config-dir <path>` to override the directory for testing or isolated runs.
 

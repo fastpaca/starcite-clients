@@ -65,11 +65,18 @@ const StoredSessionStoreStateSchema = z.object({
       updatedAtMs: z.number().int().nonnegative(),
     })
     .optional(),
+  producersById: z
+    .record(
+      z.object({
+        id: z.string().trim().min(1),
+        seq: z.number().int().nonnegative(),
+      })
+    )
+    .optional(),
 });
 
 const StateFileSchema = z.object({
-  nextSeqByContext: z.record(z.number().int().positive()).default({}),
-  sessionStateBySessionId: z.record(StoredSessionStoreStateSchema).default({}),
+  sessionStateByContext: z.record(StoredSessionStoreStateSchema).default({}),
 });
 
 const CredentialsFileSchema = z.object({
@@ -124,12 +131,11 @@ export function resolveConfigDir(input?: string): string {
   return resolve(withTilde ?? defaultConfigDirectory());
 }
 
-export function buildSeqContextKey(
+export function buildSessionStoreContextKey(
   baseUrl: string,
-  sessionId: string,
-  producerId: string
+  sessionId: string
 ): string {
-  return `${baseUrl}::${sessionId}::${producerId}`;
+  return `${baseUrl}::${sessionId}`;
 }
 
 export class StarciteCliStore implements SessionStore<TailEvent> {
@@ -169,7 +175,7 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
       clearInvalidConfig: true,
       configName: STATE_FILENAME,
       fileExtension: "json",
-      defaults: { nextSeqByContext: {}, sessionStateBySessionId: {} },
+      defaults: { sessionStateByContext: {} },
     });
   }
 
@@ -328,48 +334,108 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
     }
   }
 
-  readNextSeq(contextKey: string): Promise<number> {
-    const state = this.readState();
-    return Promise.resolve(state.nextSeqByContext[contextKey] ?? 1);
+  sessionStore(baseUrl: string): SessionStore<TailEvent> {
+    return {
+      load: (sessionId) => this.loadScopedState(baseUrl, sessionId),
+      save: (sessionId, sessionState) =>
+        this.saveScopedState(baseUrl, sessionId, sessionState),
+      clear: (sessionId) => this.clearScopedState(baseUrl, sessionId),
+    };
   }
 
-  bumpNextSeq(contextKey: string, usedSeq: number): Promise<void> {
+  readNextSeq(
+    baseUrl: string,
+    sessionId: string,
+    producerId: string
+  ): Promise<number> {
     const state = this.readState();
-    const nextSeqByContext = {
-      ...state.nextSeqByContext,
-      [contextKey]: Math.max(
-        state.nextSeqByContext[contextKey] ?? 1,
-        usedSeq + 1
-      ),
-    };
+    const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
+    const sessionState = state.sessionStateByContext[contextKey];
+    const producerSeq = sessionState?.producersById?.[producerId]?.seq ?? 0;
+    return Promise.resolve(producerSeq + 1);
+  }
 
-    this.stateStore.set("nextSeqByContext", nextSeqByContext);
+  bumpNextSeq(
+    baseUrl: string,
+    sessionId: string,
+    producerId: string,
+    usedSeq: number
+  ): Promise<void> {
+    const state = this.readState();
+    const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
+    const sessionState = state.sessionStateByContext[contextKey];
+    const currentProducerState = sessionState?.producersById?.[producerId];
+
+    this.stateStore.set("sessionStateByContext", {
+      ...state.sessionStateByContext,
+      [contextKey]: {
+        cursor: sessionState?.cursor ?? 0,
+        events: sessionState?.events ?? [],
+        producer: sessionState?.producer,
+        metadata: sessionState?.metadata,
+        producersById: {
+          ...sessionState?.producersById,
+          [producerId]: {
+            id: producerId,
+            seq: Math.max(currentProducerState?.seq ?? 0, usedSeq),
+          },
+        },
+      },
+    });
     return Promise.resolve();
   }
 
   load(sessionId: string): SessionStoreState<TailEvent> | undefined {
-    const state = this.readState();
-    const storedState = state.sessionStateBySessionId[sessionId];
-    return storedState ? structuredClone(storedState) : undefined;
+    return this.loadScopedState("", sessionId);
   }
 
   save(sessionId: string, sessionState: SessionStoreState<TailEvent>): void {
-    const state = this.readState();
-    this.stateStore.set("sessionStateBySessionId", {
-      ...state.sessionStateBySessionId,
-      [sessionId]: structuredClone(sessionState),
-    });
+    this.saveScopedState("", sessionId, sessionState);
   }
 
   clear(sessionId: string): void {
+    this.clearScopedState("", sessionId);
+  }
+
+  private loadScopedState(
+    baseUrl: string,
+    sessionId: string
+  ): SessionStoreState<TailEvent> | undefined {
     const state = this.readState();
-    if (!(sessionId in state.sessionStateBySessionId)) {
+    const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
+    const storedState = state.sessionStateByContext[contextKey];
+    return storedState ? structuredClone(storedState) : undefined;
+  }
+
+  private saveScopedState(
+    baseUrl: string,
+    sessionId: string,
+    sessionState: SessionStoreState<TailEvent>
+  ): void {
+    const state = this.readState();
+    const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
+    const existingState = state.sessionStateByContext[contextKey];
+
+    this.stateStore.set("sessionStateByContext", {
+      ...state.sessionStateByContext,
+      [contextKey]: {
+        ...structuredClone(sessionState),
+        producersById:
+          sessionState.producersById ?? existingState?.producersById,
+      },
+    });
+  }
+
+  private clearScopedState(baseUrl: string, sessionId: string): void {
+    const state = this.readState();
+    const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
+    if (!(contextKey in state.sessionStateByContext)) {
       return;
     }
 
-    const sessionStateBySessionId = { ...state.sessionStateBySessionId };
-    Reflect.deleteProperty(sessionStateBySessionId, sessionId);
-    this.stateStore.set("sessionStateBySessionId", sessionStateBySessionId);
+    const sessionStateByContext = { ...state.sessionStateByContext };
+    Reflect.deleteProperty(sessionStateByContext, contextKey);
+    this.stateStore.set("sessionStateByContext", sessionStateByContext);
   }
 
   private readState(): StateFile {
@@ -380,7 +446,7 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
     }
 
     this.stateStore.clear();
-    return { nextSeqByContext: {}, sessionStateBySessionId: {} };
+    return { sessionStateByContext: {} };
   }
 
   private readCredentials(): CredentialsFile {

@@ -12,7 +12,6 @@ import { StarciteIdentity } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import starciteCliPackage from "../package.json";
 import { buildProgram } from "../src/cli";
-import { StarciteCliStore } from "../src/store";
 import type { CommandResult, PromptAdapter } from "../src/up";
 
 const GENERATED_PRODUCER_ID_PATTERN = /^cli:/;
@@ -624,7 +623,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://config.local:4100",
       sessionToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
   });
 
@@ -663,7 +665,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://config-toml.local:4200",
       sessionToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
   });
 
@@ -822,7 +827,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       authToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
   });
 
@@ -874,7 +882,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       serviceToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
     expect(info).toContain("seq=1 deduped=false");
   });
@@ -1002,7 +1013,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       opaqueToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
     expect(info).toContain("seq=1 deduped=false");
   });
@@ -1046,7 +1060,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       serviceToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
     expect(info).toContain("[drafter] Drafting clause 4.2...");
   });
@@ -1097,7 +1114,10 @@ describe("starcite CLI", () => {
     expect(createClient).toHaveBeenLastCalledWith(
       "http://localhost:45187",
       overrideToken,
-      expect.any(StarciteCliStore)
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
     );
   });
 

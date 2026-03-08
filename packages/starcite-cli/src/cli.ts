@@ -10,7 +10,6 @@ import { createConsola } from "consola";
 import { z } from "zod";
 import starciteCliPackage from "../package.json";
 import {
-  buildSeqContextKey,
   resolveConfigDir,
   type StarciteCliConfig,
   StarciteCliStore,
@@ -414,13 +413,9 @@ async function appendWithPersistedProducerState(input: {
   return await store.withStateLock(async () => {
     const producerId = await store.resolveProducerId(options.producerId);
     const normalizedBaseUrl = toApiBaseUrlForContext(baseUrl);
-    const contextKey = buildSeqContextKey(
-      normalizedBaseUrl,
-      sessionId,
-      producerId
-    );
     const producerSeq =
-      options.producerSeq ?? (await store.readNextSeq(contextKey));
+      options.producerSeq ??
+      (await store.readNextSeq(normalizedBaseUrl, sessionId, producerId));
     const response = await session.appendRaw({
       type: options.type,
       payload,
@@ -434,7 +429,12 @@ async function appendWithPersistedProducerState(input: {
       expected_seq: options.expectedSeq,
     });
 
-    await store.bumpNextSeq(contextKey, producerSeq);
+    await store.bumpNextSeq(
+      normalizedBaseUrl,
+      sessionId,
+      producerId,
+      producerSeq
+    );
     return response;
   });
 }
@@ -576,7 +576,7 @@ class StarciteCliApp {
         new Starcite({
           baseUrl,
           apiKey,
-          store,
+          store: store?.sessionStore(toApiBaseUrlForContext(baseUrl)),
         }));
     this.logger = deps.logger ?? defaultLogger;
     this.stdout = deps.stdout ?? defaultStdout;
