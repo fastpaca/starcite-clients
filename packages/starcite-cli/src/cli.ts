@@ -467,12 +467,7 @@ function matchesAppendIdentity(
   identity: StarciteIdentity,
   selection: AppendIdentitySelection
 ): boolean {
-  if (identity.type !== selection.type) {
-    return false;
-  }
-
-  const expectedPrefixedId = `${selection.type}:${selection.id}`;
-  return identity.id === selection.id || identity.id === expectedPrefixedId;
+  return identity.type === selection.type && identity.id === selection.id;
 }
 
 async function resolveAppendSession(input: {

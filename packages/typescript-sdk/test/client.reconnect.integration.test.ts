@@ -17,13 +17,14 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
 
 function makeTailSessionToken(
   sessionId: string,
-  principalId = "agent:drafter"
+  principalId = "drafter",
+  principalType: "agent" | "user" = "agent"
 ): string {
   return tokenFromClaims({
     session_id: sessionId,
     tenant_id: "test-tenant",
     principal_id: principalId,
-    principal_type: principalId.startsWith("agent:") ? "agent" : "user",
+    principal_type: principalType,
   });
 }
 

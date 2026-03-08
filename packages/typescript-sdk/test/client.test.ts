@@ -134,13 +134,14 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
  */
 function makeTailSessionToken(
   sessionId = "ses_tail",
-  principalId = "agent:drafter"
+  principalId = "drafter",
+  principalType: "agent" | "user" = "agent"
 ): string {
   return tokenFromClaims({
     session_id: sessionId,
     tenant_id: "test-tenant",
     principal_id: principalId,
-    principal_type: principalId.startsWith("agent:") ? "agent" : "user",
+    principal_type: principalType,
   });
 }
 
@@ -151,7 +152,7 @@ function makeApiKey(overrides: Record<string, unknown> = {}): string {
   return tokenFromClaims({
     iss: "https://starcite.ai",
     tenant_id: "test-tenant",
-    principal_id: "user:system",
+    principal_id: "system",
     principal_type: "user",
     ...overrides,
   });
@@ -203,7 +204,7 @@ describe("Starcite", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            token: makeTailSessionToken("ses_1", "agent:researcher"),
+            token: makeTailSessionToken("ses_1", "researcher"),
             expires_in: 3600,
           }),
           { status: 200 }
@@ -270,7 +271,7 @@ describe("Starcite", () => {
   });
 
   it("serializes concurrent appends for a session producer", async () => {
-    const sessionToken = makeTailSessionToken("ses_serial", "agent:writer");
+    const sessionToken = makeTailSessionToken("ses_serial", "writer");
     let releaseFirstAppend: (() => void) | undefined;
     const firstAppendGate = new Promise<void>((resolve) => {
       releaseFirstAppend = resolve;
@@ -336,10 +337,7 @@ describe("Starcite", () => {
     vi.useFakeTimers();
 
     try {
-      const sessionToken = makeTailSessionToken(
-        "ses_retry_append",
-        "agent:writer"
-      );
+      const sessionToken = makeTailSessionToken("ses_retry_append", "writer");
 
       fetchMock
         .mockRejectedValueOnce(new Error("temporary network failure"))
@@ -387,10 +385,7 @@ describe("Starcite", () => {
     vi.useFakeTimers();
 
     try {
-      const sessionToken = makeTailSessionToken(
-        "ses_append_queue",
-        "agent:writer"
-      );
+      const sessionToken = makeTailSessionToken("ses_append_queue", "writer");
       let shouldFailFirstAttempt = true;
 
       fetchMock.mockImplementation((url, init) => {
@@ -455,7 +450,7 @@ describe("Starcite", () => {
     try {
       const sessionToken = makeTailSessionToken(
         "ses_retryable_status",
-        "agent:writer"
+        "writer"
       );
 
       fetchMock
@@ -498,10 +493,7 @@ describe("Starcite", () => {
   });
 
   it("pauses the queue on non-retryable append failures to preserve producer ordering", async () => {
-    const sessionToken = makeTailSessionToken(
-      "ses_hard_failure",
-      "agent:writer"
-    );
+    const sessionToken = makeTailSessionToken("ses_hard_failure", "writer");
     const lifecycleEvents: string[] = [];
 
     fetchMock
@@ -572,10 +564,7 @@ describe("Starcite", () => {
     vi.useFakeTimers();
 
     try {
-      const sessionToken = makeTailSessionToken(
-        "ses_abort_retry",
-        "agent:writer"
-      );
+      const sessionToken = makeTailSessionToken("ses_abort_retry", "writer");
       const abortController = new AbortController();
 
       fetchMock.mockImplementation((url, init) => {
@@ -655,7 +644,7 @@ describe("Starcite", () => {
     try {
       const sessionToken = makeTailSessionToken(
         "ses_retry_limit_resume",
-        "agent:writer"
+        "writer"
       );
       let transientFailureCount = 0;
 
@@ -736,10 +725,7 @@ describe("Starcite", () => {
   });
 
   it("restores persisted pending appends from the session store and auto-flushes them", async () => {
-    const sessionToken = makeTailSessionToken(
-      "ses_persisted_outbox",
-      "agent:writer"
-    );
+    const sessionToken = makeTailSessionToken("ses_persisted_outbox", "writer");
     const store = new MemoryStore();
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
@@ -804,10 +790,7 @@ describe("Starcite", () => {
   });
 
   it("restores a terminally paused outbox without auto-flushing it again", async () => {
-    const sessionToken = makeTailSessionToken(
-      "ses_persisted_pause",
-      "agent:writer"
-    );
+    const sessionToken = makeTailSessionToken("ses_persisted_pause", "writer");
     const store = new MemoryStore();
 
     fetchMock.mockResolvedValueOnce(
@@ -864,7 +847,7 @@ describe("Starcite", () => {
   });
 
   it("clears the outbox and rotates the managed producer when configured for terminal clear mode", async () => {
-    const sessionToken = makeTailSessionToken("ses_clear_mode", "agent:writer");
+    const sessionToken = makeTailSessionToken("ses_clear_mode", "writer");
 
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -1080,7 +1063,7 @@ describe("Starcite", () => {
   });
 
   it("fails session creation when apiKey is missing", async () => {
-    const sessionToken = makeTailSessionToken("ses_demo", "user:user-42");
+    const sessionToken = makeTailSessionToken("ses_demo", "user-42", "user");
     const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
@@ -1097,7 +1080,7 @@ describe("Starcite", () => {
   });
 
   it("returns session({ token }) synchronously", () => {
-    const sessionToken = makeTailSessionToken("ses_sync", "agent:syncer");
+    const sessionToken = makeTailSessionToken("ses_sync", "syncer");
     const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
@@ -1182,7 +1165,7 @@ describe("Starcite", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            token: makeTailSessionToken("ses_auth_claims", "agent:planner"),
+            token: makeTailSessionToken("ses_auth_claims", "planner"),
             expires_in: 3600,
           }),
           { status: 200 }
@@ -1256,7 +1239,7 @@ describe("Starcite", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            token: makeTailSessionToken("ses_org_subject", "agent:foo"),
+            token: makeTailSessionToken("ses_org_subject", "foo"),
             expires_in: 3600,
           }),
           { status: 200 }
@@ -1285,7 +1268,7 @@ describe("Starcite", () => {
 
   it("tails events and filters by agent", async () => {
     const { starcite, sockets } = buildTailClient(fetchMock);
-    const sessionToken = makeTailSessionToken("ses_tail", "agent:drafter");
+    const sessionToken = makeTailSessionToken("ses_tail", "drafter");
     const session = await starcite.session({ token: sessionToken });
 
     const events: TailEvent[] = [];

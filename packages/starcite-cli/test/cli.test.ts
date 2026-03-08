@@ -68,7 +68,7 @@ describe("starcite CLI", () => {
   const sessionToken = encodeJwt({
     session_id: "ses_123",
     tenant_id: "acme",
-    principal_id: "agent:researcher",
+    principal_id: "researcher",
     principal_type: "agent",
   });
 
@@ -77,7 +77,7 @@ describe("starcite CLI", () => {
     token: sessionToken,
     identity: new StarciteIdentity({
       tenantId: "acme",
-      id: "agent:researcher",
+      id: "researcher",
       type: "agent",
     }),
     record: { id: "ses_123", title: "Draft contract" },
@@ -958,7 +958,7 @@ describe("starcite CLI", () => {
     const issuedSessionToken = encodeJwt({
       session_id: "ses_123",
       tenant_id: "acme",
-      principal_id: "agent:researcher",
+      principal_id: "researcher",
       principal_type: "agent",
     });
     const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
