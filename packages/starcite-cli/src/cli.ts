@@ -98,8 +98,13 @@ interface AppendCommandOptions {
   expectedSeq?: number;
 }
 
+interface AppendIdentitySelection {
+  type: "agent" | "user";
+  id: string;
+}
+
 interface ResolvedAppendInput {
-  identityActor?: string;
+  identity?: AppendIdentitySelection;
   payload: CliJsonObject;
 }
 
@@ -355,16 +360,16 @@ function resolveAppendInput(
     );
   }
 
-  let identityActor: string | undefined;
+  let identity: AppendIdentitySelection | undefined;
   if (agent) {
-    identityActor = `agent:${agent}`;
+    identity = { type: "agent", id: agent };
   } else if (user) {
-    identityActor = `user:${user}`;
+    identity = { type: "user", id: user };
   }
 
   if (text) {
     return {
-      identityActor,
+      identity,
       payload: { text },
     };
   }
@@ -376,7 +381,7 @@ function resolveAppendInput(
   }
 
   return {
-    identityActor,
+    identity,
     payload: parseJsonObject(payload, "--payload"),
   };
 }
@@ -394,9 +399,9 @@ function toApiBaseUrlForContext(baseUrl: string): string {
 function buildSessionTokenContextKey(
   baseUrl: string,
   sessionId: string,
-  actor: string
+  identity: AppendIdentitySelection
 ): string {
-  return `${toApiBaseUrlForContext(baseUrl)}::${sessionId}::${actor}`;
+  return `${toApiBaseUrlForContext(baseUrl)}::${sessionId}::${identity.type}::${identity.id}`;
 }
 
 function writeJsonOutput(
@@ -442,7 +447,7 @@ async function resolveSession(
 
 function resolveAppendIdentity(
   apiKey: string | undefined,
-  actor: string
+  identity: AppendIdentitySelection
 ): StarciteIdentity {
   const tenantId = tokenTenantId(apiKey);
   if (!tenantId) {
@@ -451,25 +456,23 @@ function resolveAppendIdentity(
     );
   }
 
-  if (actor.startsWith("agent:")) {
-    return new StarciteIdentity({
-      tenantId,
-      id: actor.slice("agent:".length),
-      type: "agent",
-    });
+  return new StarciteIdentity({
+    tenantId,
+    id: identity.id,
+    type: identity.type,
+  });
+}
+
+function matchesAppendIdentity(
+  identity: StarciteIdentity,
+  selection: AppendIdentitySelection
+): boolean {
+  if (identity.type !== selection.type) {
+    return false;
   }
 
-  if (actor.startsWith("user:")) {
-    return new StarciteIdentity({
-      tenantId,
-      id: actor.slice("user:".length),
-      type: "user",
-    });
-  }
-
-  throw new InvalidArgumentError(
-    "SDK-backed append session binding only supports agent: and user: actors"
-  );
+  const expectedPrefixedId = `${selection.type}:${selection.id}`;
+  return identity.id === selection.id || identity.id === expectedPrefixedId;
 }
 
 async function resolveAppendSession(input: {
@@ -478,9 +481,9 @@ async function resolveAppendSession(input: {
   baseUrl: string;
   apiKey: string | undefined;
   sessionId: string;
-  actor: string;
+  identity: AppendIdentitySelection;
 }): Promise<StarciteSession> {
-  const { client, store, baseUrl, apiKey, sessionId, actor } = input;
+  const { client, store, baseUrl, apiKey, sessionId, identity } = input;
 
   if (!apiKey) {
     throw new InvalidArgumentError(
@@ -490,15 +493,15 @@ async function resolveAppendSession(input: {
 
   if (!shouldAutoIssueSessionToken(apiKey)) {
     const session = await resolveSession(client, apiKey, sessionId);
-    if (session.identity.toActor() !== actor) {
+    if (!matchesAppendIdentity(session.identity, identity)) {
       throw new InvalidArgumentError(
-        `session token is bound to '${session.identity.toActor()}', expected '${actor}'`
+        `session token is bound to ${session.identity.type} '${session.identity.id}', expected ${identity.type} '${identity.id}'`
       );
     }
     return session;
   }
 
-  const contextKey = buildSessionTokenContextKey(baseUrl, sessionId, actor);
+  const contextKey = buildSessionTokenContextKey(baseUrl, sessionId, identity);
   const cachedToken = await store.readSessionToken(contextKey);
 
   if (cachedToken) {
@@ -506,7 +509,7 @@ async function resolveAppendSession(input: {
       const cachedSession = client.session({ token: cachedToken });
       if (
         cachedSession.id === sessionId &&
-        cachedSession.identity.toActor() === actor
+        matchesAppendIdentity(cachedSession.identity, identity)
       ) {
         return cachedSession;
       }
@@ -518,7 +521,7 @@ async function resolveAppendSession(input: {
   }
 
   const session = await client.session({
-    identity: resolveAppendIdentity(apiKey, actor),
+    identity: resolveAppendIdentity(apiKey, identity),
     id: sessionId,
   });
   await store.saveSessionToken(contextKey, session.token);
@@ -837,14 +840,14 @@ class StarciteCliApp {
           ? parseJsonObject(options.refs, "--refs")
           : undefined;
         const appendInput = resolveAppendInput(options);
-        const session = appendInput.identityActor
+        const session = appendInput.identity
           ? await resolveAppendSession({
               client,
               store,
               baseUrl,
               apiKey,
               sessionId,
-              actor: appendInput.identityActor,
+              identity: appendInput.identity,
             })
           : await resolveSession(client, apiKey, sessionId);
 
