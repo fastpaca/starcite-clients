@@ -83,15 +83,13 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
 const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
 
-type ConfigSetKey = "endpoint" | "producer-id" | "api-key";
+type ConfigSetKey = "endpoint" | "api-key";
 
 interface AppendCommandOptions {
   agent?: string;
   text?: string;
   type: string;
   source?: string;
-  producerId?: string;
-  producerSeq?: number;
   actor?: string;
   payload?: string;
   metadata?: string;
@@ -159,16 +157,12 @@ function parseConfigSetKey(value: string): ConfigSetKey {
     return "endpoint";
   }
 
-  if (["producer-id", "producer_id"].includes(normalized)) {
-    return "producer-id";
-  }
-
   if (["api-key", "api_key"].includes(normalized)) {
     return "api-key";
   }
 
   throw new InvalidArgumentError(
-    "config key must be one of: endpoint, producer-id, api-key"
+    "config key must be one of: endpoint, api-key"
   );
 }
 
@@ -385,60 +379,6 @@ function toApiBaseUrlForContext(baseUrl: string): string {
   return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
-async function appendWithPersistedProducerState(input: {
-  session: StarciteSession;
-  store: StarciteCliStore;
-  baseUrl: string;
-  sessionId: string;
-  options: AppendCommandOptions;
-  actor: string;
-  payload: CliJsonObject;
-  metadata?: CliJsonObject;
-  refs?: CliJsonObject;
-  source?: string;
-}) {
-  const {
-    session,
-    store,
-    baseUrl,
-    sessionId,
-    options,
-    actor,
-    payload,
-    metadata,
-    refs,
-    source,
-  } = input;
-
-  return await store.withStateLock(async () => {
-    const producerId = await store.resolveProducerId(options.producerId);
-    const normalizedBaseUrl = toApiBaseUrlForContext(baseUrl);
-    const producerSeq =
-      options.producerSeq ??
-      (await store.readNextSeq(normalizedBaseUrl, sessionId, producerId));
-    const response = await session.appendRaw({
-      type: options.type,
-      payload,
-      actor,
-      producer_id: producerId,
-      producer_seq: producerSeq,
-      source,
-      metadata,
-      refs,
-      idempotency_key: options.idempotencyKey,
-      expected_seq: options.expectedSeq,
-    });
-
-    await store.bumpNextSeq(
-      normalizedBaseUrl,
-      sessionId,
-      producerId,
-      producerSeq
-    );
-    return response;
-  });
-}
-
 function buildSessionTokenContextKey(
   baseUrl: string,
   sessionId: string,
@@ -488,15 +428,47 @@ async function resolveSession(
   return session;
 }
 
-async function resolveHighLevelAppendSession(input: {
+function resolveAppendIdentity(
+  apiKey: string | undefined,
+  actor: string
+): StarciteIdentity {
+  const tenantId = tokenTenantId(apiKey);
+  if (!tenantId) {
+    throw new InvalidArgumentError(
+      "session identity binding requires an API key with tenant_id claims"
+    );
+  }
+
+  if (actor.startsWith("agent:")) {
+    return new StarciteIdentity({
+      tenantId,
+      id: actor.slice("agent:".length),
+      type: "agent",
+    });
+  }
+
+  if (actor.startsWith("user:")) {
+    return new StarciteIdentity({
+      tenantId,
+      id: actor.slice("user:".length),
+      type: "user",
+    });
+  }
+
+  throw new InvalidArgumentError(
+    "SDK-backed append session binding only supports agent: and user: actors"
+  );
+}
+
+async function resolveAppendSession(input: {
   client: Starcite;
   store: StarciteCliStore;
   baseUrl: string;
   apiKey: string | undefined;
   sessionId: string;
-  agentId: string;
+  actor: string;
 }): Promise<StarciteSession> {
-  const { client, store, baseUrl, apiKey, sessionId, agentId } = input;
+  const { client, store, baseUrl, apiKey, sessionId, actor } = input;
 
   if (!apiKey) {
     throw new InvalidArgumentError(
@@ -508,12 +480,7 @@ async function resolveHighLevelAppendSession(input: {
     return await resolveSession(client, apiKey, sessionId);
   }
 
-  const expectedActor = `agent:${agentId}`;
-  const contextKey = buildSessionTokenContextKey(
-    baseUrl,
-    sessionId,
-    expectedActor
-  );
+  const contextKey = buildSessionTokenContextKey(baseUrl, sessionId, actor);
   const cachedToken = await store.readSessionToken(contextKey);
 
   if (cachedToken) {
@@ -521,7 +488,7 @@ async function resolveHighLevelAppendSession(input: {
       const cachedSession = client.session({ token: cachedToken });
       if (
         cachedSession.id === sessionId &&
-        cachedSession.identity.toActor() === expectedActor
+        cachedSession.identity.toActor() === actor
       ) {
         return cachedSession;
       }
@@ -533,7 +500,7 @@ async function resolveHighLevelAppendSession(input: {
   }
 
   const session = await client.session({
-    identity: resolveCreateIdentity(apiKey, agentId),
+    identity: resolveAppendIdentity(apiKey, actor),
     id: sessionId,
   });
   await store.saveSessionToken(contextKey, session.token);
@@ -619,7 +586,7 @@ class StarciteCliApp {
       .addCommand(
         new Command("set")
           .description("Set a configuration value")
-          .argument("<key>", "endpoint | producer-id | api-key")
+          .argument("<key>", "endpoint | api-key")
           .argument("<value>", "value to store")
           .action(async function (this: Command, key: string, value: string) {
             const { store } = await resolveGlobalOptions(this);
@@ -629,17 +596,6 @@ class StarciteCliApp {
               const endpoint = parseEndpoint(value, "endpoint");
               await store.updateConfig({ baseUrl: endpoint });
               logger.info(`Endpoint set to ${endpoint}`);
-              return;
-            }
-
-            if (parsedKey === "producer-id") {
-              const producerId = trimString(value);
-              if (!producerId) {
-                throw new InvalidArgumentError("producer-id cannot be empty");
-              }
-
-              await store.updateConfig({ producerId });
-              logger.info(`Producer ID set to ${producerId}`);
               return;
             }
 
@@ -666,7 +622,6 @@ class StarciteCliApp {
 
             const output = {
               endpoint: config.baseUrl ?? baseUrl,
-              producerId: config.producerId ?? null,
               apiKey: apiKey ? "***" : null,
               apiKeySource,
               configDir: store.directory,
@@ -838,15 +793,6 @@ class StarciteCliApp {
       .option("--text <text>", "Text content (high-level mode)")
       .option("--type <type>", "Event type", "content")
       .option("--source <source>", "Event source")
-      .option(
-        "--producer-id <id>",
-        "Producer identity (auto-generated if omitted)"
-      )
-      .option(
-        "--producer-seq <seq>",
-        "Producer sequence (defaults to persisted state, starting at 1)",
-        (value) => parsePositiveInteger(value, "--producer-seq")
-      )
       .option("--actor <actor>", "Raw actor field (raw mode)")
       .option("--payload <json>", "Raw payload JSON object (raw mode)")
       .option("--metadata <json>", "Event metadata JSON object")
@@ -875,15 +821,22 @@ class StarciteCliApp {
         const mode = resolveAppendMode(options);
         const session =
           mode.kind === "high-level"
-            ? await resolveHighLevelAppendSession({
+            ? await resolveAppendSession({
                 client,
                 store,
                 baseUrl,
                 apiKey,
                 sessionId,
-                agentId: mode.agent,
+                actor: `agent:${mode.agent}`,
               })
-            : await resolveSession(client, apiKey, sessionId);
+            : await resolveAppendSession({
+                client,
+                store,
+                baseUrl,
+                apiKey,
+                sessionId,
+                actor: mode.actor,
+              });
 
         const response =
           mode.kind === "high-level"
@@ -896,17 +849,15 @@ class StarciteCliApp {
                 idempotencyKey: options.idempotencyKey,
                 expectedSeq: options.expectedSeq,
               })
-            : await appendWithPersistedProducerState({
-                session,
-                store,
-                baseUrl,
-                sessionId,
-                options,
+            : await session.append({
+                type: options.type,
                 actor: mode.actor,
                 payload: parseJsonObject(mode.payload, "--payload"),
                 metadata,
                 refs,
                 source: options.source,
+                idempotencyKey: options.idempotencyKey,
+                expectedSeq: options.expectedSeq,
               });
 
         if (json) {

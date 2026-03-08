@@ -140,14 +140,12 @@ Manage local configuration.
 
 ```bash
 starcite config set endpoint https://<your-instance>.starcite.io
-starcite config set producer-id producer:my-agent
 starcite config show
 ```
 
 Key aliases accepted by `config set`:
 
 - endpoint: `endpoint`, `base-url`, `base_url`
-- producer id: `producer-id`, `producer_id`
 - API key: `api-key`, `api_key`
 
 ### `up`
@@ -186,12 +184,10 @@ Useful flags:
 ### `append <sessionId>`
 
 Append an event.
-`--producer-id` and `--producer-seq` are optional.
-If omitted, CLI rehydrates from `~/.starcite`:
 
-- producer id: config (`producerId`/`producer_id`) or generated identity
-- producer seq: persisted `nextSeq` per `(baseUrl, sessionId, producerId)` context
-- first sequence for a new context starts at `1`
+The CLI always appends through SDK session objects. Producer identity and
+sequence are managed by the SDK store automatically; the CLI does not expose
+producer controls.
 
 High-level mode (`--agent` + `--text`):
 
@@ -204,8 +200,6 @@ Raw mode (`--actor` + `--payload`):
 ```bash
 starcite append ses_demo \
   --actor agent:drafter \
-  --producer-id producer:drafter \
-  --producer-seq 3 \
   --type content \
   --payload '{"text":"Reviewing clause 4.2..."}' \
   --idempotency-key req-123 \
@@ -216,9 +210,8 @@ starcite append ses_demo \
 
 By default the CLI uses `~/.starcite`:
 
-- `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`, `apiKey`)
+- `config.json` or `config.toml`: optional defaults (`baseUrl`, `apiKey`)
 - `credentials.json`: saved API key plus cached session tokens
-- `identity.json`: generated stable default producer id (`cli:<hostname>:<uuid>`)
 - `state.json`: session-scoped store state (retained events, cursors, and producer state)
 
 Use `--config-dir <path>` to override the directory for testing or isolated runs.
