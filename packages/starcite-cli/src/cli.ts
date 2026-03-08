@@ -2,6 +2,7 @@ import {
   Starcite,
   StarciteApiError,
   StarciteIdentity,
+  type StarciteSession,
   type TailEvent,
 } from "@starcite/sdk";
 import { Command, InvalidArgumentError } from "commander";
@@ -381,6 +382,67 @@ function toApiBaseUrlForContext(baseUrl: string): string {
   return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
+async function appendWithPersistedProducerState(input: {
+  session: StarciteSession;
+  store: StarciteCliStore;
+  baseUrl: string;
+  sessionId: string;
+  options: AppendCommandOptions;
+  actor: string;
+  payload: CliJsonObject;
+  metadata?: CliJsonObject;
+  refs?: CliJsonObject;
+  source?: string;
+}) {
+  const {
+    session,
+    store,
+    baseUrl,
+    sessionId,
+    options,
+    actor,
+    payload,
+    metadata,
+    refs,
+    source,
+  } = input;
+
+  return await store.withStateLock(async () => {
+    const producerId = await store.resolveProducerId(options.producerId);
+    const normalizedBaseUrl = toApiBaseUrlForContext(baseUrl);
+    const contextKey = buildSeqContextKey(
+      normalizedBaseUrl,
+      sessionId,
+      producerId
+    );
+    const producerSeq =
+      options.producerSeq ?? (await store.readNextSeq(contextKey));
+    const response = await session.appendRaw({
+      type: options.type,
+      payload,
+      actor,
+      producer_id: producerId,
+      producer_seq: producerSeq,
+      source,
+      metadata,
+      refs,
+      idempotency_key: options.idempotencyKey,
+      expected_seq: options.expectedSeq,
+    });
+
+    await store.bumpNextSeq(contextKey, producerSeq);
+    return response;
+  });
+}
+
+function buildSessionTokenContextKey(
+  baseUrl: string,
+  sessionId: string,
+  actor: string
+): string {
+  return `${toApiBaseUrlForContext(baseUrl)}::${sessionId}::${actor}`;
+}
+
 function writeJsonOutput(
   stdout: StdoutLike,
   value: unknown,
@@ -419,6 +481,58 @@ async function resolveSession(
     );
   }
 
+  return session;
+}
+
+async function resolveHighLevelAppendSession(input: {
+  client: Starcite;
+  store: StarciteCliStore;
+  baseUrl: string;
+  apiKey: string | undefined;
+  sessionId: string;
+  agentId: string;
+}): Promise<StarciteSession> {
+  const { client, store, baseUrl, apiKey, sessionId, agentId } = input;
+
+  if (!apiKey) {
+    throw new InvalidArgumentError(
+      "append/tail require --token or a saved API key"
+    );
+  }
+
+  if (!shouldAutoIssueSessionToken(apiKey)) {
+    return await resolveSession(client, apiKey, sessionId);
+  }
+
+  const expectedActor = `agent:${agentId}`;
+  const contextKey = buildSessionTokenContextKey(
+    baseUrl,
+    sessionId,
+    expectedActor
+  );
+  const cachedToken = await store.readSessionToken(contextKey);
+
+  if (cachedToken) {
+    try {
+      const cachedSession = client.session({ token: cachedToken });
+      if (
+        cachedSession.id === sessionId &&
+        cachedSession.identity.toActor() === expectedActor
+      ) {
+        return cachedSession;
+      }
+    } catch {
+      // Fall through to re-issuing a fresh token below.
+    }
+
+    await store.clearSessionToken(contextKey);
+  }
+
+  const session = await client.session({
+    identity: resolveCreateIdentity(apiKey, agentId),
+    id: sessionId,
+  });
+  await store.saveSessionToken(contextKey, session.token);
   return session;
 }
 
@@ -751,53 +865,42 @@ class StarciteCliApp {
           : undefined;
         const mode = resolveAppendMode(options);
         const session =
-          mode.kind === "high-level" &&
-          apiKey !== undefined &&
-          shouldAutoIssueSessionToken(apiKey)
-            ? await client.session({
-                identity: resolveCreateIdentity(apiKey, mode.agent),
-                id: sessionId,
+          mode.kind === "high-level"
+            ? await resolveHighLevelAppendSession({
+                client,
+                store,
+                baseUrl,
+                apiKey,
+                sessionId,
+                agentId: mode.agent,
               })
             : await resolveSession(client, apiKey, sessionId);
 
         const response =
           mode.kind === "high-level"
-            ? await session.append({
-                type: options.type,
-                text: mode.text,
-                source: options.source,
+            ? await appendWithPersistedProducerState({
+                session,
+                store,
+                baseUrl,
+                sessionId,
+                options,
+                actor: session.identity.toActor(),
+                payload: { text: mode.text },
                 metadata,
                 refs,
-                idempotencyKey: options.idempotencyKey,
-                expectedSeq: options.expectedSeq,
+                source: options.source ?? "agent",
               })
-            : await store.withStateLock(async () => {
-                const producerId = await store.resolveProducerId(
-                  options.producerId
-                );
-                const normalizedBaseUrl = toApiBaseUrlForContext(baseUrl);
-                const contextKey = buildSeqContextKey(
-                  normalizedBaseUrl,
-                  sessionId,
-                  producerId
-                );
-                const producerSeq =
-                  options.producerSeq ?? (await store.readNextSeq(contextKey));
-                const appendResponse = await session.appendRaw({
-                  type: options.type,
-                  payload: parseJsonObject(mode.payload, "--payload"),
-                  actor: mode.actor,
-                  producer_id: producerId,
-                  producer_seq: producerSeq,
-                  source: options.source,
-                  metadata,
-                  refs,
-                  idempotency_key: options.idempotencyKey,
-                  expected_seq: options.expectedSeq,
-                });
-
-                await store.bumpNextSeq(contextKey, producerSeq);
-                return appendResponse;
+            : await appendWithPersistedProducerState({
+                session,
+                store,
+                baseUrl,
+                sessionId,
+                options,
+                actor: mode.actor,
+                payload: parseJsonObject(mode.payload, "--payload"),
+                metadata,
+                refs,
+                source: options.source,
               });
 
         if (json) {

@@ -17,6 +17,8 @@ const GENERATED_PRODUCER_ID_PATTERN = /^cli:/;
 
 interface FakeSession {
   readonly id: string;
+  readonly token: string;
+  readonly identity: StarciteIdentity;
   readonly record?: { id: string; title?: string };
   append: ReturnType<typeof vi.fn>;
   appendRaw: ReturnType<typeof vi.fn>;
@@ -64,15 +66,22 @@ describe("starcite CLI", () => {
   const session = vi.fn();
   const listSessions = vi.fn();
   let configDir = "";
+  let previousApiKey: string | undefined;
   const sessionToken = encodeJwt({
     session_id: "ses_123",
     tenant_id: "acme",
-    principal_id: "agent:tester",
+    principal_id: "agent:researcher",
     principal_type: "agent",
   });
 
   const fakeSession: FakeSession = {
     id: "ses_123",
+    token: sessionToken,
+    identity: new StarciteIdentity({
+      tenantId: "acme",
+      id: "agent:researcher",
+      type: "agent",
+    }),
     record: { id: "ses_123", title: "Draft contract" },
     append: vi.fn(),
     appendRaw: vi.fn(),
@@ -85,6 +94,8 @@ describe("starcite CLI", () => {
 
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
+    previousApiKey = process.env.STARCITE_API_KEY;
+    Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
     agent.mockReset();
     session.mockReset();
     listSessions.mockReset();
@@ -100,7 +111,18 @@ describe("starcite CLI", () => {
           type: "agent",
         })
     );
-    session.mockReturnValue(fakeSession);
+    session.mockImplementation(
+      (
+        input:
+          | { token: string }
+          | { identity: StarciteIdentity; id?: string; title?: string }
+      ) =>
+        ({
+          ...fakeSession,
+          token: "token" in input ? input.token : fakeSession.token,
+          identity: "identity" in input ? input.identity : fakeSession.identity,
+        }) as never
+    );
     listSessions.mockResolvedValue({
       sessions: [
         {
@@ -141,6 +163,11 @@ describe("starcite CLI", () => {
   });
 
   afterEach(() => {
+    if (previousApiKey === undefined) {
+      Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
+    } else {
+      process.env.STARCITE_API_KEY = previousApiKey;
+    }
     rmSync(configDir, { recursive: true, force: true });
   });
 
@@ -362,14 +389,18 @@ describe("starcite CLI", () => {
     expect(session).toHaveBeenCalledWith({
       token: sessionToken,
     });
-    expect(fakeSession.append).toHaveBeenCalledWith({
+    expect(fakeSession.append).not.toHaveBeenCalled();
+    expect(fakeSession.appendRaw).toHaveBeenCalledWith({
       type: "content",
-      text: "Found 8 relevant cases...",
-      source: undefined,
+      payload: { text: "Found 8 relevant cases..." },
+      actor: "agent:researcher",
+      producer_id: expect.stringMatching(GENERATED_PRODUCER_ID_PATTERN),
+      producer_seq: 1,
+      source: "agent",
       metadata: undefined,
       refs: undefined,
-      idempotencyKey: undefined,
-      expectedSeq: undefined,
+      idempotency_key: undefined,
+      expected_seq: undefined,
     });
     expect(info).toContain("seq=1 deduped=false");
   });
@@ -501,6 +532,71 @@ describe("starcite CLI", () => {
         | { producer_id?: string; producer_seq?: number }
         | undefined;
 
+      expect(firstCall?.producer_id).toMatch(GENERATED_PRODUCER_ID_PATTERN);
+      expect(secondCall?.producer_id).toBe(firstCall?.producer_id);
+      expect(firstCall?.producer_seq).toBe(1);
+      expect(secondCall?.producer_seq).toBe(2);
+    } finally {
+      if (previousProducerId === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
+      } else {
+        process.env.STARCITE_PRODUCER_ID = previousProducerId;
+      }
+    }
+  });
+
+  it("rehydrates producer identity and sequence for high-level appends", async () => {
+    const { logger } = makeLogger();
+    const previousProducerId = process.env.STARCITE_PRODUCER_ID;
+    Reflect.deleteProperty(process.env, "STARCITE_PRODUCER_ID");
+
+    try {
+      const program = buildProgram({
+        logger,
+        createClient: () => createFakeClient(),
+      });
+
+      await program.parseAsync(
+        [
+          "--config-dir",
+          configDir,
+          "--token",
+          sessionToken,
+          "append",
+          "ses_123",
+          "--agent",
+          "researcher",
+          "--text",
+          "same text",
+        ],
+        { from: "user" }
+      );
+
+      await program.parseAsync(
+        [
+          "--config-dir",
+          configDir,
+          "--token",
+          sessionToken,
+          "append",
+          "ses_123",
+          "--agent",
+          "researcher",
+          "--text",
+          "same text",
+        ],
+        { from: "user" }
+      );
+
+      const firstCall = fakeSession.appendRaw.mock.calls[0]?.[0] as
+        | { actor?: string; producer_id?: string; producer_seq?: number }
+        | undefined;
+      const secondCall = fakeSession.appendRaw.mock.calls[1]?.[0] as
+        | { actor?: string; producer_id?: string; producer_seq?: number }
+        | undefined;
+
+      expect(firstCall?.actor).toBe("agent:researcher");
+      expect(secondCall?.actor).toBe("agent:researcher");
       expect(firstCall?.producer_id).toMatch(GENERATED_PRODUCER_ID_PATTERN);
       expect(secondCall?.producer_id).toBe(firstCall?.producer_id);
       expect(firstCall?.producer_seq).toBe(1);
@@ -798,6 +894,86 @@ describe("starcite CLI", () => {
       serviceToken
     );
     expect(info).toContain("seq=1 deduped=false");
+  });
+
+  it("append reuses a cached auth-issued session token for the same agent", async () => {
+    const { logger } = makeLogger();
+    const serviceToken = encodeJwt({
+      tenant_id: "acme",
+      scopes: ["session:create", "session:read", "auth:issue"],
+    });
+    const issuedSessionToken = encodeJwt({
+      session_id: "ses_123",
+      tenant_id: "acme",
+      principal_id: "agent:researcher",
+      principal_type: "agent",
+    });
+    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
+      expect(baseUrl).toBe("http://localhost:45187");
+      expect(apiKey).toBe(serviceToken);
+      return createFakeClient();
+    });
+
+    session.mockImplementationOnce(
+      (input: { identity: StarciteIdentity; id: string }) =>
+        ({
+          ...fakeSession,
+          token: issuedSessionToken,
+          identity: input.identity,
+        }) as never
+    );
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "config", "set", "api-key", serviceToken],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--text",
+        "first",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "append",
+        "ses_123",
+        "--agent",
+        "researcher",
+        "--text",
+        "second",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(session).toHaveBeenNthCalledWith(1, {
+      identity: expect.any(StarciteIdentity),
+      id: "ses_123",
+    });
+    expect(session).toHaveBeenNthCalledWith(2, {
+      token: issuedSessionToken,
+    });
   });
 
   it("append uses the configured API key when token scopes cannot be inferred", async () => {

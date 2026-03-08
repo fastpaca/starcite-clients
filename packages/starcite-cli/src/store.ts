@@ -41,6 +41,7 @@ const StateFileSchema = z.object({
 
 const CredentialsFileSchema = z.object({
   apiKey: z.string().trim().min(1).optional(),
+  sessionTokensByContext: z.record(z.string().trim().min(1)).default({}),
 });
 
 type IdentityFile = z.infer<typeof IdentityFileSchema>;
@@ -128,7 +129,7 @@ export class StarciteCliStore {
       clearInvalidConfig: true,
       configName: CREDENTIALS_FILENAME,
       fileExtension: "json",
-      defaults: {},
+      defaults: { sessionTokensByContext: {} },
     });
     this.stateStore = new Conf<StateFile>({
       cwd: directory,
@@ -194,10 +195,7 @@ export class StarciteCliStore {
       return fromEnv;
     }
 
-    const parsed = CredentialsFileSchema.safeParse(this.credentialsStore.store);
-    const fromCredentials = parsed.success
-      ? trimString(parsed.data.apiKey)
-      : undefined;
+    const fromCredentials = trimString(this.readCredentials().apiKey);
     if (fromCredentials) {
       return fromCredentials;
     }
@@ -220,6 +218,41 @@ export class StarciteCliStore {
   async clearApiKey(): Promise<void> {
     await this.ensureConfigDirectory();
     this.credentialsStore.delete("apiKey");
+  }
+
+  readSessionToken(contextKey: string): Promise<string | undefined> {
+    const credentials = this.readCredentials();
+    return Promise.resolve(
+      trimString(credentials.sessionTokensByContext[contextKey])
+    );
+  }
+
+  async saveSessionToken(contextKey: string, token: string): Promise<void> {
+    await this.ensureConfigDirectory();
+
+    const normalized = trimString(token);
+    if (!normalized) {
+      throw new Error("Session token cannot be empty");
+    }
+
+    const credentials = this.readCredentials();
+    this.credentialsStore.set("sessionTokensByContext", {
+      ...credentials.sessionTokensByContext,
+      [contextKey]: normalized,
+    });
+  }
+
+  async clearSessionToken(contextKey: string): Promise<void> {
+    await this.ensureConfigDirectory();
+
+    const credentials = this.readCredentials();
+    if (!(contextKey in credentials.sessionTokensByContext)) {
+      return;
+    }
+
+    const sessionTokensByContext = { ...credentials.sessionTokensByContext };
+    Reflect.deleteProperty(sessionTokensByContext, contextKey);
+    this.credentialsStore.set("sessionTokensByContext", sessionTokensByContext);
   }
 
   async resolveProducerId(explicitProducerId?: string): Promise<string> {
@@ -290,6 +323,17 @@ export class StarciteCliStore {
 
     this.stateStore.clear();
     return { nextSeqByContext: {} };
+  }
+
+  private readCredentials(): CredentialsFile {
+    const parsed = CredentialsFileSchema.safeParse(this.credentialsStore.store);
+
+    if (parsed.success) {
+      return parsed.data;
+    }
+
+    this.credentialsStore.clear();
+    return { sessionTokensByContext: {} };
   }
 
   private readOrCreateIdentity(): IdentityFile {
