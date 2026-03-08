@@ -351,7 +351,7 @@ describe("starcite CLI", () => {
     expect(help).toContain("-v, --version");
   });
 
-  it("appends in high-level mode", async () => {
+  it("appends with --agent and --text shorthands", async () => {
     const { logger, info } = makeLogger();
 
     const program = buildProgram({
@@ -382,7 +382,7 @@ describe("starcite CLI", () => {
     });
     expect(fakeSession.append).toHaveBeenCalledWith({
       type: "content",
-      text: "Found 8 relevant cases...",
+      payload: { text: "Found 8 relevant cases..." },
       source: undefined,
       metadata: undefined,
       refs: undefined,
@@ -426,7 +426,7 @@ describe("starcite CLI", () => {
     expect(info).toEqual([]);
   });
 
-  it("appends raw mode through session.append", async () => {
+  it("appends with --agent and --payload", async () => {
     const { logger } = makeLogger();
     const program = buildProgram({
       logger,
@@ -441,10 +441,10 @@ describe("starcite CLI", () => {
         sessionToken,
         "append",
         "ses_123",
-        "--actor",
-        "agent:researcher",
+        "--agent",
+        "researcher",
         "--payload",
-        '{"text":"Found 8 relevant cases..."}',
+        '{"text":"Found 8 relevant cases...","section":"4.2"}',
       ],
       {
         from: "user",
@@ -453,8 +453,7 @@ describe("starcite CLI", () => {
 
     expect(fakeSession.append).toHaveBeenCalledWith({
       type: "content",
-      actor: "agent:researcher",
-      payload: { text: "Found 8 relevant cases..." },
+      payload: { text: "Found 8 relevant cases...", section: "4.2" },
       source: undefined,
       metadata: undefined,
       refs: undefined,
@@ -463,7 +462,7 @@ describe("starcite CLI", () => {
     });
   });
 
-  it("reuses session.append for repeated raw appends", async () => {
+  it("normalizes mixed append shorthands through session.append", async () => {
     const { logger } = makeLogger();
     const program = buildProgram({
       logger,
@@ -478,10 +477,10 @@ describe("starcite CLI", () => {
         sessionToken,
         "append",
         "ses_123",
-        "--actor",
-        "agent:researcher",
+        "--agent",
+        "researcher",
         "--payload",
-        '{"text":"one"}',
+        '{"text":"one","section":"4.2"}',
       ],
       { from: "user" }
     );
@@ -494,18 +493,17 @@ describe("starcite CLI", () => {
         sessionToken,
         "append",
         "ses_123",
-        "--actor",
-        "agent:researcher",
-        "--payload",
-        '{"text":"two"}',
+        "--agent",
+        "researcher",
+        "--text",
+        "two",
       ],
       { from: "user" }
     );
 
     expect(fakeSession.append).toHaveBeenNthCalledWith(1, {
       type: "content",
-      actor: "agent:researcher",
-      payload: { text: "one" },
+      payload: { text: "one", section: "4.2" },
       source: undefined,
       metadata: undefined,
       refs: undefined,
@@ -514,7 +512,6 @@ describe("starcite CLI", () => {
     });
     expect(fakeSession.append).toHaveBeenNthCalledWith(2, {
       type: "content",
-      actor: "agent:researcher",
       payload: { text: "two" },
       source: undefined,
       metadata: undefined,
@@ -813,6 +810,15 @@ describe("starcite CLI", () => {
       | undefined;
     expect(appendSessionInput?.id).toBe("ses_123");
     expect(appendSessionInput?.identity.toActor()).toBe("agent:researcher");
+    expect(fakeSession.append).toHaveBeenCalledWith({
+      type: "content",
+      payload: { text: "Found 8 relevant cases..." },
+      source: undefined,
+      metadata: undefined,
+      refs: undefined,
+      idempotencyKey: undefined,
+      expectedSeq: undefined,
+    });
     expect(createClient).toHaveBeenCalledWith(
       "http://localhost:45187",
       serviceToken,
@@ -824,7 +830,7 @@ describe("starcite CLI", () => {
     expect(info).toContain("seq=1 deduped=false");
   });
 
-  it("raw append uses SDK identity session binding for agent actors", async () => {
+  it("append uses SDK identity session binding for user identities", async () => {
     const { logger, info } = makeLogger();
     const serviceToken = encodeJwt({
       tenant_id: "acme",
@@ -854,10 +860,10 @@ describe("starcite CLI", () => {
         configDir,
         "append",
         "ses_123",
-        "--actor",
-        "agent:researcher",
+        "--user",
+        "alice",
         "--payload",
-        '{"text":"Found 8 relevant cases..."}',
+        '{"text":"Found 8 relevant cases...","reviewer":"alice"}',
       ],
       {
         from: "user",
@@ -868,11 +874,10 @@ describe("starcite CLI", () => {
       | { identity: StarciteIdentity; id: string }
       | undefined;
     expect(appendSessionInput?.id).toBe("ses_123");
-    expect(appendSessionInput?.identity.toActor()).toBe("agent:researcher");
+    expect(appendSessionInput?.identity.toActor()).toBe("user:alice");
     expect(fakeSession.append).toHaveBeenCalledWith({
       type: "content",
-      actor: "agent:researcher",
-      payload: { text: "Found 8 relevant cases..." },
+      payload: { text: "Found 8 relevant cases...", reviewer: "alice" },
       source: undefined,
       metadata: undefined,
       refs: undefined,
@@ -880,6 +885,68 @@ describe("starcite CLI", () => {
       expectedSeq: undefined,
     });
     expect(info).toContain("seq=1 deduped=false");
+  });
+
+  it("rejects both identity flags at once", async () => {
+    const { logger } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          "--config-dir",
+          configDir,
+          "--token",
+          sessionToken,
+          "append",
+          "ses_123",
+          "--agent",
+          "researcher",
+          "--user",
+          "alice",
+          "--text",
+          "Found 8 relevant cases...",
+        ],
+        {
+          from: "user",
+        }
+      )
+    ).rejects.toThrow("Choose either --agent or --user, not both");
+  });
+
+  it("rejects both payload shorthands at once", async () => {
+    const { logger } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          "--config-dir",
+          configDir,
+          "--token",
+          sessionToken,
+          "append",
+          "ses_123",
+          "--agent",
+          "researcher",
+          "--text",
+          "Found 8 relevant cases...",
+          "--payload",
+          '{"text":"duplicate"}',
+        ],
+        {
+          from: "user",
+        }
+      )
+    ).rejects.toThrow("Choose either --text or --payload, not both");
   });
 
   it("append reuses a cached auth-issued session token for the same agent", async () => {

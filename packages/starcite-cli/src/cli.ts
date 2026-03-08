@@ -87,10 +87,10 @@ type ConfigSetKey = "endpoint" | "api-key";
 
 interface AppendCommandOptions {
   agent?: string;
+  user?: string;
   text?: string;
   type: string;
   source?: string;
-  actor?: string;
   payload?: string;
   metadata?: string;
   refs?: string;
@@ -98,9 +98,10 @@ interface AppendCommandOptions {
   expectedSeq?: number;
 }
 
-type ResolvedAppendMode =
-  | { kind: "high-level"; agent: string; text: string }
-  | { kind: "raw"; actor: string; payload: string };
+interface ResolvedAppendInput {
+  identityActor?: string;
+  payload: CliJsonObject;
+}
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
   const parsed = nonNegativeIntegerSchema.safeParse(value);
@@ -329,44 +330,55 @@ function shouldAutoIssueSessionToken(token: string): boolean {
   return scopes.has("auth:issue");
 }
 
-function resolveAppendMode(options: AppendCommandOptions): ResolvedAppendMode {
-  const highLevelMode =
-    options.agent !== undefined || options.text !== undefined;
-  const rawMode = options.actor !== undefined || options.payload !== undefined;
+function resolveAppendInput(
+  options: AppendCommandOptions
+): ResolvedAppendInput {
+  const agent = trimString(options.agent);
+  const user = trimString(options.user);
 
-  if (highLevelMode && rawMode) {
+  if (agent && user) {
+    throw new InvalidArgumentError("Choose either --agent or --user, not both");
+  }
+
+  const text = trimString(options.text);
+  const payload = trimString(options.payload);
+
+  if (text && payload) {
     throw new InvalidArgumentError(
-      "Choose either high-level mode (--agent and --text) or raw mode (--actor and --payload), not both"
+      "Choose either --text or --payload, not both"
     );
   }
 
-  if (highLevelMode) {
-    const agent = trimString(options.agent);
-    const text = trimString(options.text);
-    if (!(agent && text)) {
-      throw new InvalidArgumentError(
-        "--agent and --text are required for high-level append mode"
-      );
-    }
-
-    return { kind: "high-level", agent, text };
+  if (!(text || payload)) {
+    throw new InvalidArgumentError(
+      "append requires either --text or --payload"
+    );
   }
 
-  if (rawMode) {
-    const actor = trimString(options.actor);
-    const payload = trimString(options.payload);
-    if (!(actor && payload)) {
-      throw new InvalidArgumentError(
-        "Raw append mode requires --actor and --payload, or use --agent and --text"
-      );
-    }
-
-    return { kind: "raw", actor, payload };
+  let identityActor: string | undefined;
+  if (agent) {
+    identityActor = `agent:${agent}`;
+  } else if (user) {
+    identityActor = `user:${user}`;
   }
 
-  throw new InvalidArgumentError(
-    "append requires either high-level mode (--agent and --text) or raw mode (--actor and --payload)"
-  );
+  if (text) {
+    return {
+      identityActor,
+      payload: { text },
+    };
+  }
+
+  if (!payload) {
+    throw new InvalidArgumentError(
+      "append requires either --text or --payload"
+    );
+  }
+
+  return {
+    identityActor,
+    payload: parseJsonObject(payload, "--payload"),
+  };
 }
 
 function toApiBaseUrlForContext(baseUrl: string): string {
@@ -477,7 +489,13 @@ async function resolveAppendSession(input: {
   }
 
   if (!shouldAutoIssueSessionToken(apiKey)) {
-    return await resolveSession(client, apiKey, sessionId);
+    const session = await resolveSession(client, apiKey, sessionId);
+    if (session.identity.toActor() !== actor) {
+      throw new InvalidArgumentError(
+        `session token is bound to '${session.identity.toActor()}', expected '${actor}'`
+      );
+    }
+    return session;
   }
 
   const contextKey = buildSessionTokenContextKey(baseUrl, sessionId, actor);
@@ -789,12 +807,12 @@ class StarciteCliApp {
     program
       .command("append <sessionId>")
       .description("Append an event")
-      .option("--agent <agent>", "Agent name (high-level mode)")
-      .option("--text <text>", "Text content (high-level mode)")
+      .option("--agent <agent>", "Append as agent identity")
+      .option("--user <user>", "Append as user identity")
+      .option("--text <text>", 'Text content shorthand for {"text": ...}')
       .option("--type <type>", "Event type", "content")
       .option("--source <source>", "Event source")
-      .option("--actor <actor>", "Raw actor field (raw mode)")
-      .option("--payload <json>", "Raw payload JSON object (raw mode)")
+      .option("--payload <json>", "JSON payload object")
       .option("--metadata <json>", "Event metadata JSON object")
       .option("--refs <json>", "Event refs JSON object")
       .option("--idempotency-key <key>", "Idempotency key")
@@ -818,47 +836,27 @@ class StarciteCliApp {
         const refs = options.refs
           ? parseJsonObject(options.refs, "--refs")
           : undefined;
-        const mode = resolveAppendMode(options);
-        const session =
-          mode.kind === "high-level"
-            ? await resolveAppendSession({
-                client,
-                store,
-                baseUrl,
-                apiKey,
-                sessionId,
-                actor: `agent:${mode.agent}`,
-              })
-            : await resolveAppendSession({
-                client,
-                store,
-                baseUrl,
-                apiKey,
-                sessionId,
-                actor: mode.actor,
-              });
+        const appendInput = resolveAppendInput(options);
+        const session = appendInput.identityActor
+          ? await resolveAppendSession({
+              client,
+              store,
+              baseUrl,
+              apiKey,
+              sessionId,
+              actor: appendInput.identityActor,
+            })
+          : await resolveSession(client, apiKey, sessionId);
 
-        const response =
-          mode.kind === "high-level"
-            ? await session.append({
-                type: options.type,
-                text: mode.text,
-                source: options.source,
-                metadata,
-                refs,
-                idempotencyKey: options.idempotencyKey,
-                expectedSeq: options.expectedSeq,
-              })
-            : await session.append({
-                type: options.type,
-                actor: mode.actor,
-                payload: parseJsonObject(mode.payload, "--payload"),
-                metadata,
-                refs,
-                source: options.source,
-                idempotencyKey: options.idempotencyKey,
-                expectedSeq: options.expectedSeq,
-              });
+        const response = await session.append({
+          type: options.type,
+          payload: appendInput.payload,
+          metadata,
+          refs,
+          source: options.source,
+          idempotencyKey: options.idempotencyKey,
+          expectedSeq: options.expectedSeq,
+        });
 
         if (json) {
           writeJsonOutput(stdout, response, true);

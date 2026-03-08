@@ -189,21 +189,24 @@ The CLI always appends through SDK session objects. Producer identity and
 sequence are managed by the SDK store automatically; the CLI does not expose
 producer controls.
 
-High-level mode (`--agent` + `--text`):
+Append input shorthands:
+
+- `--text <text>` is shorthand for `--payload '{"text":"..."}'`
+- choose one identity source: `--agent` or `--user`
+- choose one payload source: `--text` or `--payload`
 
 ```bash
 starcite append ses_demo --agent drafter --text "Reviewing clause 4.2..."
-```
-
-Raw mode (`--actor` + `--payload`):
-
-```bash
+starcite append ses_demo --agent drafter --payload '{"text":"Reviewing clause 4.2...","section":"4.2"}'
 starcite append ses_demo \
-  --actor agent:drafter \
-  --type content \
-  --payload '{"text":"Reviewing clause 4.2..."}' \
+  --user alice \
+  --text "Reviewing clause 4.2..." \
   --idempotency-key req-123 \
   --expected-seq 3
+starcite append ses_demo \
+  --user alice \
+  --type content \
+  --payload '{"text":"Reviewing clause 4.2...","reviewer":"alice"}'
 ```
 
 ## Config and State Files
