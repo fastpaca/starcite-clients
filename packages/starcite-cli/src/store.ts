@@ -37,13 +37,46 @@ const StoredTailEventSchema = z.object({
   inserted_at: z.string().optional(),
 });
 
+const StoredAppendEventRequestSchema = z.object({
+  type: z.string().min(1),
+  payload: z.record(z.unknown()),
+  actor: z.string().min(1).optional(),
+  producer_id: z.string().min(1),
+  producer_seq: z.number().int().positive(),
+  source: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  refs: z.record(z.unknown()).optional(),
+  idempotency_key: z.string().optional(),
+  expected_seq: z.number().int().nonnegative().optional(),
+});
+
 const StoredSessionStoreStateSchema = z.object({
   cursor: z.number().int().nonnegative(),
   events: z.array(StoredTailEventSchema),
-  producer: z
+  append: z
     .object({
-      id: z.string().trim().min(1),
-      seq: z.number().int().nonnegative(),
+      producerId: z.string().trim().min(1),
+      lastAcknowledgedProducerSeq: z.number().int().nonnegative(),
+      pending: z.array(
+        z.object({
+          id: z.string().trim().min(1),
+          request: StoredAppendEventRequestSchema,
+          enqueuedAtMs: z.number().int().nonnegative(),
+          retryAttempt: z.number().int().nonnegative().optional().default(0),
+        })
+      ),
+      status: z.enum(["idle", "paused"]).optional(),
+      lastFailure: z
+        .object({
+          name: z.string(),
+          message: z.string(),
+          retryable: z.boolean(),
+          terminal: z.boolean(),
+          occurredAtMs: z.number().int().nonnegative(),
+          status: z.number().int().optional(),
+          code: z.string().optional(),
+        })
+        .optional(),
     })
     .optional(),
   metadata: z
@@ -51,14 +84,6 @@ const StoredSessionStoreStateSchema = z.object({
       schemaVersion: z.union([z.literal(1), z.literal(2)]),
       updatedAtMs: z.number().int().nonnegative(),
     })
-    .optional(),
-  producersById: z
-    .record(
-      z.object({
-        id: z.string().trim().min(1),
-        seq: z.number().int().nonnegative(),
-      })
-    )
     .optional(),
 });
 
@@ -303,15 +328,10 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
   ): void {
     const state = this.readState();
     const contextKey = buildSessionStoreContextKey(baseUrl, sessionId);
-    const existingState = state.sessionStateByContext[contextKey];
 
     this.stateStore.set("sessionStateByContext", {
       ...state.sessionStateByContext,
-      [contextKey]: {
-        ...structuredClone(sessionState),
-        producersById:
-          sessionState.producersById ?? existingState?.producersById,
-      },
+      [contextKey]: structuredClone(sessionState),
     });
   }
 
