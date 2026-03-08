@@ -8,7 +8,7 @@ import {
   text as clackText,
   isCancel,
 } from "@clack/prompts";
-import type { LoggerLike } from "./cli";
+import type { LoggerLike } from "./runtime";
 import type { StarciteCliStore } from "./store";
 
 export const DEFAULT_API_PORT = 45_187;
