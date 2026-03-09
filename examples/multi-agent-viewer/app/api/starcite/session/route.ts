@@ -274,18 +274,15 @@ async function streamLLM(state: SessionState, opts: StreamOpts): Promise<string>
   let buffer = "";
 
   for await (const event of stream) {
-    if (event.type === "response.output_text.delta") {
-      const delta = (event as unknown as { delta: string }).delta;
-      if (typeof delta !== "string") continue;
-      accumulated += delta;
-      buffer += delta;
-      if (buffer.length >= 60) {
-        session.append({
-          type: EV.chunk, source: "agent",
-          payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
-        }).catch(() => {});
-        buffer = "";
-      }
+    if (event.type !== "response.output_text.delta") continue;
+    accumulated += event.delta;
+    buffer += event.delta;
+    if (buffer.length >= 60) {
+      session.append({
+        type: EV.chunk, source: "agent",
+        payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
+      }).catch(() => {});
+      buffer = "";
     }
   }
 
