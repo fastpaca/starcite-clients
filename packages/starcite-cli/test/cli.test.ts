@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SessionLogConflictError, StarciteIdentity } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
@@ -318,7 +319,13 @@ describe("starcite CLI", () => {
     ).rejects.toHaveProperty("code", "cli.versionDisplayed");
 
     const version = output.join("").trim();
-    expect(version).toBe("0.0.8");
+    const pkgPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "package.json"
+    );
+    const expectedVersion = JSON.parse(readFileSync(pkgPath, "utf8")).version;
+    expect(version).toBe(expectedVersion);
   });
 
   it("help only exposes the supported commands", async () => {
