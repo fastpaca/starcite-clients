@@ -1,79 +1,137 @@
-import type { Command } from "commander";
+import {
+  SessionLogConflictError,
+  SessionLogGapError,
+  type StarciteSession,
+} from "@starcite/sdk";
 import {
   type CliRuntime,
+  CliUsageError,
   DEFAULT_TAIL_BATCH_SIZE,
+  type GlobalOptions,
+  parseArgs,
   parseNonNegativeInteger,
 } from "../runtime";
 
-export function registerTailCommand(
-  program: Command,
+const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
+
+export async function runTailCommand(
+  args: string[],
+  globalOptions: GlobalOptions,
   runtime: CliRuntime
-): void {
-  program
-    .command("tail <sessionId>")
-    .description("Tail events from a session")
-    .option("--cursor <cursor>", "Replay cursor", (value) =>
-      parseNonNegativeInteger(value, "--cursor")
-    )
-    .option("--agent <agent>", "Filter by agent name")
-    .option("--limit <count>", "Stop after N events", (value) =>
-      parseNonNegativeInteger(value, "--limit")
-    )
-    .option("--no-follow", "Exit after replaying stored events")
-    .action(async function (
-      this: Command,
-      sessionId: string,
-      options: {
-        cursor?: number;
-        agent?: string;
-        limit?: number;
-        follow: boolean;
-      }
-    ) {
-      const resolved = await runtime.resolveGlobalOptions(this);
-      const client = runtime.createSdkClient(resolved);
-      const session = await runtime.resolveSession(
-        client,
-        resolved.apiKey,
-        sessionId
-      );
+): Promise<void> {
+  const parsed = parseArgs(
+    {
+      "--cursor": String,
+      "--agent": String,
+      "--limit": String,
+      "--no-follow": Boolean,
+    },
+    args
+  );
+  const sessionId = `${parsed._[0] ?? ""}`;
 
-      const abortController = new AbortController();
-      const onSigint = () => {
-        abortController.abort();
-      };
+  if (!sessionId) {
+    throw new CliUsageError("tail requires <sessionId>");
+  }
 
-      process.once("SIGINT", onSigint);
+  const resolved = await runtime.resolveGlobalOptions(globalOptions);
+  const abortController = new AbortController();
+  const onSigint = () => {
+    abortController.abort();
+  };
+  const cursor = parsed["--cursor"]
+    ? parseNonNegativeInteger(parsed["--cursor"], "--cursor")
+    : 0;
+  const limit = parsed["--limit"]
+    ? parseNonNegativeInteger(parsed["--limit"], "--limit")
+    : undefined;
+
+  process.once("SIGINT", onSigint);
+
+  try {
+    let retriedAfterStoreReset = false;
+
+    while (true) {
+      const session = await resolved.client.session({
+        identity: resolved.client.agent({ id: DEFAULT_CREATE_AGENT_ID }),
+        id: sessionId,
+      });
 
       try {
-        let emitted = 0;
-
-        for await (const { event } of session.tail({
-          cursor: options.cursor ?? 0,
-          batchSize: DEFAULT_TAIL_BATCH_SIZE,
-          agent: options.agent,
-          follow: options.follow,
+        await emitTailEvents({
+          session,
+          agent: parsed["--agent"],
+          cursor,
+          follow: parsed["--no-follow"] !== true,
+          limit,
+          json: resolved.json,
+          runtime,
           signal: abortController.signal,
-        })) {
-          if (options.limit !== undefined && emitted >= options.limit) {
-            abortController.abort();
-            break;
-          }
+        });
+        return;
+      } catch (error) {
+        const isStaleStoreConflict =
+          error instanceof SessionLogConflictError ||
+          error instanceof SessionLogGapError;
 
-          if (resolved.json) {
-            runtime.writeJsonOutput(event);
-          } else {
-            runtime.logger.info(runtime.formatTailEvent(event));
-          }
-
-          emitted += 1;
-
-          if (options.limit !== undefined && emitted >= options.limit) {
-            abortController.abort();
-          }
+        if (!(isStaleStoreConflict && !retriedAfterStoreReset)) {
+          throw error;
         }
-      } finally {
-        process.removeListener("SIGINT", onSigint);
+
+        retriedAfterStoreReset = true;
+        resolved.store.clearSession(resolved.baseUrl, sessionId);
+        runtime.logger.error(
+          `Warning: cleared stale local session cache for '${sessionId}' and retried tail.`
+        );
       }
-    });
+    }
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
+}
+
+async function emitTailEvents({
+  session,
+  agent,
+  cursor,
+  follow,
+  limit,
+  json,
+  runtime,
+  signal,
+}: {
+  session: StarciteSession;
+  agent?: string;
+  cursor: number;
+  follow: boolean;
+  limit: number | undefined;
+  json: boolean;
+  runtime: CliRuntime;
+  signal: AbortSignal;
+}): Promise<void> {
+  let emitted = 0;
+
+  for await (const { event } of session.tail({
+    cursor,
+    batchSize: DEFAULT_TAIL_BATCH_SIZE,
+    agent,
+    follow,
+    signal,
+  })) {
+    if (limit !== undefined && emitted >= limit) {
+      return;
+    }
+
+    if (json) {
+      runtime.writeJsonOutput(event);
+    } else {
+      runtime.logger.info(runtime.formatTailEvent(event));
+    }
+
+    emitted += 1;
+
+    if (limit !== undefined && emitted >= limit) {
+      return;
+    }
+  }
 }

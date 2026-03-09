@@ -1,42 +1,80 @@
-import { type Command, InvalidArgumentError } from "commander";
+import type { StarciteIdentity } from "@starcite/sdk";
 import {
-  type AppendCommandOptions,
-  type AppendIdentitySelection,
-  type CliJsonObject,
   type CliRuntime,
+  CliUsageError,
+  type GlobalOptions,
+  parseArgs,
   parseJsonObject,
   parseNonNegativeInteger,
   trimString,
 } from "../runtime";
 
-interface ResolvedAppendInput {
-  identity?: AppendIdentitySelection;
-  payload: CliJsonObject;
+const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
+
+interface AppendIdentitySelection {
+  type: "agent" | "user";
+  id: string;
 }
 
-function resolveAppendInput(
-  options: AppendCommandOptions
-): ResolvedAppendInput {
-  const agent = trimString(options.agent);
-  const user = trimString(options.user);
-
-  if (agent && user) {
-    throw new InvalidArgumentError("Choose either --agent or --user, not both");
+function resolveAppendIdentity(
+  selection: AppendIdentitySelection | undefined,
+  client: {
+    agent(input: { id: string }): StarciteIdentity;
+    user(input: { id: string }): StarciteIdentity;
+  }
+): StarciteIdentity {
+  if (!selection) {
+    return client.agent({ id: DEFAULT_CREATE_AGENT_ID });
   }
 
-  const text = trimString(options.text);
-  const payload = trimString(options.payload);
+  return selection.type === "agent"
+    ? client.agent({ id: selection.id })
+    : client.user({ id: selection.id });
+}
+
+export async function runAppendCommand(
+  args: string[],
+  globalOptions: GlobalOptions,
+  runtime: CliRuntime
+): Promise<void> {
+  const parsed = parseArgs(
+    {
+      "--agent": String,
+      "--user": String,
+      "--text": String,
+      "--type": String,
+      "--source": String,
+      "--payload": String,
+      "--metadata": String,
+      "--refs": String,
+      "--idempotency-key": String,
+      "--expected-seq": String,
+    },
+    args
+  );
+  const sessionId = `${parsed._[0] ?? ""}`;
+
+  if (!sessionId) {
+    throw new CliUsageError("append requires <sessionId>");
+  }
+
+  const agent = trimString(parsed["--agent"]);
+  const user = trimString(parsed["--user"]);
+  const text = trimString(parsed["--text"]);
+  const payload = parsed["--payload"]
+    ? parseJsonObject(parsed["--payload"], "--payload")
+    : undefined;
+
+  if (agent && user) {
+    throw new CliUsageError("Choose either --agent or --user, not both");
+  }
 
   if (text && payload) {
-    throw new InvalidArgumentError(
-      "Choose either --text or --payload, not both"
-    );
+    throw new CliUsageError("Choose either --text or --payload, not both");
   }
 
   if (!(text || payload)) {
-    throw new InvalidArgumentError(
-      "append requires either --text or --payload"
-    );
+    throw new CliUsageError("append requires either --text or --payload");
   }
 
   let identity: AppendIdentitySelection | undefined;
@@ -46,84 +84,31 @@ function resolveAppendInput(
     identity = { type: "user", id: user };
   }
 
-  if (text) {
-    return {
-      identity,
-      payload: { text },
-    };
+  const resolved = await runtime.resolveGlobalOptions(globalOptions);
+  const session = await resolved.client.session({
+    identity: resolveAppendIdentity(identity, resolved.client),
+    id: sessionId,
+  });
+  const response = await session.append({
+    type: parsed["--type"] ?? "content",
+    payload: payload ?? { text },
+    source: parsed["--source"],
+    metadata: parsed["--metadata"]
+      ? parseJsonObject(parsed["--metadata"], "--metadata")
+      : undefined,
+    refs: parsed["--refs"]
+      ? parseJsonObject(parsed["--refs"], "--refs")
+      : undefined,
+    idempotencyKey: parsed["--idempotency-key"],
+    expectedSeq: parsed["--expected-seq"]
+      ? parseNonNegativeInteger(parsed["--expected-seq"], "--expected-seq")
+      : undefined,
+  });
+
+  if (resolved.json) {
+    runtime.writeJsonOutput(response, true);
+    return;
   }
 
-  if (!payload) {
-    throw new InvalidArgumentError(
-      "append requires either --text or --payload"
-    );
-  }
-
-  return {
-    identity,
-    payload: parseJsonObject(payload, "--payload"),
-  };
-}
-
-export function registerAppendCommand(
-  program: Command,
-  runtime: CliRuntime
-): void {
-  program
-    .command("append <sessionId>")
-    .description("Append an event")
-    .option("--agent <agent>", "Append as agent identity")
-    .option("--user <user>", "Append as user identity")
-    .option("--text <text>", 'Text content shorthand for {"text": ...}')
-    .option("--type <type>", "Event type", "content")
-    .option("--source <source>", "Event source")
-    .option("--payload <json>", "JSON payload object")
-    .option("--metadata <json>", "Event metadata JSON object")
-    .option("--refs <json>", "Event refs JSON object")
-    .option("--idempotency-key <key>", "Idempotency key")
-    .option("--expected-seq <seq>", "Expected sequence", (value) =>
-      parseNonNegativeInteger(value, "--expected-seq")
-    )
-    .action(async function (
-      this: Command,
-      sessionId: string,
-      options: AppendCommandOptions
-    ) {
-      const resolved = await runtime.resolveGlobalOptions(this);
-      const client = runtime.createSdkClient(resolved);
-      const metadata = options.metadata
-        ? parseJsonObject(options.metadata, "--metadata")
-        : undefined;
-      const refs = options.refs
-        ? parseJsonObject(options.refs, "--refs")
-        : undefined;
-      const appendInput = resolveAppendInput(options);
-      const session = appendInput.identity
-        ? await runtime.resolveAppendSession({
-            client,
-            store: resolved.store,
-            baseUrl: resolved.baseUrl,
-            apiKey: resolved.apiKey,
-            sessionId,
-            identity: appendInput.identity,
-          })
-        : await runtime.resolveSession(client, resolved.apiKey, sessionId);
-
-      const response = await session.append({
-        type: options.type,
-        payload: appendInput.payload,
-        metadata,
-        refs,
-        source: options.source,
-        idempotencyKey: options.idempotencyKey,
-        expectedSeq: options.expectedSeq,
-      });
-
-      if (resolved.json) {
-        runtime.writeJsonOutput(response, true);
-        return;
-      }
-
-      runtime.logger.info(`seq=${response.seq} deduped=${response.deduped}`);
-    });
+  runtime.logger.info(`seq=${response.seq} deduped=${response.deduped}`);
 }

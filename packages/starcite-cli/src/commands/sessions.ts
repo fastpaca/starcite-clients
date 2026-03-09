@@ -1,70 +1,69 @@
-import { Command, InvalidArgumentError } from "commander";
 import {
   type CliRuntime,
+  CliUsageError,
+  type GlobalOptions,
+  parseArgs,
   parsePositiveInteger,
   parseSessionMetadataFilters,
+  trimString,
 } from "../runtime";
 
-export function registerSessionsCommand(
-  program: Command,
+export async function runSessionsCommand(
+  args: string[],
+  globalOptions: GlobalOptions,
   runtime: CliRuntime
-): void {
-  program
-    .command("sessions")
-    .description("Manage sessions")
-    .addCommand(
-      new Command("list")
-        .description("List sessions")
-        .option("--limit <count>", "Maximum sessions to return", (value) =>
-          parsePositiveInteger(value, "--limit")
-        )
-        .option("--cursor <cursor>", "Pagination cursor")
-        .option("--metadata <json>", "Metadata filter JSON object")
-        .action(async function (
-          this: Command,
-          options: {
-            limit?: number;
-            cursor?: string;
-            metadata?: string;
-          }
-        ) {
-          const resolved = await runtime.resolveGlobalOptions(this);
-          const client = runtime.createSdkClient(resolved);
-          const metadata = options.metadata
-            ? parseSessionMetadataFilters(options.metadata)
-            : undefined;
+): Promise<void> {
+  const parsed = parseArgs(
+    {
+      "--limit": String,
+      "--cursor": String,
+      "--metadata": String,
+    },
+    args
+  );
 
-          const cursor = options.cursor?.trim();
-          if (options.cursor !== undefined && !cursor) {
-            throw new InvalidArgumentError("--cursor must be non-empty");
-          }
+  if (`${parsed._[0] ?? ""}` !== "list") {
+    throw new CliUsageError("sessions requires `list`");
+  }
 
-          const page = await client.listSessions({
-            limit: options.limit,
-            cursor,
-            metadata,
-          });
+  const cursor = trimString(parsed["--cursor"]);
+  if (parsed["--cursor"] !== undefined && !cursor) {
+    throw new CliUsageError("--cursor must be non-empty");
+  }
 
-          if (resolved.json) {
-            runtime.writeJsonOutput(page, true);
-            return;
-          }
+  const resolved = await runtime.resolveGlobalOptions(globalOptions);
+  const page = await resolved.client.listSessions({
+    limit: parsed["--limit"]
+      ? parsePositiveInteger(parsed["--limit"], "--limit")
+      : undefined,
+    cursor,
+    metadata: parsed["--metadata"]
+      ? parseSessionMetadataFilters(parsed["--metadata"])
+      : undefined,
+  });
 
-          if (page.sessions.length === 0) {
-            runtime.logger.info("No sessions found.");
-            return;
-          }
+  runtime.logger.error(
+    "Warning: `sessions list` is a bad call to use in production."
+  );
 
-          runtime.logger.info("id\ttitle\tcreated_at");
-          for (const session of page.sessions) {
-            runtime.logger.info(
-              `${session.id}\t${session.title ?? ""}\t${session.created_at}`
-            );
-          }
+  if (resolved.json) {
+    runtime.writeJsonOutput(page, true);
+    return;
+  }
 
-          if (page.next_cursor) {
-            runtime.logger.info(`next_cursor=${page.next_cursor}`);
-          }
-        })
+  if (page.sessions.length === 0) {
+    runtime.logger.info("No sessions found.");
+    return;
+  }
+
+  runtime.logger.info("id\ttitle\tcreated_at");
+  for (const session of page.sessions) {
+    runtime.logger.info(
+      `${session.id}\t${session.title ?? ""}\t${session.created_at}`
     );
+  }
+
+  if (page.next_cursor) {
+    runtime.logger.info(`next_cursor=${page.next_cursor}`);
+  }
 }

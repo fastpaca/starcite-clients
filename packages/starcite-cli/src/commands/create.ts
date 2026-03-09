@@ -1,41 +1,40 @@
-import type { Command } from "commander";
-import { type CliRuntime, parseJsonObject } from "../runtime";
+import {
+  type CliRuntime,
+  type GlobalOptions,
+  parseArgs,
+  parseJsonObject,
+} from "../runtime";
 
-export function registerCreateCommand(
-  program: Command,
+const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
+
+export async function runCreateCommand(
+  args: string[],
+  globalOptions: GlobalOptions,
   runtime: CliRuntime
-): void {
-  program
-    .command("create")
-    .description("Create a session")
-    .option("--id <id>", "Session ID")
-    .option("--title <title>", "Session title")
-    .option("--metadata <json>", "Session metadata JSON object")
-    .action(async function (
-      this: Command,
-      options: {
-        id?: string;
-        title?: string;
-        metadata?: string;
-      }
-    ) {
-      const resolved = await runtime.resolveGlobalOptions(this);
-      const client = runtime.createSdkClient(resolved);
-      const metadata = options.metadata
-        ? parseJsonObject(options.metadata, "--metadata")
-        : undefined;
-      const session = await client.session({
-        identity: runtime.resolveCreateIdentity(resolved.apiKey),
-        id: options.id,
-        title: options.title,
-        metadata,
-      });
+): Promise<void> {
+  const parsed = parseArgs(
+    {
+      "--id": String,
+      "--title": String,
+      "--metadata": String,
+    },
+    args
+  );
+  const metadata = parsed["--metadata"]
+    ? parseJsonObject(parsed["--metadata"], "--metadata")
+    : undefined;
+  const resolved = await runtime.resolveGlobalOptions(globalOptions);
+  const session = await resolved.client.session({
+    identity: resolved.client.agent({ id: DEFAULT_CREATE_AGENT_ID }),
+    id: parsed["--id"],
+    title: parsed["--title"],
+    metadata,
+  });
 
-      if (resolved.json) {
-        runtime.writeJsonOutput(session.record ?? { id: session.id }, true);
-        return;
-      }
+  if (resolved.json) {
+    runtime.writeJsonOutput(session.record ?? { id: session.id }, true);
+    return;
+  }
 
-      runtime.logger.info(session.id);
-    });
+  runtime.logger.info(session.id);
 }
