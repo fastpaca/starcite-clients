@@ -113,48 +113,8 @@ export default function Page() {
   }
 
   // --- Committed (append-only ref) + Pending (derived each render) ---
-  const committedRef = useRef<FeedEntry[]>([]);
-  const seenSeqs = useRef(new Set<number>());
-  const settled = useRef(new Set<string>());
-
-  for (const ev of events) {
-    if (ev.type === "openai.response.completed") {
-      const p = pl(ev);
-      settled.current.add(`${p.agent}:${p.originSeq}`);
-    }
-    if (FEED_TYPES.has(ev.type) && !seenSeqs.current.has(ev.seq)) {
-      seenSeqs.current.add(ev.seq);
-      const agent = resolveAgent(ev);
-      committedRef.current.push({
-        kind: "committed", agent, seq: ev.seq, type: ev.type,
-        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agentMap.get(agent)?.name ?? agent,
-        text: textOf(ev) ?? "",
-      });
-    }
-  }
-
-  // Pending = unsettled streaming chunks
-  const streams = new Map<string, { name: string; text: string; originSeq: number }>();
-  for (const ev of events) {
-    if (ev.type === "agent.streaming.chunk") {
-      const p = pl(ev);
-      if (typeof p.agent === "string") {
-        streams.set(p.agent as string, {
-          name: (p.name as string) ?? (p.agent as string),
-          text: p.accumulated as string,
-          originSeq: p.originSeq as number,
-        });
-      }
-    }
-  }
-  const pending: FeedEntry[] = [];
-  for (const [agent, s] of streams) {
-    if (!settled.current.has(`${agent}:${s.originSeq}`)) {
-      pending.push({ kind: "streaming", agent, name: s.name, text: s.text, seq: s.originSeq, type: "agent.streaming.chunk" });
-    }
-  }
-
-  const committed = committedRef.current;
+  const feedState = useRef({ committed: [] as FeedEntry[], seenSeqs: new Set<number>(), settled: new Set<string>() });
+  const { committed, pending } = deriveFeed(events, feedState.current, agentMap);
   const hasContent = committed.length > 0 || pending.length > 0;
   const hasPending = pending.length > 0;
   const hasAsked = committed.some((e) => e.type === "message.user");
@@ -254,12 +214,12 @@ function Feed({ committed, pending, agentMap, hasContent }: {
         {committed.map((entry) =>
           entry.agent === "user" || entry.agent === "coordinator"
             ? <FullCard key={`c-${entry.seq}`} entry={entry} agentMap={agentMap} />
-            : <CollapsedCard key={`c-${entry.seq}`} entry={entry} agentMap={agentMap} />,
+            : <WorkerCard key={`c-${entry.seq}`} entry={entry} agentMap={agentMap} />,
         )}
         {pending.map((entry) =>
           entry.agent === "coordinator"
             ? <FullCard key={`s-${entry.agent}`} entry={entry} agentMap={agentMap} streaming />
-            : <StreamingCard key={`s-${entry.agent}`} entry={entry} agentMap={agentMap} />,
+            : <WorkerCard key={`s-${entry.agent}`} entry={entry} agentMap={agentMap} streaming />,
         )}
         <div ref={endRef} className="h-px" />
       </div>
@@ -288,61 +248,44 @@ const FullCard = memo(function FullCard({ entry, agentMap, streaming }: {
   );
 });
 
-// --- Collapsed Card (committed worker) ---
+// --- Worker Card (collapsed with optional streaming tail preview) ---
 
-const CollapsedCard = memo(function CollapsedCard({ entry, agentMap }: {
+const WorkerCard = memo(function WorkerCard({ entry, agentMap, streaming }: {
   entry: FeedEntry;
   agentMap: Map<string, AgentInfo>;
+  streaming?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const c = agentMap.get(entry.agent)?.color ?? WORKER_COLORS[0]!;
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className={cn("rounded-lg border border-border overflow-hidden", streaming && c.bg + "/20")}>
       <CollapseHeader name={entry.name} color={c} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
-        <CheckIcon />
+        {streaming ? <Spinner className={c.text} /> : <CheckIcon />}
       </CollapseHeader>
-      {expanded && (
-        <div className="px-4 pb-4">
-          <Prose small><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown></Prose>
+      {(expanded || streaming) && (
+        <div className={cn("px-4", expanded ? "pb-4" : "pb-2")}>
+          {expanded ? (
+            <Prose small>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+              {streaming && <BlinkCursor />}
+            </Prose>
+          ) : (
+            <div className="relative overflow-hidden" style={{ maxHeight: 80 }}>
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-white to-transparent z-10 dark:from-gray-950" />
+              <div className="flex flex-col-reverse" style={{ maxHeight: 80 }}>
+                <Prose small>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+                  <BlinkCursor />
+                </Prose>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 });
-
-// --- Streaming Card (worker, collapsed with tail preview) ---
-
-function StreamingCard({ entry, agentMap }: { entry: FeedEntry; agentMap: Map<string, AgentInfo> }) {
-  const [expanded, setExpanded] = useState(false);
-  const c = agentMap.get(entry.agent)?.color ?? WORKER_COLORS[0]!;
-
-  return (
-    <div className={cn("rounded-lg border border-border overflow-hidden", c.bg + "/20")}>
-      <CollapseHeader name={entry.name} color={c} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
-        <Spinner className={c.text} />
-      </CollapseHeader>
-      <div className={cn("px-4", expanded ? "pb-4" : "pb-2")}>
-        {expanded ? (
-          <Prose small>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
-            <BlinkCursor />
-          </Prose>
-        ) : (
-          <div className="relative overflow-hidden" style={{ maxHeight: 80 }}>
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-white to-transparent z-10 dark:from-gray-950" />
-            <div className="flex flex-col-reverse" style={{ maxHeight: 80 }}>
-              <Prose small>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
-                <BlinkCursor />
-              </Prose>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // --- Shared UI ---
 
@@ -481,7 +424,54 @@ function InputBar({ onSend }: { onSend: (text: string) => Promise<void> }) {
   );
 }
 
+// --- Feed derivation ---
+
+interface FeedState { committed: FeedEntry[]; seenSeqs: Set<number>; settled: Set<string> }
+
+function deriveFeed(events: readonly SessionEvent[], state: FeedState, agentMap: Map<string, AgentInfo>) {
+  for (const ev of events) {
+    if (ev.type === "openai.response.completed") {
+      const p = pl(ev);
+      state.settled.add(`${p.agent}:${p.originSeq}`);
+    }
+    if (FEED_TYPES.has(ev.type) && !state.seenSeqs.has(ev.seq)) {
+      state.seenSeqs.add(ev.seq);
+      const agent = resolveAgent(ev);
+      state.committed.push({
+        kind: "committed", agent, seq: ev.seq, type: ev.type,
+        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agentMap.get(agent)?.name ?? agent,
+        text: textOf(ev) ?? "",
+      });
+    }
+  }
+
+  const streams = new Map<string, { name: string; text: string; originSeq: number }>();
+  for (const ev of events) {
+    if (ev.type === "agent.streaming.chunk") {
+      const p = pl(ev);
+      if (typeof p.agent === "string") {
+        streams.set(p.agent as string, {
+          name: (p.name as string) ?? (p.agent as string),
+          text: p.accumulated as string,
+          originSeq: p.originSeq as number,
+        });
+      }
+    }
+  }
+
+  const pending: FeedEntry[] = [];
+  for (const [agent, s] of streams) {
+    if (!state.settled.has(`${agent}:${s.originSeq}`)) {
+      pending.push({ kind: "streaming", agent, name: s.name, text: s.text, seq: s.originSeq, type: "agent.streaming.chunk" });
+    }
+  }
+
+  return { committed: state.committed, pending };
+}
+
 // --- Helpers ---
+
+const AGENT_EVENT_TYPES = new Set(["agent.streaming.chunk", "research.finding", "openai.response.completed"]);
 
 function discoverAgent(event: SessionEvent, map: Map<string, AgentInfo>) {
   if (event.type === "research.plan") {
@@ -489,20 +479,18 @@ function discoverAgent(event: SessionEvent, map: Map<string, AgentInfo>) {
     if (agents) {
       for (const a of agents) {
         if (!map.has(a.id)) {
-          const idx = map.size - 1;
-          map.set(a.id, { id: a.id, name: a.name, color: WORKER_COLORS[idx % WORKER_COLORS.length]! });
+          map.set(a.id, { id: a.id, name: a.name, color: WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]! });
         }
       }
     }
+    return;
   }
-  const types = new Set(["agent.streaming.chunk", "research.finding", "openai.response.completed"]);
-  if (types.has(event.type)) {
+  if (AGENT_EVENT_TYPES.has(event.type)) {
     const p = pl(event);
     const id = p.agent as string | undefined;
     const name = p.name as string | undefined;
     if (id && name && id !== "coordinator" && !map.has(id)) {
-      const idx = map.size - 1;
-      map.set(id, { id, name, color: WORKER_COLORS[idx % WORKER_COLORS.length]! });
+      map.set(id, { id, name, color: WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]! });
     }
   }
 }

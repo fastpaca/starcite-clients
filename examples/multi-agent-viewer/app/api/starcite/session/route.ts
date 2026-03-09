@@ -171,8 +171,7 @@ function bootCoordinator(state: SessionState): () => void {
     if (me.events().some((e) => e.type === EV.synthesis && payload(e).planSeq === planSeq)) return;
 
     const originSeq = typeof p.originSeq === "number" ? p.originSeq : undefined;
-    const userMsg = originSeq != null ? me.events().find((e) => e.seq === originSeq) : undefined;
-    const userText = userMsg ? (payload(userMsg).text as string ?? "") : "";
+    const userText = userTextAt(me, originSeq);
 
     return (async () => {
       const findings = found.map((f) => `### ${payload(f).name ?? "Researcher"}\n${payload(f).text}`).join("\n\n");
@@ -215,8 +214,7 @@ function bootWorker(state: SessionState, spec: AgentSpec, session: StarciteSessi
     if (!mySpec) return;
 
     const originSeq = payload(event).originSeq as number | undefined;
-    const userMsg = originSeq != null ? session.events().find((e) => e.seq === originSeq) : undefined;
-    const userText = userMsg ? (payload(userMsg).text as string ?? "") : "";
+    const userText = userTextAt(session, originSeq);
 
     return (async () => {
       const text = await streamLLM(state, session, spec.id, mySpec.name, "research", state.workerModel, [
@@ -316,6 +314,12 @@ function parsePlan(text: string): AgentSpec[] {
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function userTextAt(session: StarciteSession, originSeq: number | undefined): string {
+  if (originSeq == null) return "";
+  const msg = session.events().find((e) => e.seq === originSeq);
+  return msg ? (payload(msg).text as string ?? "") : "";
 }
 
 function payload(event: SessionEvent): Record<string, unknown> {
