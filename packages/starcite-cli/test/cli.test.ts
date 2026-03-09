@@ -290,6 +290,37 @@ describe("starcite CLI", () => {
     expect(info).toEqual(["ses_demo"]);
   });
 
+  it("--version prints the CLI version", async () => {
+    const output: string[] = [];
+    const program = buildProgram({
+      logger: {
+        info() {
+          // Intentionally silent in this test.
+        },
+        error() {
+          // Intentionally silent in this test.
+        },
+      },
+    });
+
+    program.exitOverride();
+    program.configureOutput({
+      writeOut: (text) => output.push(text),
+      writeErr: () => {
+        // Intentionally silent in this test.
+      },
+    });
+
+    await expect(
+      program.parseAsync(["--version"], {
+        from: "user",
+      })
+    ).rejects.toHaveProperty("code", "cli.versionDisplayed");
+
+    const version = output.join("").trim();
+    expect(version).toBe("0.0.8");
+  });
+
   it("help only exposes the supported commands", async () => {
     const output: string[] = [];
     const program = buildProgram({
@@ -315,7 +346,7 @@ describe("starcite CLI", () => {
       program.parseAsync(["node", "starcite", "--help"], {
         from: "user",
       })
-    ).rejects.toHaveProperty("code", "commander.helpDisplayed");
+    ).rejects.toHaveProperty("code", "cli.helpDisplayed");
 
     const help = output.join("");
     expect(help).toContain("create");
