@@ -15,26 +15,19 @@ import { cn } from "@/lib/utils";
 
 type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting";
 
-interface AgentColor { bg: string; text: string; dot: string }
+interface AgentColor { bg: string; text: string }
 interface AgentInfo { id: string; name: string; color: AgentColor }
-interface FeedEntry {
-  kind: "committed" | "streaming";
-  agent: string;
-  name: string;
-  text: string;
-  seq: number;
-  type: string;
-}
+interface FeedEntry { agent: string; name: string; text: string; seq: number; type: string }
 
 // --- Colors ---
 
-const COORDINATOR_COLOR: AgentColor = { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-500" };
+const COORDINATOR_COLOR: AgentColor = { bg: "bg-amber-50", text: "text-amber-700" };
 const WORKER_COLORS: AgentColor[] = [
-  { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500" },
-  { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-500" },
-  { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500" },
-  { bg: "bg-rose-50", text: "text-rose-700", dot: "bg-rose-500" },
-  { bg: "bg-cyan-50", text: "text-cyan-700", dot: "bg-cyan-500" },
+  { bg: "bg-blue-50", text: "text-blue-700" },
+  { bg: "bg-violet-50", text: "text-violet-700" },
+  { bg: "bg-emerald-50", text: "text-emerald-700" },
+  { bg: "bg-rose-50", text: "text-rose-700" },
+  { bg: "bg-cyan-50", text: "text-cyan-700" },
 ];
 
 const FEED_TYPES = new Set(["message.user", "research.plan", "research.finding", "synthesis"]);
@@ -173,32 +166,36 @@ function Header({ connState, sessionId }: { connState: ConnectionState; sessionI
 
 // --- Feed ---
 
+function useAutoScroll() {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const lastTop = useRef(0);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop < lastTop.current - 10) pinned.current = false;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) pinned.current = true;
+      lastTop.current = el.scrollTop;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => { if (pinned.current) endRef.current?.scrollIntoView({ block: "end" }); });
+
+  return { scrollRef, endRef };
+}
+
 function Feed({ committed, pending, agentMap, hasContent }: {
   committed: FeedEntry[];
   pending: FeedEntry[];
   agentMap: Map<string, AgentInfo>;
   hasContent: boolean;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
-  const userScrolledUp = useRef(false);
-  const lastScrollTop = useRef(0);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      if (el.scrollTop < lastScrollTop.current - 10) userScrolledUp.current = true;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) userScrolledUp.current = false;
-      lastScrollTop.current = el.scrollTop;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  useEffect(() => {
-    if (!userScrolledUp.current) endRef.current?.scrollIntoView({ block: "end" });
-  });
+  const { scrollRef, endRef } = useAutoScroll();
 
   if (!hasContent) {
     return (
@@ -429,25 +426,13 @@ function InputBar({ onSend }: { onSend: (text: string) => Promise<void> }) {
 interface FeedState { committed: FeedEntry[]; seenSeqs: Set<number>; settled: Set<string> }
 
 function deriveFeed(events: readonly SessionEvent[], state: FeedState, agentMap: Map<string, AgentInfo>) {
+  const streams = new Map<string, { name: string; text: string; originSeq: number }>();
+
   for (const ev of events) {
     if (ev.type === "openai.response.completed") {
       const p = pl(ev);
       state.settled.add(`${p.agent}:${p.originSeq}`);
-    }
-    if (FEED_TYPES.has(ev.type) && !state.seenSeqs.has(ev.seq)) {
-      state.seenSeqs.add(ev.seq);
-      const agent = resolveAgent(ev);
-      state.committed.push({
-        kind: "committed", agent, seq: ev.seq, type: ev.type,
-        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agentMap.get(agent)?.name ?? agent,
-        text: textOf(ev) ?? "",
-      });
-    }
-  }
-
-  const streams = new Map<string, { name: string; text: string; originSeq: number }>();
-  for (const ev of events) {
-    if (ev.type === "agent.streaming.chunk") {
+    } else if (ev.type === "agent.streaming.chunk") {
       const p = pl(ev);
       if (typeof p.agent === "string") {
         streams.set(p.agent as string, {
@@ -457,12 +442,21 @@ function deriveFeed(events: readonly SessionEvent[], state: FeedState, agentMap:
         });
       }
     }
+    if (FEED_TYPES.has(ev.type) && !state.seenSeqs.has(ev.seq)) {
+      state.seenSeqs.add(ev.seq);
+      const agent = resolveAgent(ev);
+      state.committed.push({
+        agent, seq: ev.seq, type: ev.type,
+        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agentMap.get(agent)?.name ?? agent,
+        text: textOf(ev) ?? "",
+      });
+    }
   }
 
   const pending: FeedEntry[] = [];
   for (const [agent, s] of streams) {
     if (!state.settled.has(`${agent}:${s.originSeq}`)) {
-      pending.push({ kind: "streaming", agent, name: s.name, text: s.text, seq: s.originSeq, type: "agent.streaming.chunk" });
+      pending.push({ agent, name: s.name, text: s.text, seq: s.originSeq, type: "agent.streaming.chunk" });
     }
   }
 

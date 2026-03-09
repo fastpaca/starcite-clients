@@ -138,14 +138,19 @@ function bootCoordinator(state: SessionState): () => void {
     if (!userText) return;
 
     return (async () => {
-      const text = await streamLLM(state, me, "coordinator", "Coordinator", "plan", state.coordinatorModel, [
-        "You are a research coordinator. Break the user's question into 2-4 distinct research angles.",
-        "Assign each to a specialist with a unique descriptive name.",
-        `\nUser question: ${userText}`,
-        "\nFormat: brief intro, then numbered list:",
-        "1. **Agent Name** — Research task",
-        "\nNames should reflect specialization. Keep it concise.",
-      ].join("\n"), event.seq);
+      const text = await streamLLM(state, {
+        session: me, agent: "coordinator", name: "Coordinator", stage: "plan",
+        model: state.coordinatorModel, originSeq: event.seq,
+        system: "You are an intelligent research coordinator. Break questions into distinct angles and assign specialized researchers.",
+        instruction: [
+          "Break the user's question into 2-4 distinct research angles.",
+          "Assign each to a specialist with a unique descriptive name.",
+          `\nUser question: ${userText}`,
+          "\nFormat: brief intro, then numbered list:",
+          "1. **Agent Name** — Research task",
+          "\nNames should reflect specialization. Keep it concise.",
+        ].join("\n"),
+      });
 
       const agents = parsePlan(text);
       await spawnWorkers(state, agents);
@@ -176,13 +181,18 @@ function bootCoordinator(state: SessionState): () => void {
     return (async () => {
       const findings = found.map((f) => `### ${payload(f).name ?? "Researcher"}\n${payload(f).text}`).join("\n\n");
 
-      const text = await streamLLM(state, me, "coordinator", "Coordinator", "synthesize", state.coordinatorModel, [
-        "Synthesize these research findings into a comprehensive, well-structured answer.",
-        `\nOriginal question: ${userText}`,
-        `\nFindings:\n${findings}`,
-        "\nIntegrate all perspectives. Use markdown. 300-500 words.",
-        "End with a brief takeaway.",
-      ].join("\n"), event.seq);
+      const text = await streamLLM(state, {
+        session: me, agent: "coordinator", name: "Coordinator", stage: "synthesize",
+        model: state.coordinatorModel, originSeq: event.seq,
+        system: "You are a research coordinator synthesizing specialist findings. Clear structure, markdown.",
+        instruction: [
+          "Synthesize these research findings into a comprehensive, well-structured answer.",
+          `\nOriginal question: ${userText}`,
+          `\nFindings:\n${findings}`,
+          "\nIntegrate all perspectives. Use markdown. 300-500 words.",
+          "End with a brief takeaway.",
+        ].join("\n"),
+      });
 
       await me.append({ type: EV.synthesis, source: "agent", payload: { planSeq, text } });
     })();
@@ -217,13 +227,17 @@ function bootWorker(state: SessionState, spec: AgentSpec, session: StarciteSessi
     const userText = userTextAt(session, originSeq);
 
     return (async () => {
-      const text = await streamLLM(state, session, spec.id, mySpec.name, "research", state.workerModel, [
-        `You are ${mySpec.name}, a research specialist.`,
-        `\nOriginal question: ${userText}`,
-        `\nYour task: ${mySpec.task}`,
-        "\nProvide thorough, well-structured analysis with specific examples.",
-        "Use markdown. 200-400 words.",
-      ].join("\n"), planSeq);
+      const text = await streamLLM(state, {
+        session, agent: spec.id, name: mySpec.name, stage: "research",
+        model: state.workerModel, originSeq: planSeq,
+        system: `You are ${mySpec.name}, a focused research specialist. Evidence-based analysis, specific examples, markdown.`,
+        instruction: [
+          `Your task: ${mySpec.task}`,
+          `\nOriginal question: ${userText}`,
+          "\nProvide thorough, well-structured analysis with specific examples.",
+          "Use markdown. 200-400 words.",
+        ].join("\n"),
+      });
 
       await session.append({
         type: EV.finding, source: "agent",
@@ -235,21 +249,19 @@ function bootWorker(state: SessionState, spec: AgentSpec, session: StarciteSessi
 
 // --- LLM streaming ---
 
-async function streamLLM(
-  state: SessionState,
-  session: StarciteSession,
-  agent: string,
-  name: string,
-  stage: string,
-  model: string,
-  instruction: string,
-  originSeq: number,
-): Promise<string> {
-  const systemPrompt = agent === "coordinator"
-    ? stage === "plan"
-      ? "You are an intelligent research coordinator. Break questions into distinct angles and assign specialized researchers."
-      : "You are a research coordinator synthesizing specialist findings. Clear structure, markdown."
-    : `You are ${name}, a focused research specialist. Evidence-based analysis, specific examples, markdown.`;
+interface StreamOpts {
+  session: StarciteSession;
+  agent: string;
+  name: string;
+  stage: string;
+  model: string;
+  system: string;
+  instruction: string;
+  originSeq: number;
+}
+
+async function streamLLM(state: SessionState, opts: StreamOpts): Promise<string> {
+  const { session, agent, name, stage, model, system: systemPrompt, instruction, originSeq } = opts;
 
   const stream = await state.openai.responses.create({
     model,
