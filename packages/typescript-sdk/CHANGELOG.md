@@ -19,7 +19,7 @@
 
 - `session.append()` now auto-manages `actor`, `producer_id`, and `producer_seq` for convenience
 - `session.append()` now serializes per-session append calls so `producer_seq` remains strictly ordered under concurrency
-- Raw append support is available through `appendRaw(...)` with explicit `producer_id` and `producer_seq` requirements
+- `session.append()` is now the single append API; callers can still provide explicit `actor`, `payload`, `type`, and metadata fields through `SessionAppendInput`
 - `tail()` now auto-recovers from abnormal disconnects and resumes from the last observed sequence
 - Tail streams now accept both single-event and batched WebSocket frame shapes
 - Internal tail transport loop is split into a single-connection runner plus reconnect orchestrator for clearer failure-state reasoning

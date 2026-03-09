@@ -23,6 +23,10 @@ export const SessionTokenPrincipalSchema = z.object({
 
 export type SessionTokenPrincipal = z.infer<typeof SessionTokenPrincipalSchema>;
 
+function hasPrincipalPrefix(id: string): boolean {
+  return id.startsWith(AGENT_PREFIX) || id.startsWith(USER_PREFIX);
+}
+
 /**
  * Represents a resolved caller identity with tenant, principal id, and type.
  */
@@ -36,6 +40,12 @@ export class StarciteIdentity {
     id: string;
     type: PrincipalType;
   }) {
+    if (hasPrincipalPrefix(options.id)) {
+      throw new Error(
+        `StarciteIdentity id must not include a principal prefix; received '${options.id}'`
+      );
+    }
+
     this.tenantId = options.tenantId;
     this.id = options.id;
     this.type = options.type;
@@ -59,9 +69,6 @@ export class StarciteIdentity {
    * Returns the actor string derived from this identity (e.g. `agent:planner`, `user:alice`).
    */
   toActor(): string {
-    if (this.id.startsWith(AGENT_PREFIX) || this.id.startsWith(USER_PREFIX)) {
-      return this.id;
-    }
     return `${this.type}:${this.id}`;
   }
 }

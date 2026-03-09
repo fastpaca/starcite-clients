@@ -33,11 +33,7 @@ import type {
   SessionTailItem,
   SessionTailIteratorOptions,
 } from "./types";
-import {
-  AppendEventRequestSchema,
-  AppendEventResponseSchema,
-  SessionAppendInputSchema,
-} from "./types";
+import { AppendEventResponseSchema, SessionAppendInputSchema } from "./types";
 
 /**
  * Construction options for a `StarciteSession`.
@@ -284,24 +280,6 @@ export class StarciteSession {
         seq: result.seq,
         deduped: result.deduped,
       };
-    });
-  }
-
-  /**
-   * Appends a raw event payload as-is. Caller manages all fields.
-   */
-  appendRaw(
-    input: AppendEventRequest,
-    options?: RequestOptions
-  ): Promise<AppendEventResponse> {
-    const parsed = AppendEventRequestSchema.parse(input);
-
-    return this.enqueueAppend({
-      id: crypto.randomUUID(),
-      request: structuredClone(parsed) as AppendEventRequest,
-      enqueuedAtMs: Date.now(),
-      retryAttempt: 0,
-      signal: options?.signal,
     });
   }
 

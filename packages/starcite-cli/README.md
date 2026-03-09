@@ -2,7 +2,7 @@
 
 Built for multi-agent systems.
 
-Use `starcite` to create sessions, append events, and tail shared event streams from your terminal.
+Use `starcite` to create sessions, append events, tail shared event streams, and inspect session listings from your terminal.
 
 For multi-agent systems:
 
@@ -68,20 +68,12 @@ starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite tail ses_demo --cursor 0 --limit 1
 ```
 
-## Cloud Setup
-
-```bash
-starcite config set endpoint https://<your-instance>.starcite.io
-starcite config set api-key <YOUR_KEY>
-```
-
 ## Global Options
 
 - `-u, --base-url <url>`: Starcite API base URL (highest precedence)
 - `-k, --token <key>`: Starcite API key or session token (highest precedence)
 - `--config-dir <path>`: Starcite CLI config directory (defaults to `~/.starcite`)
 - `--json`: machine-readable JSON output
-- `-v, --version`: show CLI version and exit
 - `-h, --help`: show help text
 
 Base URL resolution order:
@@ -99,13 +91,20 @@ API key resolution order:
 
 ## Commands
 
-### `version`
+### `config`
 
-Print the installed CLI version.
+Manage local configuration.
 
 ```bash
-starcite version
+starcite config set endpoint https://<your-instance>.starcite.io
+starcite config set api-key <YOUR_API_KEY>
+starcite config show
 ```
+
+Key aliases accepted by `config set`:
+
+- endpoint: `endpoint`, `base-url`, `base_url`
+- API key: `api-key`, `api_key`
 
 ### `create`
 
@@ -121,6 +120,8 @@ starcite create --id ses_demo --title "Draft contract" --metadata '{"tenant_id":
 List sessions from the API catalog.
 Uses the resolved API credential context.
 
+This command prints a warning because it is a bad call to use in production.
+
 ```bash
 starcite sessions list
 starcite sessions list --limit 20
@@ -134,92 +135,41 @@ Useful flags:
 - `--cursor <cursor>`: pagination cursor from previous result
 - `--metadata <json>`: flat JSON object of exact-match metadata filters
 
-### `config`
-
-Manage local configuration.
-
-```bash
-starcite config set endpoint https://<your-instance>.starcite.io
-starcite config set producer-id producer:my-agent
-starcite config show
-```
-
-Key aliases accepted by `config set`:
-
-- endpoint: `endpoint`, `base-url`, `base_url`
-- producer id: `producer-id`, `producer_id`
-- API key: `api-key`, `api_key`
-
-### `up`
-
-Start local Starcite containers through an interactive wizard (Docker required).
-
-Wizard flow:
-
-- checks Docker / Docker Compose availability
-- asks for confirmation before creating containers
-- asks for API port (default from your configured base URL, fallback `45187`)
-- writes compose files to `~/.starcite/runtime` (or `--config-dir`)
-- runs `docker compose up -d`
-
-Useful flags:
-
-- `-y, --yes`: skip prompts and use defaults
-- `--port <port>`: set API port
-- `--db-port <port>`: set Postgres port (default `5433`)
-- `--image <image>`: override Starcite Docker image
-
-### `down`
-
-Stop local Starcite containers.
-
-By default this command is destructive:
-
-- runs `docker compose down --remove-orphans -v`
-- removes container volumes (`-v`) to fully reset local state
-
-Useful flags:
-
-- `-y, --yes`: skip confirmation prompt
-- `--no-volumes`: keep Postgres volume data
-
 ### `append <sessionId>`
 
 Append an event.
-`--producer-id` and `--producer-seq` are optional.
-If omitted, CLI rehydrates from `~/.starcite`:
 
-- producer id: config (`producerId`/`producer_id`) or generated identity
-- producer seq: persisted `nextSeq` per `(baseUrl, sessionId, producerId)` context
-- first sequence for a new context starts at `1`
+The CLI always appends through SDK session objects. Producer identity and
+sequence are managed by the SDK store automatically; the CLI does not expose
+producer controls.
 
-High-level mode (`--agent` + `--text`):
+Append input shorthands:
+
+- `--text <text>` is shorthand for `--payload '{"text":"..."}'`
+- choose one identity source: `--agent` or `--user`
+- choose one payload source: `--text` or `--payload`
 
 ```bash
 starcite append ses_demo --agent drafter --text "Reviewing clause 4.2..."
-```
-
-Raw mode (`--actor` + `--payload`):
-
-```bash
+starcite append ses_demo --agent drafter --payload '{"text":"Reviewing clause 4.2...","section":"4.2"}'
 starcite append ses_demo \
-  --actor agent:drafter \
-  --producer-id producer:drafter \
-  --producer-seq 3 \
-  --type content \
-  --payload '{"text":"Reviewing clause 4.2..."}' \
+  --user alice \
+  --text "Reviewing clause 4.2..." \
   --idempotency-key req-123 \
   --expected-seq 3
+starcite append ses_demo \
+  --user alice \
+  --type content \
+  --payload '{"text":"Reviewing clause 4.2...","reviewer":"alice"}'
 ```
 
 ## Config and State Files
 
 By default the CLI uses `~/.starcite`:
 
-- `config.json` or `config.toml`: optional defaults (`baseUrl`, `producerId`, `apiKey`)
-- `credentials.json`: saved API key (`apiKey`)
-- `identity.json`: generated stable default producer id (`cli:<hostname>:<uuid>`)
-- `state.json`: persisted `nextSeqByContext` dictionary
+- `config.json` or `config.toml`: optional defaults (`baseUrl`, `apiKey`)
+- `credentials.json`: saved API key plus cached session tokens
+- `state.json`: session-scoped store state (retained events, cursors, and producer state)
 
 Use `--config-dir <path>` to override the directory for testing or isolated runs.
 

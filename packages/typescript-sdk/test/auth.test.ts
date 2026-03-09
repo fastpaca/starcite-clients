@@ -38,7 +38,7 @@ describe("inferIdentityFromApiKey", () => {
   it("infers identity from explicit claims", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
-      principal_id: "agent:planner",
+      principal_id: "planner",
       principal_type: "agent",
     });
     const identity = inferIdentityFromApiKey(token);
@@ -46,7 +46,7 @@ describe("inferIdentityFromApiKey", () => {
     expect(identity).toEqual(
       expect.objectContaining({
         tenantId: "acme",
-        id: "agent:planner",
+        id: "planner",
         type: "agent",
       })
     );
@@ -54,7 +54,7 @@ describe("inferIdentityFromApiKey", () => {
 
   it("falls back to sub for id when principal_id is absent", () => {
     const token = tokenFromClaims({
-      sub: "agent:planner",
+      sub: "planner",
       tenant_id: "acme",
       principal_type: "agent",
     });
@@ -63,7 +63,7 @@ describe("inferIdentityFromApiKey", () => {
     expect(identity).toEqual(
       expect.objectContaining({
         tenantId: "acme",
-        id: "agent:planner",
+        id: "planner",
         type: "agent",
       })
     );
@@ -71,23 +71,35 @@ describe("inferIdentityFromApiKey", () => {
 
   it("returns undefined when tenant_id is missing", () => {
     const token = tokenFromClaims({
-      principal_id: "agent:planner",
+      principal_id: "planner",
       principal_type: "agent",
     });
     expect(inferIdentityFromApiKey(token)).toBeUndefined();
   });
 
+  it("throws when principal_id includes a legacy type prefix", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "agent:planner",
+      principal_type: "agent",
+    });
+
+    expect(() => inferIdentityFromApiKey(token)).toThrow(
+      "must not include a principal prefix"
+    );
+  });
+
   it("defaults principal_type to user when missing", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
-      principal_id: "user:planner",
+      principal_id: "planner",
     });
     const identity = inferIdentityFromApiKey(token);
     expect(identity).toBeDefined();
     expect(identity).toEqual(
       expect.objectContaining({
         tenantId: "acme",
-        id: "user:planner",
+        id: "planner",
         type: "user",
       })
     );

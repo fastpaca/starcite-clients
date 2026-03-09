@@ -151,13 +151,14 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
 
 function makeTailSessionToken(
   sessionId = "ses_browser",
-  principalId = "agent:planner"
+  principalId = "planner",
+  principalType: "agent" | "user" = "agent"
 ): string {
   return tokenFromClaims({
     session_id: sessionId,
     tenant_id: "browser-tenant",
     principal_id: principalId,
-    principal_type: principalId.startsWith("agent:") ? "agent" : "user",
+    principal_type: principalType,
   });
 }
 
@@ -189,7 +190,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_access", "agent:planner"),
+      token: makeTailSessionToken("ses_access", "planner"),
     });
 
     const events: TailEvent[] = [];
@@ -231,7 +232,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_multi", "agent:coordinator"),
+      token: makeTailSessionToken("ses_multi", "coordinator"),
     });
 
     const plannerEvents: TailEvent[] = [];
@@ -296,7 +297,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_replay", "agent:planner"),
+      token: makeTailSessionToken("ses_replay", "planner"),
     });
 
     const firstListenerSeqs: number[] = [];
@@ -365,7 +366,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_off", "agent:planner"),
+      token: makeTailSessionToken("ses_off", "planner"),
     });
 
     const unsubscribeFirst = session.on("event", () => undefined);
@@ -423,7 +424,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_reconnect", "agent:planner"),
+      token: makeTailSessionToken("ses_reconnect", "planner"),
     });
 
     const events: TailEvent[] = [];
@@ -483,7 +484,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_expired", "agent:planner"),
+      token: makeTailSessionToken("ses_expired", "planner"),
     });
 
     const tailDone = Array.fromAsync(session.tail());
@@ -510,7 +511,7 @@ describe("Browser Multi-Agent Workflows", () => {
       },
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_connect_retry_limit", "agent:planner"),
+      token: makeTailSessionToken("ses_connect_retry_limit", "planner"),
     });
 
     const tailDone = Array.fromAsync(
@@ -536,7 +537,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_drop_retry_limit", "agent:planner"),
+      token: makeTailSessionToken("ses_drop_retry_limit", "planner"),
     });
 
     const tailDone = Array.fromAsync(
@@ -567,7 +568,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_error_then_close", "agent:planner"),
+      token: makeTailSessionToken("ses_error_then_close", "planner"),
     });
 
     const tailDone = Array.fromAsync(
@@ -604,7 +605,7 @@ describe("Browser Multi-Agent Workflows", () => {
       },
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_lifecycle", "agent:planner"),
+      token: makeTailSessionToken("ses_lifecycle", "planner"),
     });
 
     const tailDone = Array.fromAsync(
@@ -626,7 +627,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_isolated", "agent:coordinator"),
+      token: makeTailSessionToken("ses_isolated", "coordinator"),
     });
 
     const plannerEvents: TailEvent[] = [];
@@ -742,10 +743,10 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const plannerSession = starcite.session({
-      token: makeTailSessionToken("ses_live_planner", "agent:planner"),
+      token: makeTailSessionToken("ses_live_planner", "planner"),
     });
     const drafterSession = starcite.session({
-      token: makeTailSessionToken("ses_live_drafter", "agent:drafter"),
+      token: makeTailSessionToken("ses_live_drafter", "drafter"),
     });
 
     const plannerSeqs: number[] = [];
@@ -836,7 +837,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_sync", "agent:planner"),
+      token: makeTailSessionToken("ses_sync", "planner"),
     });
 
     const observedSeqs: number[] = [];
@@ -906,7 +907,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_error", "agent:planner"),
+      token: makeTailSessionToken("ses_error", "planner"),
     });
 
     const syncErrors: Error[] = [];
@@ -951,7 +952,7 @@ describe("Browser Multi-Agent Workflows", () => {
 
   it("uses query-token auth with custom factories in browser runtimes", async () => {
     const sockets: FakeBrowserWebSocket[] = [];
-    const sessionToken = makeTailSessionToken("ses_header", "agent:planner");
+    const sessionToken = makeTailSessionToken("ses_header", "planner");
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -1001,7 +1002,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_disconnect", "agent:planner"),
+      token: makeTailSessionToken("ses_disconnect", "planner"),
     });
 
     session.on("event", () => undefined);
@@ -1034,10 +1035,10 @@ describe("Browser Multi-Agent Workflows", () => {
     });
 
     const plannerSession = starcite.session({
-      token: makeTailSessionToken("ses_append", "agent:planner"),
+      token: makeTailSessionToken("ses_append", "planner"),
     });
     const drafterSession = starcite.session({
-      token: makeTailSessionToken("ses_append", "agent:drafter"),
+      token: makeTailSessionToken("ses_append", "drafter"),
     });
 
     await plannerSession.append({ text: "planner says hi" });
@@ -1062,7 +1063,7 @@ describe("Browser Multi-Agent Workflows", () => {
       fetch: fetchMock,
     });
     const session = starcite.session({
-      token: makeTailSessionToken("ses_batches", "agent:coordinator"),
+      token: makeTailSessionToken("ses_batches", "coordinator"),
     });
 
     const events: TailEvent[] = [];
