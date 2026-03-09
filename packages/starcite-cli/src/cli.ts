@@ -59,11 +59,11 @@ export interface CliProgram {
 }
 
 class EarlyExit extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
     super(message);
+    this.code = code;
   }
 }
 
@@ -96,7 +96,7 @@ function parseGlobalArgs(args: string[]) {
       "-v": "--version",
     },
     args,
-    true,
+    true
   );
 
   return {
@@ -142,18 +142,24 @@ export function buildProgram(deps: CliDependencies = {}): CliProgram {
 
       if (parsed.version) {
         output.writeOut(`${__CLI_VERSION__}\n`);
-        if (throwOnEarlyExit) throw new EarlyExit("cli.versionDisplayed", "Version displayed");
+        if (throwOnEarlyExit) {
+          throw new EarlyExit("cli.versionDisplayed", "Version displayed");
+        }
         return;
       }
 
       if (parsed.help || !command) {
         output.writeOut(`${HELP_TEXT}\n`);
-        if (throwOnEarlyExit) throw new EarlyExit("cli.helpDisplayed", "Help displayed");
+        if (throwOnEarlyExit) {
+          throw new EarlyExit("cli.helpDisplayed", "Help displayed");
+        }
         return;
       }
 
       const handler = COMMANDS[command];
-      if (!handler) throw new CliUsageError(`Unknown command: ${command}`);
+      if (!handler) {
+        throw new CliUsageError(`Unknown command: ${command}`);
+      }
 
       await handler(parsed.rest.slice(1), parsed.options, runtime);
     },
@@ -162,7 +168,7 @@ export function buildProgram(deps: CliDependencies = {}): CliProgram {
 
 export async function run(
   argv = process.argv,
-  deps: CliDependencies = {},
+  deps: CliDependencies = {}
 ): Promise<void> {
   const runtime = new CliRuntime(deps);
   const program = buildProgram(deps);

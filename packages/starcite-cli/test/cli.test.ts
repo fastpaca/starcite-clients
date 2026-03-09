@@ -294,15 +294,21 @@ describe("starcite CLI", () => {
     const output: string[] = [];
     const program = buildProgram({
       logger: {
-        info() {},
-        error() {},
+        info() {
+          // Intentionally silent in this test.
+        },
+        error() {
+          // Intentionally silent in this test.
+        },
       },
     });
 
     program.exitOverride();
     program.configureOutput({
       writeOut: (text) => output.push(text),
-      writeErr: () => {},
+      writeErr: () => {
+        // Intentionally silent in this test.
+      },
     });
 
     await expect(
@@ -312,7 +318,7 @@ describe("starcite CLI", () => {
     ).rejects.toHaveProperty("code", "cli.versionDisplayed");
 
     const version = output.join("").trim();
-    expect(version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(version).toBe("0.0.8");
   });
 
   it("help only exposes the supported commands", async () => {
