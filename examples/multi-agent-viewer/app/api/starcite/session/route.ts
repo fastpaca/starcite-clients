@@ -262,27 +262,34 @@ interface StreamOpts {
 
 async function streamLLM(state: SessionState, opts: StreamOpts): Promise<string> {
   const { session, agent, name, stage, model, system: systemPrompt, instruction, originSeq } = opts;
+  const previousResponseId = latestResponseId(session, agent);
 
   const stream = await state.openai.responses.create({
     model,
     stream: true,
+    store: true,
+    previous_response_id: previousResponseId,
     instructions: systemPrompt,
     input: [{ role: "user", content: [{ type: "input_text", text: instruction }] }],
   });
 
   let accumulated = "";
   let buffer = "";
+  let responseId: string | undefined;
 
   for await (const event of stream) {
-    if (event.type !== "response.output_text.delta") continue;
-    accumulated += event.delta;
-    buffer += event.delta;
-    if (buffer.length >= 60) {
-      session.append({
-        type: EV.chunk, source: "agent",
-        payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
-      }).catch(() => {});
-      buffer = "";
+    if (event.type === "response.output_text.delta") {
+      accumulated += event.delta;
+      buffer += event.delta;
+      if (buffer.length >= 60) {
+        session.append({
+          type: EV.chunk, source: "agent",
+          payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
+        }).catch(() => {});
+        buffer = "";
+      }
+    } else if (event.type === "response.completed") {
+      responseId = event.response.id;
     }
   }
 
@@ -298,7 +305,7 @@ async function streamLLM(state: SessionState, opts: StreamOpts): Promise<string>
 
   await session.append({
     type: EV.completed, source: "openai",
-    payload: { agent, name, originSeq, stage, text },
+    payload: { agent, name, originSeq, stage, text, responseId, previousResponseId },
   });
 
   return text;
@@ -323,6 +330,13 @@ function parsePlan(text: string): AgentSpec[] {
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function latestResponseId(session: StarciteSession, agent: string): string | undefined {
+  const ev = [...session.events()].reverse().find(
+    (e) => e.type === EV.completed && payload(e).agent === agent,
+  );
+  return ev ? payload(ev).responseId as string | undefined : undefined;
 }
 
 function userTextAt(session: StarciteSession, originSeq: number | undefined): string {
