@@ -8,10 +8,11 @@ import {
   type CliDependencies,
   CliRuntime,
   CliUsageError,
+  type GlobalOptions,
   parseArgs,
 } from "./runtime";
 
-const HELP_CODE = "commander.helpDisplayed";
+declare const __CLI_VERSION__: string;
 
 const HELP_TEXT = `Usage: starcite [options] <command>
 
@@ -28,7 +29,19 @@ Options:
       --config-dir <path>
       --json
   -h, --help
+  -v, --version
 `;
+
+const COMMANDS: Record<
+  string,
+  (args: string[], options: GlobalOptions, runtime: CliRuntime) => Promise<void>
+> = {
+  config: runConfigCommand,
+  create: runCreateCommand,
+  append: runAppendCommand,
+  tail: runTailCommand,
+  sessions: runSessionsCommand,
+};
 
 interface ParseContext {
   from?: "user";
@@ -43,6 +56,15 @@ export interface CliProgram {
   parseAsync(argv: string[], context?: ParseContext): Promise<void>;
   exitOverride(): void;
   configureOutput(output: Partial<OutputHandlers>): void;
+}
+
+class EarlyExit extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 function normalizeArgv(argv: string[], context?: ParseContext): string[] {
@@ -70,13 +92,16 @@ function parseGlobalArgs(args: string[]) {
       "--json": Boolean,
       "--help": Boolean,
       "-h": "--help",
+      "--version": Boolean,
+      "-v": "--version",
     },
     args,
-    true
+    true,
   );
 
   return {
     help: parsed["--help"] === true,
+    version: parsed["--version"] === true,
     options: {
       baseUrl: parsed["--base-url"],
       configDir: parsed["--config-dir"],
@@ -87,13 +112,9 @@ function parseGlobalArgs(args: string[]) {
   };
 }
 
-function helpOutputText(): string {
-  return `${HELP_TEXT}\n`;
-}
-
 export function buildProgram(deps: CliDependencies = {}): CliProgram {
   const runtime = new CliRuntime(deps);
-  let shouldThrowOnHelp = false;
+  let throwOnEarlyExit = false;
   let output: OutputHandlers = {
     writeOut(text: string) {
       process.stdout.write(text);
@@ -105,7 +126,7 @@ export function buildProgram(deps: CliDependencies = {}): CliProgram {
 
   return {
     exitOverride() {
-      shouldThrowOnHelp = true;
+      throwOnEarlyExit = true;
     },
 
     configureOutput(next) {
@@ -119,53 +140,29 @@ export function buildProgram(deps: CliDependencies = {}): CliProgram {
       const parsed = parseGlobalArgs(normalizeArgv(argv, context));
       const command = parsed.rest[0];
 
+      if (parsed.version) {
+        output.writeOut(`${__CLI_VERSION__}\n`);
+        if (throwOnEarlyExit) throw new EarlyExit("cli.versionDisplayed", "Version displayed");
+        return;
+      }
+
       if (parsed.help || !command) {
-        output.writeOut(helpOutputText());
-
-        if (shouldThrowOnHelp) {
-          const error = new Error("Help displayed") as Error & { code: string };
-          error.code = HELP_CODE;
-          throw error;
-        }
-
+        output.writeOut(`${HELP_TEXT}\n`);
+        if (throwOnEarlyExit) throw new EarlyExit("cli.helpDisplayed", "Help displayed");
         return;
       }
 
-      const commandArgs = parsed.rest.slice(1);
+      const handler = COMMANDS[command];
+      if (!handler) throw new CliUsageError(`Unknown command: ${command}`);
 
-      if (command === "config") {
-        await runConfigCommand(commandArgs, parsed.options, runtime);
-        return;
-      }
-
-      if (command === "create") {
-        await runCreateCommand(commandArgs, parsed.options, runtime);
-        return;
-      }
-
-      if (command === "append") {
-        await runAppendCommand(commandArgs, parsed.options, runtime);
-        return;
-      }
-
-      if (command === "tail") {
-        await runTailCommand(commandArgs, parsed.options, runtime);
-        return;
-      }
-
-      if (command === "sessions") {
-        await runSessionsCommand(commandArgs, parsed.options, runtime);
-        return;
-      }
-
-      throw new CliUsageError(`Unknown command: ${command}`);
+      await handler(parsed.rest.slice(1), parsed.options, runtime);
     },
   };
 }
 
 export async function run(
   argv = process.argv,
-  deps: CliDependencies = {}
+  deps: CliDependencies = {},
 ): Promise<void> {
   const runtime = new CliRuntime(deps);
   const program = buildProgram(deps);
