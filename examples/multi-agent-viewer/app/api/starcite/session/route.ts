@@ -3,15 +3,9 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { getCursor, setCursor } from "@/lib/cursor-store";
 
-// ---------------------------------------------------------------------------
-// Config & Types
-// ---------------------------------------------------------------------------
+// --- Types ---
 
-interface AgentSpec {
-  id: string;
-  name: string;
-  task: string;
-}
+interface AgentSpec { id: string; name: string; task: string }
 
 interface SessionState {
   sessionId: string;
@@ -24,28 +18,24 @@ interface SessionState {
   stops: (() => void)[];
 }
 
-const EVENT = {
+const EV = {
   userMessage: "message.user",
-  researchPlan: "research.plan",
-  researchFinding: "research.finding",
+  plan: "research.plan",
+  finding: "research.finding",
   synthesis: "synthesis",
-  responseCompleted: "openai.response.completed",
-  streamingChunk: "agent.streaming.chunk",
+  completed: "openai.response.completed",
+  chunk: "agent.streaming.chunk",
 } as const;
 
-// ---------------------------------------------------------------------------
-// In-memory session registry
-// ---------------------------------------------------------------------------
+// --- In-memory session registry ---
 
-const activeSessions = new Map<string, SessionState>();
+const sessions = new Map<string, SessionState>();
 
-// ---------------------------------------------------------------------------
-// POST /api/starcite/session
-// ---------------------------------------------------------------------------
+// --- POST: create or reconnect ---
 
-export async function POST(request: Request): Promise<Response> {
-  const apiKey = requireEnv("STARCITE_API_KEY");
-  const openaiKey = requireEnv("OPENAI_API_KEY");
+export async function POST(request: Request) {
+  const apiKey = env("STARCITE_API_KEY");
+  const openaiKey = env("OPENAI_API_KEY");
   const baseUrl = process.env.STARCITE_BASE_URL ?? "https://api.starcite.io";
   const coordinatorModel = process.env.OPENAI_COORDINATOR_MODEL ?? "gpt-4o";
   const workerModel = process.env.OPENAI_WORKER_MODEL ?? "gpt-4o-mini";
@@ -53,14 +43,9 @@ export async function POST(request: Request): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as { sessionId?: string };
   const starcite = new Starcite({ apiKey, baseUrl });
 
-  // Reuse existing in-process session
-  if (body.sessionId && activeSessions.has(body.sessionId)) {
-    const existing = activeSessions.get(body.sessionId)!;
-    const viewer = await starcite.session({
-      identity: starcite.user({ id: "web-user" }),
-      id: existing.sessionId,
-    });
-    return NextResponse.json({ sessionId: existing.sessionId, token: viewer.token });
+  if (body.sessionId && sessions.has(body.sessionId)) {
+    const viewer = await starcite.session({ identity: starcite.user({ id: "web-user" }), id: body.sessionId });
+    return NextResponse.json({ sessionId: body.sessionId, token: viewer.token });
   }
 
   const userSession = await starcite.session({
@@ -68,340 +53,215 @@ export async function POST(request: Request): Promise<Response> {
     ...(body.sessionId ? { id: body.sessionId } : {}),
     title: "Research Swarm",
   });
-  const sessionId = userSession.id;
+  const id = userSession.id;
 
-  const [coordinatorSession, viewerSession] = await Promise.all([
-    starcite.session({ identity: starcite.agent({ id: "coordinator" }), id: sessionId }),
-    starcite.session({ identity: starcite.user({ id: "web-user" }), id: sessionId }),
+  const [coordinator, viewer] = await Promise.all([
+    starcite.session({ identity: starcite.agent({ id: "coordinator" }), id }),
+    starcite.session({ identity: starcite.user({ id: "web-user" }), id }),
   ]);
 
-  const openai = new OpenAI({ apiKey: openaiKey });
-
   const state: SessionState = {
-    sessionId,
+    sessionId: id,
     starcite,
-    openai,
+    openai: new OpenAI({ apiKey: openaiKey }),
     coordinatorModel,
     workerModel,
-    coordinator: coordinatorSession,
+    coordinator,
     workers: new Map(),
     stops: [],
   };
 
   state.stops.push(bootCoordinator(state));
+  sessions.set(id, state);
 
-  activeSessions.set(sessionId, {
-    ...state,
-    // Override for cleanup tracking
-    stops: state.stops,
-  });
-
-  return NextResponse.json({ sessionId, token: viewerSession.token });
+  return NextResponse.json({ sessionId: id, token: viewer.token });
 }
 
-// ---------------------------------------------------------------------------
-// DELETE /api/starcite/session — stop all agents for a session
-// ---------------------------------------------------------------------------
+// --- DELETE: stop all agents ---
 
-export async function DELETE(request: Request): Promise<Response> {
+export async function DELETE(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { sessionId?: string };
   if (!body.sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
 
-  const state = activeSessions.get(body.sessionId);
+  const state = sessions.get(body.sessionId);
   if (state) {
-    for (const stop of state.stops) {
-      try { stop(); } catch {}
-    }
-    activeSessions.delete(body.sessionId);
+    state.stops.forEach((stop) => { try { stop(); } catch {} });
+    sessions.delete(body.sessionId);
   }
 
   return NextResponse.json({ ok: true });
 }
 
-// ---------------------------------------------------------------------------
-// Gated event handler with in-flight lock
-// ---------------------------------------------------------------------------
+// --- Gated event handler (skip replayed, serialize async work) ---
 
 function gated(
   sessionId: string,
-  agentRole: string,
+  role: string,
   session: StarciteSession,
   handler: (event: SessionEvent) => void | Promise<void>,
 ): () => void {
-  const cursor = getCursor(sessionId, agentRole);
+  const cursor = getCursor(sessionId, role);
   let busy = false;
-  let pending: SessionEvent | null = null;
+  let queued: SessionEvent | null = null;
 
-  function process(event: SessionEvent): void {
+  function run(event: SessionEvent) {
     const result = handler(event);
-
-    if (result && typeof (result as Promise<void>).then === "function") {
+    if (result instanceof Promise) {
       busy = true;
-      (result as Promise<void>).then(
-        () => {
-          setCursor(sessionId, agentRole, event.seq);
-          busy = false;
-          if (pending) { const next = pending; pending = null; process(next); }
-        },
-        (err) => {
-          console.error(`[${agentRole}] error:`, err);
-          busy = false;
-          if (pending) { const next = pending; pending = null; process(next); }
-        },
-      );
+      const done = () => {
+        setCursor(sessionId, role, event.seq);
+        busy = false;
+        if (queued) { const next = queued; queued = null; run(next); }
+      };
+      result.then(done, (err) => { console.error(`[${role}]`, err); done(); });
     } else {
-      setCursor(sessionId, agentRole, event.seq);
+      setCursor(sessionId, role, event.seq);
     }
   }
 
-  return session.on(
-    "event",
-    (event, ctx) => {
-      if (ctx.replayed && event.seq <= cursor) return;
-      if (busy) { pending = event; return; }
-      process(event);
-    },
-    { replay: true },
-  );
+  return session.on("event", (event, ctx) => {
+    if (ctx.replayed && event.seq <= cursor) return;
+    if (busy) { queued = event; return; }
+    run(event);
+  }, { replay: true });
 }
 
-// ---------------------------------------------------------------------------
-// Coordinator — plans research, spawns agents, synthesizes findings
-// ---------------------------------------------------------------------------
+// --- Coordinator: plan + synthesize ---
 
 function bootCoordinator(state: SessionState): () => void {
   const me = state.coordinator;
 
-  // On user message → create research plan and spawn agents
-  const off1 = gated(state.sessionId, "coordinator:plan", me, (event) => {
-    if (event.type !== EVENT.userMessage) return;
+  const offPlan = gated(state.sessionId, "coordinator:plan", me, (event) => {
+    if (event.type !== EV.userMessage) return;
 
-    // Only plan if every existing plan already has a synthesis
-    const plans = me.events().filter((e) => e.type === EVENT.researchPlan);
-    const syntheses = me.events().filter((e) => e.type === EVENT.synthesis);
-    if (plans.length > syntheses.length) return;
-
-    const userText = textOf(event);
+    const userText = payload(event).text as string | undefined ?? (typeof event.payload === "string" ? event.payload : "");
     if (!userText) return;
 
     return (async () => {
-      const prevSynthesis = latestText(me, EVENT.synthesis);
-      const context = prevSynthesis
-        ? `\n\nPrevious synthesis (for context):\n${prevSynthesis}`
-        : "";
+      const text = await streamLLM(state, me, "coordinator", "Coordinator", "plan", state.coordinatorModel, [
+        "You are a research coordinator. Break the user's question into 2-4 distinct research angles.",
+        "Assign each to a specialist with a unique descriptive name.",
+        `\nUser question: ${userText}`,
+        "\nFormat: brief intro, then numbered list:",
+        "1. **Agent Name** — Research task",
+        "\nNames should reflect specialization. Keep it concise.",
+      ].join("\n"), event.seq);
 
-      // Stream the plan (coordinator uses the smart model)
-      const text = await streamToSession(state, {
-        session: me,
-        model: state.coordinatorModel,
-        agent: "coordinator",
-        name: "Coordinator",
-        stage: "plan",
-        instruction: [
-          "You are a research coordinator. Analyze the user's question and create a research plan.",
-          "Assign 2-4 specialized researchers, each with a unique descriptive name and focused task.",
-          `\nUser question: ${userText}${context}`,
-          "\nFormat your response as:",
-          "A brief intro sentence, then numbered researchers:",
-          "1. **Descriptive Agent Name** — Specific research task",
-          "2. **Descriptive Agent Name** — Specific research task",
-          "3. **Descriptive Agent Name** — Specific research task",
-          "\nChoose names that reflect specialization (e.g., 'Market Analyst', 'Technical Architect', 'Historical Researcher').",
-          "Keep it concise. Each researcher should cover a genuinely different angle.",
-        ].join("\n"),
-        originSeq: event.seq,
-      });
-
-      // Parse agent specs from the streamed plan
-      const agents = parsePlanAgents(text);
-
-      // Spawn worker sessions BEFORE emitting the plan event
+      const agents = parsePlan(text);
       await spawnWorkers(state, agents);
 
-      // Emit the plan — workers are already listening
       await me.append({
-        type: EVENT.researchPlan,
-        source: "agent",
-        payload: {
-          originSeq: event.seq,
-          text,
-          agents: agents.map((a) => ({ id: a.id, name: a.name, task: a.task })),
-        },
+        type: EV.plan, source: "agent",
+        payload: { originSeq: event.seq, text, agents },
       });
     })();
   });
 
-  // On research finding → check if all findings are in, then synthesize
-  const off2 = gated(state.sessionId, "coordinator:synthesize", me, (event) => {
-    if (event.type !== EVENT.researchFinding) return;
+  const offSynth = gated(state.sessionId, "coordinator:synthesize", me, (event) => {
+    if (event.type !== EV.finding) return;
 
-    const latestPlan = [...me.events()].reverse().find((e) => e.type === EVENT.researchPlan);
-    if (!latestPlan) return;
-    const planSeq = latestPlan.seq;
+    const plan = [...me.events()].reverse().find((e) => e.type === EV.plan);
+    if (!plan) return;
 
-    // Already synthesized for this plan?
-    if (me.events().some((e) => e.type === EVENT.synthesis && pNum(e, "planSeq") === planSeq)) return;
+    const p = payload(plan);
+    const planSeq = plan.seq;
+    const expected = Array.isArray(p.agents) ? (p.agents as AgentSpec[]).length : 0;
+    const found = me.events().filter((e) => e.type === EV.finding && payload(e).planSeq === planSeq);
+    if (found.length < expected) return;
+    if (me.events().some((e) => e.type === EV.synthesis && payload(e).planSeq === planSeq)) return;
 
-    // Count findings vs expected
-    const p = eventPayload(latestPlan);
-    const expectedCount = Array.isArray(p.agents) ? (p.agents as AgentSpec[]).length : 0;
-    const findings = me.events().filter(
-      (e) => e.type === EVENT.researchFinding && pNum(e, "planSeq") === planSeq,
-    );
-    if (findings.length < expectedCount) return;
-
-    // Get original user question
-    const originSeq = pNum(latestPlan, "originSeq");
+    const originSeq = typeof p.originSeq === "number" ? p.originSeq : undefined;
     const userMsg = originSeq != null ? me.events().find((e) => e.seq === originSeq) : undefined;
-    const userText = userMsg ? textOf(userMsg) : firstUserMessage(me) ?? "";
+    const userText = userMsg ? (payload(userMsg).text as string ?? "") : "";
 
     return (async () => {
-      const findingsText = findings
-        .map((f) => {
-          const name = pStr(f, "name") ?? pStr(f, "agent") ?? "Researcher";
-          return `### ${name}\n${textOf(f)}`;
-        })
-        .join("\n\n");
+      const findings = found.map((f) => `### ${payload(f).name ?? "Researcher"}\n${payload(f).text}`).join("\n\n");
 
-      const text = await streamToSession(state, {
-        session: me,
-        model: state.coordinatorModel,
-        agent: "coordinator",
-        name: "Coordinator",
-        stage: "synthesize",
-        instruction: [
-          "Synthesize these research findings into a comprehensive, well-structured answer.",
-          `\nOriginal question: ${userText}`,
-          `\nResearch findings:\n${findingsText}`,
-          "\nProvide a clear, authoritative synthesis that integrates insights from all researchers.",
-          "Use markdown. Be thorough but not repetitive. 300-500 words.",
-          "End with a brief takeaway or recommendation.",
-        ].join("\n"),
-        originSeq: event.seq,
-      });
+      const text = await streamLLM(state, me, "coordinator", "Coordinator", "synthesize", state.coordinatorModel, [
+        "Synthesize these research findings into a comprehensive, well-structured answer.",
+        `\nOriginal question: ${userText}`,
+        `\nFindings:\n${findings}`,
+        "\nIntegrate all perspectives. Use markdown. 300-500 words.",
+        "End with a brief takeaway.",
+      ].join("\n"), event.seq);
 
-      await me.append({
-        type: EVENT.synthesis,
-        source: "agent",
-        payload: { planSeq, text },
-      });
+      await me.append({ type: EV.synthesis, source: "agent", payload: { planSeq, text } });
     })();
   });
 
-  return () => { off1(); off2(); };
+  return () => { offPlan(); offSynth(); };
 }
 
-// ---------------------------------------------------------------------------
-// Dynamic worker spawning
-// ---------------------------------------------------------------------------
+// --- Workers ---
 
-async function spawnWorkers(state: SessionState, agents: AgentSpec[]): Promise<void> {
+async function spawnWorkers(state: SessionState, agents: AgentSpec[]) {
   for (const spec of agents) {
     if (state.workers.has(spec.id)) continue;
-
-    const session = await state.starcite.session({
-      identity: state.starcite.agent({ id: spec.id }),
-      id: state.sessionId,
-    });
+    const session = await state.starcite.session({ identity: state.starcite.agent({ id: spec.id }), id: state.sessionId });
     state.workers.set(spec.id, session);
-    state.stops.push(bootWorker(state, spec.id, spec.name, session));
+    state.stops.push(bootWorker(state, spec, session));
   }
 }
 
-// ---------------------------------------------------------------------------
-// Worker — researches one angle based on coordinator's assignment
-// ---------------------------------------------------------------------------
-
-function bootWorker(
-  state: SessionState,
-  agentId: string,
-  agentName: string,
-  session: StarciteSession,
-): () => void {
-  return gated(state.sessionId, agentId, session, (event) => {
-    if (event.type !== EVENT.researchPlan) return;
+function bootWorker(state: SessionState, spec: AgentSpec, session: StarciteSession): () => void {
+  return gated(state.sessionId, spec.id, session, (event) => {
+    if (event.type !== EV.plan) return;
 
     const planSeq = event.seq;
+    if (session.events().some((e) => e.type === EV.finding && payload(e).planSeq === planSeq)) return;
 
-    // Already produced a finding for this plan?
-    if (session.events().some((e) =>
-      e.type === EVENT.researchFinding && pNum(e, "planSeq") === planSeq,
-    )) return;
-
-    // Find my assignment in the plan
-    const p = eventPayload(event);
-    const agents = Array.isArray(p.agents) ? (p.agents as AgentSpec[]) : [];
-    const mySpec = agents.find((a) => a.id === agentId);
+    const agents = payload(event).agents as AgentSpec[] | undefined ?? [];
+    const mySpec = agents.find((a) => a.id === spec.id);
     if (!mySpec) return;
 
-    // Get user's original question
-    const originSeq = pNum(event, "originSeq");
-    const userMsg = originSeq != null
-      ? session.events().find((e) => e.seq === originSeq)
-      : undefined;
-    const userText = userMsg ? textOf(userMsg) : "";
+    const originSeq = payload(event).originSeq as number | undefined;
+    const userMsg = originSeq != null ? session.events().find((e) => e.seq === originSeq) : undefined;
+    const userText = userMsg ? (payload(userMsg).text as string ?? "") : "";
 
     return (async () => {
-      const text = await streamToSession(state, {
-        session,
-        model: state.workerModel,
-        agent: agentId,
-        name: mySpec.name,
-        stage: "research",
-        instruction: [
-          `You are ${mySpec.name}, a research specialist.`,
-          `\nOriginal question: ${userText}`,
-          `\nYour assigned research task: ${mySpec.task}`,
-          "\nProvide a thorough, well-structured analysis.",
-          "Include specific details, examples, and evidence where relevant.",
-          "Use markdown formatting. 200-400 words.",
-        ].join("\n"),
-        originSeq: planSeq,
-      });
+      const text = await streamLLM(state, session, spec.id, mySpec.name, "research", state.workerModel, [
+        `You are ${mySpec.name}, a research specialist.`,
+        `\nOriginal question: ${userText}`,
+        `\nYour task: ${mySpec.task}`,
+        "\nProvide thorough, well-structured analysis with specific examples.",
+        "Use markdown. 200-400 words.",
+      ].join("\n"), planSeq);
 
       await session.append({
-        type: EVENT.researchFinding,
-        source: "agent",
-        payload: { planSeq, agent: agentId, name: mySpec.name, task: mySpec.task, text },
+        type: EV.finding, source: "agent",
+        payload: { planSeq, agent: spec.id, name: mySpec.name, task: mySpec.task, text },
       });
     })();
   });
 }
 
-// ---------------------------------------------------------------------------
-// Streaming helper
-// ---------------------------------------------------------------------------
+// --- LLM streaming ---
 
-async function streamToSession(
+async function streamLLM(
   state: SessionState,
-  input: {
-    session: StarciteSession;
-    model: string;
-    agent: string;
-    name: string;
-    stage: string;
-    instruction: string;
-    originSeq: number;
-  },
+  session: StarciteSession,
+  agent: string,
+  name: string,
+  stage: string,
+  model: string,
+  instruction: string,
+  originSeq: number,
 ): Promise<string> {
-  const { session, model, agent, name, stage, instruction, originSeq } = input;
-
-  const sysInstruction = agent === "coordinator"
+  const systemPrompt = agent === "coordinator"
     ? stage === "plan"
-      ? "You are an intelligent research coordinator. Break questions into distinct angles and assign specialized researchers. Be strategic about coverage — each angle should reveal something unique."
-      : "You are a research coordinator synthesizing findings from specialists. Create a cohesive, authoritative answer integrating all perspectives. Clear structure, markdown."
-    : `You are ${name}, a focused research specialist. Provide thorough, evidence-based analysis. Specific examples and data. Markdown formatting.`;
+      ? "You are an intelligent research coordinator. Break questions into distinct angles and assign specialized researchers."
+      : "You are a research coordinator synthesizing specialist findings. Clear structure, markdown."
+    : `You are ${name}, a focused research specialist. Evidence-based analysis, specific examples, markdown.`;
 
   const stream = await state.openai.responses.create({
     model,
     stream: true,
-    instructions: sysInstruction,
+    instructions: systemPrompt,
     input: [{ role: "user", content: [{ type: "input_text", text: instruction }] }],
   });
 
   let accumulated = "";
   let buffer = "";
-  const FLUSH = 60;
 
   for await (const event of stream) {
     if (event.type === "response.output_text.delta") {
@@ -409,9 +269,9 @@ async function streamToSession(
       if (typeof delta !== "string") continue;
       accumulated += delta;
       buffer += delta;
-      if (buffer.length >= FLUSH) {
+      if (buffer.length >= 60) {
         session.append({
-          type: EVENT.streamingChunk, source: "agent",
+          type: EV.chunk, source: "agent",
           payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
         }).catch(() => {});
         buffer = "";
@@ -419,9 +279,9 @@ async function streamToSession(
     }
   }
 
-  if (buffer.length > 0) {
+  if (buffer) {
     await session.append({
-      type: EVENT.streamingChunk, source: "agent",
+      type: EV.chunk, source: "agent",
       payload: { agent, name, stage, originSeq, delta: buffer, accumulated },
     }).catch(() => {});
   }
@@ -430,81 +290,41 @@ async function streamToSession(
   if (!text) throw new Error(`Empty response from ${agent}`);
 
   await session.append({
-    type: EVENT.responseCompleted,
-    source: "openai",
+    type: EV.completed, source: "openai",
     payload: { agent, name, originSeq, stage, text },
   });
 
   return text;
 }
 
-// ---------------------------------------------------------------------------
-// Parsing helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
-/** Parse "1. **Agent Name** — Task description" from coordinator's plan. */
-function parsePlanAgents(text: string): AgentSpec[] {
+function parsePlan(text: string): AgentSpec[] {
   const matches = [...text.matchAll(/^\d+\.\s+\*\*(.+?)\*\*\s*[—–-]\s*(.+)/gm)];
   const agents = matches
-    .map((m) => ({
-      id: slugify(m[1] ?? ""),
-      name: (m[1] ?? "").trim(),
-      task: (m[2] ?? "").trim(),
-    }))
+    .map((m) => ({ id: slugify(m[1]!), name: m[1]!.trim(), task: m[2]!.trim() }))
     .filter((a) => a.id && a.name);
 
-  if (agents.length === 0) {
-    return [
-      { id: "analyst-1", name: "Analyst 1", task: "General analysis" },
-      { id: "analyst-2", name: "Analyst 2", task: "Alternative perspective" },
-      { id: "analyst-3", name: "Analyst 3", task: "Critical evaluation" },
-    ];
-  }
-
-  return agents.slice(0, 5);
+  return agents.length > 0
+    ? agents.slice(0, 5)
+    : [
+        { id: "analyst-1", name: "Analyst 1", task: "General analysis" },
+        { id: "analyst-2", name: "Analyst 2", task: "Alternative perspective" },
+        { id: "analyst-3", name: "Analyst 3", task: "Critical evaluation" },
+      ];
 }
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function eventPayload(event: SessionEvent): Record<string, unknown> {
-  if (event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)) {
-    return event.payload as Record<string, unknown>;
-  }
-  return {};
+function payload(event: SessionEvent): Record<string, unknown> {
+  return event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? (event.payload as Record<string, unknown>)
+    : {};
 }
 
-function pStr(event: SessionEvent, key: string): string | undefined {
-  const v = eventPayload(event)[key];
-  return typeof v === "string" ? v : undefined;
-}
-
-function pNum(event: SessionEvent, key: string): number | undefined {
-  const v = eventPayload(event)[key];
-  return typeof v === "number" ? v : undefined;
-}
-
-function textOf(event: SessionEvent): string | undefined {
-  if (typeof event.payload === "string") return event.payload;
-  return pStr(event, "text");
-}
-
-function latestText(session: StarciteSession, type: string): string | undefined {
-  const e = [...session.events()].reverse().find((c) => c.type === type);
-  return e ? textOf(e) : undefined;
-}
-
-function firstUserMessage(session: StarciteSession): string | undefined {
-  const e = session.events().find((c) => c.type === EVENT.userMessage);
-  return e ? textOf(e) : undefined;
-}
-
-function requireEnv(key: string): string {
+function env(key: string): string {
   const v = process.env[key];
   if (!v) throw new Error(`Missing ${key}`);
   return v;
