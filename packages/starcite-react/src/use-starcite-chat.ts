@@ -9,7 +9,10 @@ import {
   isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
-import { useStarciteSession } from "./use-starcite-session";
+import {
+  type StarciteSessionLike,
+  useStarciteSession,
+} from "./use-starcite-session";
 
 export type { StarciteSessionLike as StarciteChatSession } from "./use-starcite-session";
 
