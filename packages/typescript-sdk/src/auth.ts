@@ -63,8 +63,16 @@ export function decodeSessionToken(token: string): {
   identity: StarciteIdentity;
 } {
   const claims = SessionTokenClaimsSchema.parse(decodeJwt(token));
-  const principalId = claims.principal_id ?? claims.sub ?? "session-user";
-  const principalType = claims.principal_type ?? "user";
+  const rawId = claims.principal_id ?? claims.sub ?? "session-user";
+  const defaultType = claims.principal_type ?? "user";
+
+  // The server may encode principal_id as the full actor string (e.g. "user:alice").
+  // Strip the prefix and infer the type when present.
+  const prefixMatch = rawId.match(/^(agent|user):(.+)$/);
+  const principalId = prefixMatch ? prefixMatch[2]! : rawId;
+  const principalType = prefixMatch
+    ? (prefixMatch[1] as "agent" | "user")
+    : defaultType;
 
   return {
     sessionId: claims.session_id,

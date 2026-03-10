@@ -1,39 +1,29 @@
 "use client";
 
-import {
-  LocalStorageSessionStore,
-  Starcite,
-  type SessionEvent,
-  type StarciteSession,
-} from "@starcite/sdk";
+import { LocalStorageSessionStore, Starcite, type SessionEvent, type StarciteSession } from "@starcite/sdk";
 import { useStarciteSession } from "@starcite/react";
-import { memo, useCallback, useRef, useState, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { Streamdown } from "streamdown";
+import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { cn } from "@/lib/utils";
 
-// --- Types ---
+// -- Types --
 
-type ConnectionState = "idle" | "connecting" | "ready";
-
-interface AgentColor { bg: string; text: string }
-interface AgentInfo { id: string; name: string; color: AgentColor }
+interface AgentColor { bg: string; text: string; accent: string }
 interface FeedEntry { agent: string; name: string; text: string; seq: number; type: string }
 
-// --- Colors ---
+// -- Colors --
 
-const COORDINATOR_COLOR: AgentColor = { bg: "bg-amber-50", text: "text-amber-700" };
+const COORDINATOR_COLOR: AgentColor = { bg: "bg-amber-50", text: "text-amber-700", accent: "border-amber-200" };
 const WORKER_COLORS: AgentColor[] = [
-  { bg: "bg-blue-50", text: "text-blue-700" },
-  { bg: "bg-violet-50", text: "text-violet-700" },
-  { bg: "bg-emerald-50", text: "text-emerald-700" },
-  { bg: "bg-rose-50", text: "text-rose-700" },
-  { bg: "bg-cyan-50", text: "text-cyan-700" },
+  { bg: "bg-blue-50", text: "text-blue-700", accent: "border-blue-200" },
+  { bg: "bg-violet-50", text: "text-violet-700", accent: "border-violet-200" },
+  { bg: "bg-emerald-50", text: "text-emerald-700", accent: "border-emerald-200" },
+  { bg: "bg-rose-50", text: "text-rose-700", accent: "border-rose-200" },
+  { bg: "bg-cyan-50", text: "text-cyan-700", accent: "border-cyan-200" },
 ];
 
-const FEED_TYPES = new Set(["message.user", "research.plan", "research.finding", "synthesis"]);
-
-// --- Page ---
+// -- Page --
 
 export default function Page() {
   const [starcite] = useState(() => new Starcite({
@@ -43,11 +33,9 @@ export default function Page() {
 
   const [sessionId, setSessionId] = useState<string>();
   const [session, setSession] = useState<StarciteSession>();
-  const [connState, setConnState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
   const bootedRef = useRef(false);
 
-  // Boot once
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
@@ -58,7 +46,6 @@ export default function Page() {
 
   const connect = useCallback(async (existingId?: string) => {
     try {
-      setConnState("connecting");
       setError(undefined);
       const res = await fetch("/api/starcite/session", {
         method: "POST",
@@ -69,72 +56,48 @@ export default function Page() {
       const data = await res.json() as { sessionId: string; token: string };
       setSessionId(data.sessionId);
       setSession(starcite.session({ token: data.token }));
-      setConnState("ready");
       const url = new URL(window.location.href);
       url.searchParams.set("sessionId", data.sessionId);
       window.history.replaceState({}, "", url);
     } catch (err) {
-      setConnState("idle");
       setError(err instanceof Error ? err.message : "Failed");
     }
   }, [starcite]);
 
-  // useStarciteSession handles subscription + debounced refresh (inert when session is null)
-  const { events, append } = useStarciteSession({
-    session,
-    onError: (err) => setError(err.message),
-  });
+  const { events, append } = useStarciteSession({ session, onError: (err) => setError(err.message) });
+  const sendMessage = useCallback((text: string) => append({ text, type: "message.user", source: "user" }), [append]);
 
-  const sendMessage = useCallback(async (text: string) => {
-    await append({ text, type: "message.user", source: "user" });
-  }, [append]);
-
-  // --- Agent registry (stable ref, only grows) ---
-  const agentMapRef = useRef(new Map<string, AgentInfo>());
-  const agentMap = agentMapRef.current;
-  if (!agentMap.has("coordinator")) {
-    agentMap.set("coordinator", { id: "coordinator", name: "Coordinator", color: COORDINATOR_COLOR });
-  }
-  for (const ev of events) {
-    discoverAgent(ev, agentMap);
-  }
-
-  // --- Committed (append-only ref) + Pending (derived each render) ---
-  const feedState = useRef({ committed: [] as FeedEntry[], seenSeqs: new Set<number>(), settled: new Set<string>() });
-  const { committed, pending } = deriveFeed(events, feedState.current, agentMap);
-  const hasContent = committed.length > 0 || pending.length > 0;
-  const hasPending = pending.length > 0;
+  const agents = discoverAgents(events);
+  const { committed, pending } = deriveFeed(events);
   const hasAsked = committed.some((e) => e.type === "message.user");
-
-  // --- Render ---
 
   if (!sessionId) {
     return (
       <div className="flex h-dvh items-center justify-center">
-        <div className="text-center space-y-3">
-          {error ? (
-            <>
-              <p className="text-sm text-destructive">{error}</p>
-              <button className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                onClick={() => { bootedRef.current = false; void connect(); }}>Retry</button>
-            </>
-          ) : (
-            <>
-              <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-              <p className="text-sm text-muted-foreground">Creating session...</p>
-            </>
-          )}
-        </div>
+        {error ? (
+          <div className="text-center space-y-3">
+            <p className="text-sm text-destructive">{error}</p>
+            <button className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              onClick={() => { bootedRef.current = false; void connect(); }}>Retry</button>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Creating session...</p>
+        )}
       </div>
     );
   }
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr_auto] overflow-hidden">
-      <Header connState={connState} sessionId={sessionId} />
-      <Feed committed={committed} pending={pending} agentMap={agentMap} hasContent={hasContent} />
-      {hasPending ? (
-        <PendingBar count={pending.length} sessionId={sessionId} />
+      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+        <span className="text-sm font-semibold">Research Swarm</span>
+        <span className="text-xs font-mono text-muted-foreground ml-auto">{sessionId.slice(0, 20)}...</span>
+      </header>
+
+      <Feed committed={committed} pending={pending} agents={agents} />
+
+      {pending.length > 0 ? (
+        <StatusBar count={pending.length} sessionId={sessionId} />
       ) : !hasAsked ? (
         <InputBar onSend={sendMessage} />
       ) : null}
@@ -142,55 +105,12 @@ export default function Page() {
   );
 }
 
-// --- Header ---
+// -- Feed (auto-scrolling via use-stick-to-bottom) --
 
-function Header({ connState, sessionId }: { connState: ConnectionState; sessionId: string }) {
-  return (
-    <div className="flex items-center gap-3 border-b border-border px-5 py-3">
-      <div className={cn("h-2 w-2 rounded-full",
-        connState === "ready" && "bg-emerald-500",
-        connState === "connecting" && "bg-blue-500 animate-pulse",
-      )} />
-      <span className="text-sm font-semibold">Research Swarm</span>
-      <span className="text-xs font-mono text-muted-foreground ml-auto">{sessionId.slice(0, 20)}...</span>
-    </div>
-  );
-}
-
-// --- Feed ---
-
-function useAutoScroll() {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
-  const pinned = useRef(true);
-  const lastTop = useRef(0);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      if (el.scrollTop < lastTop.current - 10) pinned.current = false;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) pinned.current = true;
-      lastTop.current = el.scrollTop;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  useEffect(() => { if (pinned.current) endRef.current?.scrollIntoView({ block: "end" }); });
-
-  return { scrollRef, endRef };
-}
-
-function Feed({ committed, pending, agentMap, hasContent }: {
-  committed: FeedEntry[];
-  pending: FeedEntry[];
-  agentMap: Map<string, AgentInfo>;
-  hasContent: boolean;
+function Feed({ committed, pending, agents }: {
+  committed: FeedEntry[]; pending: FeedEntry[]; agents: Map<string, AgentColor>;
 }) {
-  const { scrollRef, endRef } = useAutoScroll();
-
-  if (!hasContent) {
+  if (committed.length === 0 && pending.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
         Ask a question and watch the research swarm investigate it from multiple angles.
@@ -199,77 +119,73 @@ function Feed({ committed, pending, agentMap, hasContent }: {
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto" role="log">
-      <div className="mx-auto max-w-3xl space-y-3 p-4">
+    <StickToBottom className="flex-1 overflow-y-hidden" resize="smooth" role="log">
+      <StickToBottom.Content className="mx-auto max-w-3xl space-y-3 p-4">
         {committed.map((entry) =>
           entry.agent === "user" || entry.agent === "coordinator"
-            ? <FullCard key={`c-${entry.seq}`} entry={entry} agentMap={agentMap} />
-            : <WorkerCard key={`c-${entry.seq}`} entry={entry} agentMap={agentMap} />,
+            ? <FullCard key={`c-${entry.seq}`} entry={entry} color={agents.get(entry.agent)} />
+            : <WorkerCard key={`c-${entry.seq}`} entry={entry} color={agents.get(entry.agent) ?? WORKER_COLORS[0]!} />,
         )}
         {pending.map((entry) =>
           entry.agent === "coordinator"
-            ? <FullCard key={`s-${entry.agent}`} entry={entry} agentMap={agentMap} streaming />
-            : <WorkerCard key={`s-${entry.agent}`} entry={entry} agentMap={agentMap} streaming />,
+            ? <FullCard key={`s-${entry.agent}`} entry={entry} color={agents.get(entry.agent)} streaming />
+            : <WorkerCard key={`s-${entry.agent}`} entry={entry} color={agents.get(entry.agent) ?? WORKER_COLORS[0]!} streaming />,
         )}
-        <div ref={endRef} className="h-px" />
-      </div>
-    </div>
+      </StickToBottom.Content>
+      <ScrollToBottom />
+    </StickToBottom>
   );
 }
 
-// --- Full Card (user, coordinator) ---
+function ScrollToBottom() {
+  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
+  if (isAtBottom) return null;
+  return (
+    <button onClick={() => scrollToBottom()} type="button"
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground shadow-sm hover:bg-muted transition-colors">
+      Scroll to bottom
+    </button>
+  );
+}
 
-const FullCard = memo(function FullCard({ entry, agentMap, streaming }: {
-  entry: FeedEntry;
-  agentMap: Map<string, AgentInfo>;
-  streaming?: boolean;
+// -- Cards --
+
+const FullCard = memo(function FullCard({ entry, color, streaming }: {
+  entry: FeedEntry; color?: AgentColor; streaming?: boolean;
 }) {
   const isUser = entry.agent === "user";
-  const color = agentMap.get(entry.agent)?.color;
-
   return (
     <div className={cn("rounded-lg border px-4 py-3", isUser ? "border-border bg-muted/30" : "border-transparent")}>
-      <CardHeader name={entry.name} color={color} isUser={isUser} spinning={streaming} />
-      <Prose>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
-        {streaming && <BlinkCursor />}
-      </Prose>
+      <div className="mb-1.5 flex items-center gap-2">
+        <Avatar name={entry.name} color={color} />
+        <span className={cn("text-xs font-semibold", color?.text ?? "text-gray-600")}>{isUser ? "You" : entry.name}</span>
+        {streaming && <Spinner className={color?.text} />}
+      </div>
+      <Markdown text={entry.text} />
     </div>
   );
 });
 
-// --- Worker Card (collapsed with optional streaming tail preview) ---
-
-const WorkerCard = memo(function WorkerCard({ entry, agentMap, streaming }: {
-  entry: FeedEntry;
-  agentMap: Map<string, AgentInfo>;
-  streaming?: boolean;
+const WorkerCard = memo(function WorkerCard({ entry, color, streaming }: {
+  entry: FeedEntry; color: AgentColor; streaming?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const c = agentMap.get(entry.agent)?.color ?? WORKER_COLORS[0]!;
 
   return (
-    <div className={cn("rounded-lg border border-border overflow-hidden", streaming && c.bg + "/20")}>
-      <CollapseHeader name={entry.name} color={c} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
-        {streaming ? <Spinner className={c.text} /> : <CheckIcon />}
-      </CollapseHeader>
+    <div className={cn("rounded-lg border overflow-hidden", streaming ? color.accent : "border-border")}>
+      <button type="button" onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 px-4 py-2 text-left cursor-pointer hover:bg-muted/40 transition-colors">
+        <Avatar name={entry.name} color={color} />
+        <span className={cn("text-xs font-semibold truncate", color.text)}>{entry.name}</span>
+        {streaming ? <Spinner className={color.text} /> : <span className="text-emerald-500 text-xs">Done</span>}
+        <span className={cn("ml-auto text-muted-foreground text-xs transition-transform", expanded && "rotate-180")}>&#x25BC;</span>
+      </button>
       {(expanded || streaming) && (
         <div className={cn("px-4", expanded ? "pb-4" : "pb-2")}>
           {expanded ? (
-            <Prose small>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
-              {streaming && <BlinkCursor />}
-            </Prose>
+            <Markdown text={entry.text} small />
           ) : (
-            <div className="relative overflow-hidden" style={{ maxHeight: 80 }}>
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-white to-transparent z-10 dark:from-gray-950" />
-              <div className="flex flex-col-reverse" style={{ maxHeight: 80 }}>
-                <Prose small>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
-                  <BlinkCursor />
-                </Prose>
-              </div>
-            </div>
+            <StreamingTail text={entry.text} />
           )}
         </div>
       )}
@@ -277,55 +193,37 @@ const WorkerCard = memo(function WorkerCard({ entry, agentMap, streaming }: {
   );
 });
 
-// --- Shared UI ---
-
-function CardHeader({ name, color, isUser, spinning }: {
-  name: string; color?: AgentColor; isUser?: boolean; spinning?: boolean;
-}) {
+function StreamingTail({ text }: { text: string }) {
   return (
-    <div className="mb-1.5 flex items-center gap-2">
-      <Avatar name={name} color={color} isUser={isUser} />
-      <span className={cn("text-xs font-semibold", color?.text ?? "text-gray-600")}>
-        {isUser ? "You" : name}
-      </span>
-      {spinning && color && <Spinner className={color.text} />}
+    <div className="relative overflow-hidden" style={{ maxHeight: 80 }}>
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-white to-transparent z-10 dark:from-gray-950" />
+      <div className="flex flex-col-reverse" style={{ maxHeight: 80 }}>
+        <Markdown text={text} small />
+      </div>
     </div>
   );
 }
 
-function CollapseHeader({ name, color, expanded, onToggle, children }: {
-  name: string; color: AgentColor; expanded: boolean; onToggle: () => void; children: React.ReactNode;
-}) {
-  return (
-    <button type="button" onClick={onToggle}
-      className="flex w-full items-center gap-2 px-4 py-2 text-left cursor-pointer hover:bg-muted/40 transition-colors">
-      <Avatar name={name} color={color} />
-      <span className={cn("text-xs font-semibold truncate", color.text)}>{name}</span>
-      {children}
-      <svg className={cn("h-3.5 w-3.5 text-muted-foreground ml-auto transition-transform", expanded && "rotate-180")}
-        viewBox="0 0 16 16" fill="currentColor">
-        <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" />
-      </svg>
-    </button>
-  );
-}
+// -- Shared UI --
 
-function Avatar({ name, color, isUser }: { name: string; color?: AgentColor; isUser?: boolean }) {
+const Markdown = memo(function Markdown({ text, small }: { text: string; small?: boolean }) {
+  return (
+    <Streamdown
+      className={cn(
+        "prose prose-sm prose-neutral dark:prose-invert max-w-none text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        small && "text-[13px] leading-relaxed",
+      )}
+    >
+      {text}
+    </Streamdown>
+  );
+});
+
+function Avatar({ name, color }: { name: string; color?: AgentColor }) {
   return (
     <div className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
       color ? [color.bg, color.text] : "bg-gray-100 text-gray-600")}>
-      {isUser ? "U" : name[0]?.toUpperCase() ?? "?"}
-    </div>
-  );
-}
-
-function Prose({ children, small }: { children: React.ReactNode; small?: boolean }) {
-  return (
-    <div className={cn(
-      "prose prose-sm prose-neutral dark:prose-invert max-w-none text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-      small && "text-[13px] leading-relaxed",
-    )}>
-      {children}
+      {name[0]?.toUpperCase() ?? "?"}
     </div>
   );
 }
@@ -339,164 +237,91 @@ function Spinner({ className }: { className?: string }) {
   );
 }
 
-function CheckIcon() {
-  return (
-    <svg className="h-3.5 w-3.5 shrink-0 text-emerald-500" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
-    </svg>
-  );
-}
+// -- Status Bar --
 
-function BlinkCursor() {
-  return <span className="ml-0.5 inline-block h-4 w-1.5 bg-foreground/70 align-text-bottom" style={{ animation: "blink 1s infinite" }} />;
-}
-
-// --- Pending Bar ---
-
-function PendingBar({ count, sessionId }: { count: number; sessionId: string }) {
-  const [stopping, setStopping] = useState(false);
-
+function StatusBar({ count, sessionId }: { count: number; sessionId: string }) {
   return (
     <div className="border-t border-border bg-muted/30 px-4 py-3">
       <div className="mx-auto flex max-w-3xl items-center justify-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="flex gap-0.5">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="h-1.5 w-1.5 rounded-full bg-amber-500"
-                style={{ animation: `pulse 1.5s ease-in-out ${i * 0.2}s infinite` }} />
-            ))}
-          </div>
-          <span className="text-sm text-muted-foreground">
-            {count === 1 ? "1 agent working..." : `${count} agents working concurrently...`}
-          </span>
-        </div>
-        <button type="button" disabled={stopping}
-          onClick={() => {
-            setStopping(true);
-            fetch("/api/starcite/session", {
-              method: "DELETE",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionId }),
-            }).catch(() => {});
-          }}
-          className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 transition-colors">
-          {stopping ? "Stopping..." : "Stop"}
+        <span className="text-sm text-muted-foreground">
+          {count === 1 ? "1 agent working..." : `${count} agents working concurrently...`}
+        </span>
+        <button type="button"
+          onClick={() => fetch("/api/starcite/session", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId }) }).catch(() => {})}
+          className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+          Stop
         </button>
       </div>
     </div>
   );
 }
 
-// --- Input Bar ---
+// -- Input Bar --
 
-function InputBar({ onSend }: { onSend: (text: string) => Promise<void> }) {
+function InputBar({ onSend }: { onSend: (text: string) => void }) {
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-
-  const submit = async () => {
-    const t = input.trim();
-    if (!t || sending) return;
-    setSending(true);
-    await onSend(t);
-    setInput("");
-    setSending(false);
-  };
 
   return (
-    <form className="border-t border-border bg-muted/30 px-4 py-3" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+    <form className="border-t border-border bg-muted/30 px-4 py-3" onSubmit={(e) => { e.preventDefault(); const t = input.trim(); if (t) { onSend(t); setInput(""); } }}>
       <div className="mx-auto flex max-w-3xl items-center gap-2">
         <input className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          disabled={sending} onChange={(e) => setInput(e.target.value)} placeholder="Ask a question..." value={input} />
+          onChange={(e) => setInput(e.target.value)} placeholder="Ask a question..." value={input} />
         <button className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          disabled={!input.trim() || sending} type="submit">Send</button>
+          disabled={!input.trim()} type="submit">Send</button>
       </div>
     </form>
   );
 }
 
-// --- Feed derivation ---
+// -- Feed derivation (pure function of events) --
 
-interface FeedState { committed: FeedEntry[]; seenSeqs: Set<number>; settled: Set<string> }
+const FEED_TYPES = new Set(["message.user", "research.plan", "research.finding", "synthesis"]);
 
-function deriveFeed(events: readonly SessionEvent[], state: FeedState, agentMap: Map<string, AgentInfo>) {
-  const streams = new Map<string, { name: string; text: string; originSeq: number }>();
+function deriveFeed(events: readonly SessionEvent[]) {
+  const committed: FeedEntry[] = [];
+  const streams = new Map<string, FeedEntry>();
+  const done = new Set<string>();
 
   for (const ev of events) {
-    if (ev.type === "openai.response.completed") {
-      const p = pl(ev);
-      state.settled.add(`${p.agent}:${p.originSeq}`);
-    } else if (ev.type === "agent.streaming.chunk") {
-      const p = pl(ev);
-      if (typeof p.agent === "string") {
-        streams.set(p.agent as string, {
-          name: (p.name as string) ?? (p.agent as string),
-          text: p.accumulated as string,
-          originSeq: p.originSeq as number,
-        });
-      }
-    }
-    if (FEED_TYPES.has(ev.type) && !state.seenSeqs.has(ev.seq)) {
-      state.seenSeqs.add(ev.seq);
-      const agent = resolveAgent(ev);
-      state.committed.push({
+    if (FEED_TYPES.has(ev.type)) {
+      const agent = ev.actor.startsWith("agent:") ? ev.actor.slice(6) : ev.actor.startsWith("user:") ? "user" : (pl(ev).agent as string ?? "user");
+      committed.push({
         agent, seq: ev.seq, type: ev.type,
-        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agentMap.get(agent)?.name ?? agent,
-        text: textOf(ev) ?? "",
+        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agent,
+        text: (pl(ev).text as string) ?? "",
       });
     }
-  }
-
-  const pending: FeedEntry[] = [];
-  for (const [agent, s] of streams) {
-    if (!state.settled.has(`${agent}:${s.originSeq}`)) {
-      pending.push({ agent, name: s.name, text: s.text, seq: s.originSeq, type: "agent.streaming.chunk" });
+    if (ev.type === "agent.streaming.chunk") {
+      const p = pl(ev);
+      streams.set(p.agent as string, {
+        agent: p.agent as string, name: (p.name as string) ?? (p.agent as string),
+        text: p.accumulated as string, seq: p.originSeq as number, type: ev.type,
+      });
+    }
+    if (ev.type === "agent.done") {
+      done.add(`${pl(ev).agent}:${pl(ev).originSeq}`);
     }
   }
 
-  return { committed: state.committed, pending };
+  const pending = [...streams.values()].filter((s) => !done.has(`${s.agent}:${s.seq}`));
+  return { committed, pending };
 }
 
-// --- Helpers ---
-
-const AGENT_EVENT_TYPES = new Set(["agent.streaming.chunk", "research.finding", "openai.response.completed"]);
-
-function discoverAgent(event: SessionEvent, map: Map<string, AgentInfo>) {
-  if (event.type === "research.plan") {
-    const agents = pl(event).agents as { id: string; name: string }[] | undefined;
-    if (agents) {
-      for (const a of agents) {
-        if (!map.has(a.id)) {
-          map.set(a.id, { id: a.id, name: a.name, color: WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]! });
-        }
-      }
-    }
-    return;
-  }
-  if (AGENT_EVENT_TYPES.has(event.type)) {
-    const p = pl(event);
-    const id = p.agent as string | undefined;
-    const name = p.name as string | undefined;
-    if (id && name && id !== "coordinator" && !map.has(id)) {
-      map.set(id, { id, name, color: WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]! });
+function discoverAgents(events: readonly SessionEvent[]): Map<string, AgentColor> {
+  const map = new Map<string, AgentColor>();
+  map.set("coordinator", COORDINATOR_COLOR);
+  for (const ev of events) {
+    if (ev.type !== "research.plan") continue;
+    const agents = pl(ev).agents as { id: string; name: string }[] | undefined;
+    if (!agents) continue;
+    for (const a of agents) {
+      if (!map.has(a.id)) map.set(a.id, WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]!);
     }
   }
-}
-
-function resolveAgent(event: SessionEvent): string {
-  if (event.actor.startsWith("agent:")) return event.actor.replace("agent:", "");
-  if (event.actor.startsWith("user:")) return "user";
-  const agent = pl(event).agent;
-  return typeof agent === "string" ? agent : "user";
+  return map;
 }
 
 function pl(event: SessionEvent): Record<string, unknown> {
-  return event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
-    ? (event.payload as Record<string, unknown>)
-    : {};
-}
-
-function textOf(event: SessionEvent): string | undefined {
-  if (typeof event.payload === "string") return event.payload;
-  const t = pl(event).text;
-  return typeof t === "string" ? t : undefined;
+  const p = event.payload;
+  return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
 }
