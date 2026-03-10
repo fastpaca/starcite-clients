@@ -36,7 +36,8 @@ export interface UseStarciteSessionResult {
   append: (input: SessionAppendInput) => Promise<AppendResult>;
 }
 
-const NOOP_APPEND = (): Promise<AppendResult> => Promise.resolve({ seq: -1, deduped: false });
+const NOOP_APPEND = (): Promise<AppendResult> =>
+  Promise.resolve({ seq: -1, deduped: false });
 const EMPTY_EVENTS: readonly SessionEvent[] = [];
 
 export function useStarciteSession(
@@ -58,28 +59,43 @@ export function useStarciteSession(
   }, [onError]);
 
   const refresh = useCallback(() => {
-    if (!session || sessionKeyRef.current !== resetKey) return;
+    if (!session || sessionKeyRef.current !== resetKey) {
+      return;
+    }
     const version = ++refreshVersionRef.current;
     const snapshot = [...session.events()];
-    if (refreshVersionRef.current !== version || sessionKeyRef.current !== resetKey) return;
+    if (
+      refreshVersionRef.current !== version ||
+      sessionKeyRef.current !== resetKey
+    ) {
+      return;
+    }
     setEvents(snapshot);
   }, [session, resetKey]);
 
   const scheduleLive = useCallback(() => {
-    if (liveTimeoutRef.current !== null) return;
+    if (liveTimeoutRef.current !== null) {
+      return;
+    }
     const key = resetKey;
     liveTimeoutRef.current = setTimeout(() => {
       liveTimeoutRef.current = null;
-      if (sessionKeyRef.current === key) refresh();
+      if (sessionKeyRef.current === key) {
+        refresh();
+      }
     }, 16);
   }, [refresh, resetKey]);
 
   const scheduleReplay = useCallback(() => {
-    if (replayTimeoutRef.current !== null) clearTimeout(replayTimeoutRef.current);
+    if (replayTimeoutRef.current !== null) {
+      clearTimeout(replayTimeoutRef.current);
+    }
     const key = resetKey;
     replayTimeoutRef.current = setTimeout(() => {
       replayTimeoutRef.current = null;
-      if (sessionKeyRef.current === key) refresh();
+      if (sessionKeyRef.current === key) {
+        refresh();
+      }
     }, 120);
   }, [refresh, resetKey]);
 
@@ -99,28 +115,42 @@ export function useStarciteSession(
     refreshVersionRef.current += 1;
     setEvents([]);
 
-    if (!session) return;
+    if (!session) {
+      return;
+    }
 
     refresh();
 
     const offEvent = session.on("event", onEvent, { replay: false });
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(error instanceof Error ? error : new Error(String(error)));
+      onErrorRef.current?.(
+        error instanceof Error ? error : new Error(String(error))
+      );
     });
 
     return () => {
       refreshVersionRef.current += 1;
-      if (liveTimeoutRef.current !== null) { clearTimeout(liveTimeoutRef.current); liveTimeoutRef.current = null; }
-      if (replayTimeoutRef.current !== null) { clearTimeout(replayTimeoutRef.current); replayTimeoutRef.current = null; }
+      if (liveTimeoutRef.current !== null) {
+        clearTimeout(liveTimeoutRef.current);
+        liveTimeoutRef.current = null;
+      }
+      if (replayTimeoutRef.current !== null) {
+        clearTimeout(replayTimeoutRef.current);
+        replayTimeoutRef.current = null;
+      }
       offEvent();
       offError();
     };
   }, [onEvent, refresh, session, resetKey]);
 
   const append = useCallback(
-    (input: SessionAppendInput) => session ? session.append(input) : NOOP_APPEND(),
+    (input: SessionAppendInput) =>
+      session ? session.append(input) : NOOP_APPEND(),
     [session]
   );
 
-  return useMemo(() => ({ events: session ? events : EMPTY_EVENTS, append }), [session, events, append]);
+  return useMemo(
+    () => ({ events: session ? events : EMPTY_EVENTS, append }),
+    [session, events, append]
+  );
 }

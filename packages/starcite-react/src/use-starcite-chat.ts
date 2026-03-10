@@ -9,12 +9,9 @@ import {
   isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
-import {
-  useStarciteSession,
-  type StarciteSessionLike,
-} from "./use-starcite-session";
+import { useStarciteSession } from "./use-starcite-session";
 
-export type { StarciteSessionLike as StarciteChatSession };
+export type { StarciteSessionLike as StarciteChatSession } from "./use-starcite-session";
 
 type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
   TMessage,
@@ -62,7 +59,9 @@ function readChunkType(payload: unknown): string | undefined {
 function isAssistantOpen(events: readonly SessionEvent[]): boolean {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
-    if (!event || event.type !== chatAssistantChunkEventType) continue;
+    if (!event || event.type !== chatAssistantChunkEventType) {
+      continue;
+    }
     const chunkType = readChunkType(event.payload);
     return chunkType ? !isTerminalChunkType(chunkType) : false;
   }
@@ -113,8 +112,12 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     // Eagerly set streaming status from latest chunk
     const open = isAssistantOpen(events);
     setStatus((cur) => {
-      if (open) return "streaming";
-      if (cur === "submitted") return "submitted";
+      if (open) {
+        return "streaming";
+      }
+      if (cur === "submitted") {
+        return "submitted";
+      }
       return "ready";
     });
 
@@ -122,9 +125,13 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     const chatEvents = events.filter((e) => isChatEventType(e.type));
     toUIMessagesFromEvents<TMessage>(chatEvents)
       .then((msgs) => {
-        if (versionRef.current === version) setMessages(msgs);
+        if (versionRef.current === version) {
+          setMessages(msgs);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        /* intentionally swallowed */
+      });
   }, [events]);
 
   const sendMessage = useCallback(
@@ -132,7 +139,9 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
       try {
         const outgoing = normalizeOutgoing<TMessage>(message);
         setStatus("submitted");
-        const envelope = createUserMessageEnvelope(outgoing as Record<string, unknown>);
+        const envelope = createUserMessageEnvelope(
+          outgoing as Record<string, unknown>
+        );
         await append({
           type: chatUserMessageEventType,
           source: userMessageSource,
@@ -148,5 +157,8 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     [append, userMessageSource, onError]
   );
 
-  return useMemo(() => ({ messages, sendMessage, status }), [messages, sendMessage, status]);
+  return useMemo(
+    () => ({ messages, sendMessage, status }),
+    [messages, sendMessage, status]
+  );
 }
