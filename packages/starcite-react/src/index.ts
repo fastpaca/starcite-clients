@@ -18,3 +18,9 @@ export type {
   UseStarciteChatResult,
 } from "./use-starcite-chat";
 export { useStarciteChat } from "./use-starcite-chat";
+export type {
+  StarciteSessionLike,
+  UseStarciteSessionOptions,
+  UseStarciteSessionResult,
+} from "./use-starcite-session";
+export { useStarciteSession } from "./use-starcite-session";

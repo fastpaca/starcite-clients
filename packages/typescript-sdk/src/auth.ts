@@ -1,6 +1,9 @@
 import { decodeJwt } from "jose";
 import { z } from "zod";
+import type { PrincipalType } from "./identity";
 import { PrincipalTypeSchema, StarciteIdentity } from "./identity";
+
+const ACTOR_PREFIX_RE = /^(agent|user):(.+)$/;
 
 const ApiKeyClaimsSchema = z.object({
   iss: z.string().min(1).optional(),
@@ -63,8 +66,16 @@ export function decodeSessionToken(token: string): {
   identity: StarciteIdentity;
 } {
   const claims = SessionTokenClaimsSchema.parse(decodeJwt(token));
-  const principalId = claims.principal_id ?? claims.sub ?? "session-user";
-  const principalType = claims.principal_type ?? "user";
+  const rawId = claims.principal_id ?? claims.sub ?? "session-user";
+  const defaultType = claims.principal_type ?? "user";
+
+  // The server may encode principal_id as the full actor string (e.g. "user:alice").
+  // Strip the prefix and infer the type when present.
+  const prefixMatch = ACTOR_PREFIX_RE.exec(rawId);
+  const principalId = prefixMatch?.[2] ?? rawId;
+  const principalType: PrincipalType = prefixMatch
+    ? (prefixMatch[1] as PrincipalType)
+    : defaultType;
 
   return {
     sessionId: claims.session_id,

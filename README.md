@@ -11,6 +11,7 @@ Clients for building and operating multi-agent systems on one ordered session ti
 ## Examples
 
 - Next.js chat UI (`examples/nextjs-chat-ui`) for minimal `useStarciteChat` durable session wiring
+- Franken monolith (`examples/franken-monolith`) for a Node monolith that orchestrates three live OpenAI Responses agents over Starcite sessions
 - Vite chat UI (`packages/usechat-streaming-example`) for local proxy-driven streaming demos
 
 Detailed package docs:
