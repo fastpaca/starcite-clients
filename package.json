@@ -38,6 +38,7 @@
     "packages/typescript-sdk",
     "packages/starcite-cli",
     "packages/starcite-react",
-    "examples/nextjs-chat-ui"
+    "examples/nextjs-chat-ui",
+    "examples/multi-agent-viewer"
   ]
 }

@@ -6,14 +6,15 @@ import {
   type SessionEvent,
   type StarciteSession,
 } from "@starcite/sdk";
-import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { useStarciteSession } from "@starcite/react";
+import { memo, useCallback, useRef, useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 
 // --- Types ---
 
-type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting";
+type ConnectionState = "idle" | "connecting" | "ready";
 
 interface AgentColor { bg: string; text: string }
 interface AgentInfo { id: string; name: string; color: AgentColor }
@@ -42,7 +43,6 @@ export default function Page() {
 
   const [sessionId, setSessionId] = useState<string>();
   const [session, setSession] = useState<StarciteSession>();
-  const [events, setEvents] = useState<readonly SessionEvent[]>([]);
   const [connState, setConnState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
   const bootedRef = useRef(false);
@@ -55,18 +55,6 @@ export default function Page() {
     void connect(existing || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Subscribe to session events
-  useEffect(() => {
-    if (!session) { startTransition(() => setEvents([])); return; }
-    setConnState("ready");
-    startTransition(() => setEvents([...session.events()]));
-    const off1 = session.on("event", () => {
-      startTransition(() => { setConnState("ready"); setEvents([...session.events()]); });
-    }, { replay: true });
-    const off2 = session.on("error", (err) => { setConnState("reconnecting"); setError(err.message); });
-    return () => { off1(); off2(); session.disconnect(); };
-  }, [session]);
 
   const connect = useCallback(async (existingId?: string) => {
     try {
@@ -81,6 +69,7 @@ export default function Page() {
       const data = await res.json() as { sessionId: string; token: string };
       setSessionId(data.sessionId);
       setSession(starcite.session({ token: data.token }));
+      setConnState("ready");
       const url = new URL(window.location.href);
       url.searchParams.set("sessionId", data.sessionId);
       window.history.replaceState({}, "", url);
@@ -90,10 +79,15 @@ export default function Page() {
     }
   }, [starcite]);
 
+  // useStarciteSession handles subscription + debounced refresh (inert when session is null)
+  const { events, append } = useStarciteSession({
+    session,
+    onError: (err) => setError(err.message),
+  });
+
   const sendMessage = useCallback(async (text: string) => {
-    if (!session) return;
-    await session.append({ text, type: "message.user", source: "user" });
-  }, [session]);
+    await append({ text, type: "message.user", source: "user" });
+  }, [append]);
 
   // --- Agent registry (stable ref, only grows) ---
   const agentMapRef = useRef(new Map<string, AgentInfo>());
@@ -155,7 +149,6 @@ function Header({ connState, sessionId }: { connState: ConnectionState; sessionI
     <div className="flex items-center gap-3 border-b border-border px-5 py-3">
       <div className={cn("h-2 w-2 rounded-full",
         connState === "ready" && "bg-emerald-500",
-        connState === "reconnecting" && "bg-amber-500 animate-pulse",
         connState === "connecting" && "bg-blue-500 animate-pulse",
       )} />
       <span className="text-sm font-semibold">Research Swarm</span>

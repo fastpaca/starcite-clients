@@ -1,31 +1,20 @@
-import type {
-  AppendResult,
-  SessionAppendInput,
-  SessionEvent,
-  SessionEventListener,
-  SessionOnEventOptions,
-} from "@starcite/sdk";
+import type { SessionEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
-  appendUserMessageEvent,
   chatAssistantChunkEventType,
+  chatUserMessageEventType,
+  createUserMessageEnvelope,
   isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
+import {
+  useStarciteSession,
+  type StarciteSessionLike,
+} from "./use-starcite-session";
 
-export interface StarciteChatSession {
-  readonly id: string;
-  append(input: SessionAppendInput): Promise<AppendResult>;
-  events(): readonly SessionEvent[];
-  on(
-    eventName: "event",
-    listener: SessionEventListener,
-    options?: SessionOnEventOptions<SessionEvent>
-  ): () => void;
-  on(eventName: "error", listener: (error: Error) => void): () => void;
-}
+export type { StarciteSessionLike as StarciteChatSession };
 
 type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
   TMessage,
@@ -42,7 +31,7 @@ export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | SendUserMessageInput<TMessage>;
 
 export interface UseStarciteChatOptions {
-  session: StarciteChatSession;
+  session: StarciteSessionLike | null | undefined;
   id?: string;
   userMessageSource?: string;
   onError?: (error: Error) => void;
@@ -54,281 +43,110 @@ export interface UseStarciteChatResult<TMessage extends UIMessage = UIMessage> {
   status: ChatStatus;
 }
 
-interface ChatStateSnapshot<TMessage extends UIMessage = UIMessage> {
-  messages: TMessage[];
-  assistantOpen: boolean;
-}
+// --- Internals ---
 
-function isTerminalAssistantChunkType(type: string): boolean {
+function isTerminalChunkType(type: string): boolean {
   return type === "finish" || type === "abort";
 }
 
-const assistantChunkPayloadSchema = z.object({
+const chunkPayloadSchema = z.object({
   kind: z.literal(chatAssistantChunkEventType),
   chunk: z.object({ type: z.string() }),
 });
 
-function readAssistantChunkType(payload: unknown): string | undefined {
-  const result = assistantChunkPayloadSchema.safeParse(payload);
+function readChunkType(payload: unknown): string | undefined {
+  const result = chunkPayloadSchema.safeParse(payload);
   return result.success ? result.data.chunk.type : undefined;
 }
 
-async function readChatState<TMessage extends UIMessage = UIMessage>(
-  events: readonly SessionEvent[]
-): Promise<ChatStateSnapshot<TMessage>> {
-  const messages = await toUIMessagesFromEvents<TMessage>(events);
-  let assistantOpen = false;
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!event || event.type !== chatAssistantChunkEventType) {
-      continue;
-    }
+function isAssistantOpen(events: readonly SessionEvent[]): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (!event || event.type !== chatAssistantChunkEventType) continue;
+    const chunkType = readChunkType(event.payload);
+    return chunkType ? !isTerminalChunkType(chunkType) : false;
+  }
+  return false;
+}
 
-    const chunkType = readAssistantChunkType(event.payload);
-    if (!chunkType) {
-      break;
-    }
+function normalizeOutgoing<TMessage extends UIMessage>(
+  input: SendMessageInput<TMessage>
+): TMessage {
+  if ("text" in input && !("parts" in input)) {
+    return {
+      id: crypto.randomUUID(),
+      role: "user",
+      parts: [{ type: "text", text: input.text }],
+    } as TMessage;
+  }
 
-    assistantOpen = !isTerminalAssistantChunkType(chunkType);
-    break;
+  if ("role" in input && input.role && input.role !== "user") {
+    throw new Error(
+      `sendMessage() only accepts user messages; received role '${input.role}'`
+    );
   }
 
   return {
-    messages,
-    assistantOpen,
-  };
+    ...input,
+    role: "user",
+    id: (input as { id?: string }).id ?? crypto.randomUUID(),
+  } as TMessage;
 }
+
+// --- Hook ---
 
 export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   options: UseStarciteChatOptions
 ): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
 
-  const sessionResetKey = id ?? session.id;
+  const { events, append } = useStarciteSession({ session, id, onError });
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
+  const versionRef = useRef(0);
 
-  const refreshVersionRef = useRef(0);
-  const sessionKeyRef = useRef(sessionResetKey);
-  const onErrorRef = useRef(onError);
-  const liveRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
-  const replayRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
-
+  // Project events → UIMessage[] (async because of readUIMessageStream)
   useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
+    const version = ++versionRef.current;
 
-  const reportError = useCallback((error: unknown): Error => {
-    const reportedError =
-      error instanceof Error ? error : new Error(String(error));
-    setStatus("error");
-    onErrorRef.current?.(reportedError);
-    return reportedError;
-  }, []);
+    // Eagerly set streaming status from latest chunk
+    const open = isAssistantOpen(events);
+    setStatus((cur) => {
+      if (open) return "streaming";
+      if (cur === "submitted") return "submitted";
+      return "ready";
+    });
 
-  const refreshFromSession = useCallback(() => {
-    const refreshSessionKey = sessionResetKey;
-    if (sessionKeyRef.current !== refreshSessionKey) {
-      return;
-    }
-
-    const version = refreshVersionRef.current + 1;
-    refreshVersionRef.current = version;
-
-    const snapshot = [...session.events()];
-
-    readChatState<TMessage>(snapshot)
-      .then((chatState) => {
-        if (
-          refreshVersionRef.current !== version ||
-          sessionKeyRef.current !== refreshSessionKey
-        ) {
-          return;
-        }
-
-        setMessages(chatState.messages);
-        setStatus((current) => {
-          if (chatState.assistantOpen) {
-            return "streaming";
-          }
-
-          if (current === "submitted" || current === "error") {
-            return current;
-          }
-
-          return "ready";
-        });
+    // Async projection
+    const chatEvents = events.filter((e) => isChatEventType(e.type));
+    toUIMessagesFromEvents<TMessage>(chatEvents)
+      .then((msgs) => {
+        if (versionRef.current === version) setMessages(msgs);
       })
-      .catch((error) => {
-        if (
-          refreshVersionRef.current !== version ||
-          sessionKeyRef.current !== refreshSessionKey
-        ) {
-          return;
-        }
-
-        reportError(error);
-      });
-  }, [reportError, session, sessionResetKey]);
-
-  const scheduleLiveRefreshFromSession = useCallback(() => {
-    const scheduledSessionKey = sessionResetKey;
-    if (liveRefreshTimeoutRef.current !== null) {
-      return;
-    }
-
-    liveRefreshTimeoutRef.current = setTimeout(() => {
-      liveRefreshTimeoutRef.current = null;
-      if (sessionKeyRef.current !== scheduledSessionKey) {
-        return;
-      }
-
-      refreshFromSession();
-    }, 16);
-  }, [refreshFromSession, sessionResetKey]);
-
-  const scheduleReplayRefreshFromSession = useCallback(() => {
-    const scheduledSessionKey = sessionResetKey;
-    if (replayRefreshTimeoutRef.current !== null) {
-      clearTimeout(replayRefreshTimeoutRef.current);
-    }
-
-    replayRefreshTimeoutRef.current = setTimeout(() => {
-      replayRefreshTimeoutRef.current = null;
-      if (sessionKeyRef.current !== scheduledSessionKey) {
-        return;
-      }
-
-      refreshFromSession();
-    }, 120);
-  }, [refreshFromSession, sessionResetKey]);
+      .catch(() => {});
+  }, [events]);
 
   const sendMessage = useCallback(
     async (message: SendMessageInput<TMessage>): Promise<void> => {
-      const requestSessionKey = sessionKeyRef.current;
-      let outgoingMessage: TMessage;
-
       try {
-        if ("text" in message && !("parts" in message)) {
-          outgoingMessage = {
-            id: crypto.randomUUID(),
-            role: "user",
-            parts: [{ type: "text", text: message.text }],
-          } as TMessage;
-        } else {
-          if ("role" in message && message.role && message.role !== "user") {
-            throw new Error(
-              `sendMessage() only accepts user messages; received role '${message.role}'`
-            );
-          }
-
-          const messageId = "id" in message ? message.id : undefined;
-          outgoingMessage = {
-            ...message,
-            role: "user",
-            id: messageId ?? crypto.randomUUID(),
-          } as TMessage;
-        }
+        const outgoing = normalizeOutgoing<TMessage>(message);
+        setStatus("submitted");
+        const envelope = createUserMessageEnvelope(outgoing as Record<string, unknown>);
+        await append({
+          type: chatUserMessageEventType,
+          source: userMessageSource,
+          payload: envelope,
+        });
       } catch (error) {
-        throw reportError(error);
-      }
-
-      setStatus("submitted");
-
-      try {
-        await appendUserMessageEvent(
-          session,
-          outgoingMessage as Record<string, unknown>,
-          {
-            source: userMessageSource,
-          }
-        );
-
-        if (sessionKeyRef.current !== requestSessionKey) {
-          return;
-        }
-
-        refreshFromSession();
-      } catch (error) {
-        if (sessionKeyRef.current !== requestSessionKey) {
-          throw error instanceof Error ? error : new Error(String(error));
-        }
-
-        refreshVersionRef.current += 1;
-        throw reportError(error);
+        const err = error instanceof Error ? error : new Error(String(error));
+        setStatus("error");
+        onError?.(err);
+        throw err;
       }
     },
-    [refreshFromSession, reportError, session, userMessageSource]
+    [append, userMessageSource, onError]
   );
 
-  const onSessionEvent = useCallback(
-    (event: SessionEvent, context?: { replayed: boolean }): void => {
-      if (!isChatEventType(event.type)) {
-        return;
-      }
-
-      if (!context?.replayed && event.type === chatAssistantChunkEventType) {
-        const chunkType = readAssistantChunkType(event.payload);
-        if (chunkType && isTerminalAssistantChunkType(chunkType)) {
-          setStatus("ready");
-        } else {
-          setStatus("streaming");
-        }
-      }
-
-      if (context?.replayed) {
-        scheduleReplayRefreshFromSession();
-      } else {
-        scheduleLiveRefreshFromSession();
-      }
-    },
-    [scheduleLiveRefreshFromSession, scheduleReplayRefreshFromSession]
-  );
-
-  useEffect(() => {
-    sessionKeyRef.current = sessionResetKey;
-    refreshVersionRef.current += 1;
-    setMessages([]);
-    setStatus("ready");
-
-    refreshFromSession();
-
-    const offEvent = session.on("event", onSessionEvent, { replay: false });
-    const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(
-        error instanceof Error ? error : new Error(String(error))
-      );
-    });
-
-    return () => {
-      refreshVersionRef.current += 1;
-
-      if (liveRefreshTimeoutRef.current !== null) {
-        clearTimeout(liveRefreshTimeoutRef.current);
-        liveRefreshTimeoutRef.current = null;
-      }
-
-      if (replayRefreshTimeoutRef.current !== null) {
-        clearTimeout(replayRefreshTimeoutRef.current);
-        replayRefreshTimeoutRef.current = null;
-      }
-
-      offEvent();
-      offError();
-    };
-  }, [onSessionEvent, refreshFromSession, session, sessionResetKey]);
-
-  return useMemo(
-    () => ({
-      messages,
-      sendMessage,
-      status,
-    }),
-    [messages, sendMessage, status]
-  );
+  return useMemo(() => ({ messages, sendMessage, status }), [messages, sendMessage, status]);
 }
