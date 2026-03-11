@@ -1192,6 +1192,26 @@ describe("Starcite", () => {
     });
   });
 
+  it("accepts actor-style principal_id claims in api keys", () => {
+    const apiKey = makeApiKey({
+      tenant_id: "tenant-alpha",
+      principal_id: "user:system",
+      principal_type: "agent",
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    expect(starcite.agent({ id: "planner" }).toCreatorPrincipal()).toEqual({
+      tenant_id: "tenant-alpha",
+      id: "planner",
+      type: "agent",
+    });
+  });
+
   it("identity factories produce correct principal types", () => {
     const apiKey = makeApiKey({ tenant_id: "tenant-alpha" });
 
