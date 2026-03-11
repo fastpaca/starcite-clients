@@ -1,6 +1,6 @@
 {
   "name": "starcite",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "CLI for Starcite",
   "license": "Apache-2.0",
   "homepage": "https://starcite.ai",
@@ -42,7 +42,7 @@
     "check": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@starcite/sdk": "^0.0.9",
+    "@starcite/sdk": "^0.0.10",
     "arg": "^5.0.2",
     "conf": "^15.1.0",
     "toml": "^3.0.0",
