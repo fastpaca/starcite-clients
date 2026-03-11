@@ -77,15 +77,19 @@ describe("inferIdentityFromApiKey", () => {
     expect(inferIdentityFromApiKey(token)).toBeUndefined();
   });
 
-  it("throws when principal_id includes a legacy type prefix", () => {
+  it("normalizes actor-style principal_id claims", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
       principal_id: "agent:planner",
-      principal_type: "agent",
+      principal_type: "user",
     });
 
-    expect(() => inferIdentityFromApiKey(token)).toThrow(
-      "must not include a principal prefix"
+    expect(inferIdentityFromApiKey(token)).toEqual(
+      expect.objectContaining({
+        tenantId: "acme",
+        id: "planner",
+        type: "agent",
+      })
     );
   });
 
