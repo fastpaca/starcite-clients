@@ -147,11 +147,27 @@ export interface AppendResult {
   deduped: boolean;
 }
 
+const EncodedTailCursorSchema = z.string().regex(/^E:\d+$/);
+
+/**
+ * Tail resume cursor accepted by the Phoenix channel transport.
+ */
+export const TailCursorSchema = z.union([
+  z.number().int().nonnegative(),
+  EncodedTailCursorSchema,
+]);
+
+/**
+ * Inferred TypeScript type for {@link TailCursorSchema}.
+ */
+export type TailCursor = z.infer<typeof TailCursorSchema>;
+
 /**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
+  cursor: TailCursorSchema.optional(),
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
@@ -246,6 +262,30 @@ export interface SessionTailIteratorOptions<
  * Raw tail event batch grouped by a single WebSocket frame.
  */
 export type TailEventBatch = TailEvent[];
+
+/**
+ * Server-emitted gap payload surfaced by the Phoenix tail transport.
+ */
+export const TailGapSchema = z.object({}).passthrough();
+
+/**
+ * Inferred TypeScript type for {@link TailGapSchema}.
+ */
+export type TailGap = z.infer<typeof TailGapSchema>;
+
+/**
+ * Server-emitted auth expiry signal surfaced by the Phoenix tail transport.
+ */
+export const TailTokenExpiredPayloadSchema = z.object({
+  reason: z.literal("token_expired"),
+});
+
+/**
+ * Inferred TypeScript type for {@link TailTokenExpiredPayloadSchema}.
+ */
+export type TailTokenExpiredPayload = z.infer<
+  typeof TailTokenExpiredPayloadSchema
+>;
 
 /**
  * Retention options for a session's in-memory canonical log.
@@ -448,6 +488,11 @@ export type SessionAppendListener = (
   event: SessionAppendLifecycleEvent
 ) => void | Promise<void>;
 
+/**
+ * Listener invoked when the server reports an explicit tail gap.
+ */
+export type SessionGapListener = (gap: TailGap) => void | Promise<void>;
+
 export const SessionStoredAppendSchema = z.object({
   id: z.string().min(1),
   request: AppendEventRequestSchema,
@@ -548,7 +593,7 @@ export interface SessionTailOptions {
   /**
    * Starting cursor (inclusive) in the event stream.
    */
-  cursor?: number;
+  cursor?: TailCursor;
   /**
    * Tail frame batch size (`1..1000`).
    *
@@ -595,6 +640,10 @@ export interface SessionTailOptions {
    * Optional lifecycle callback invoked for reconnect/drop/terminal stream state changes.
    */
   onLifecycleEvent?: (event: TailLifecycleEvent) => void;
+  /**
+   * Optional callback invoked when the server reports an explicit tail gap.
+   */
+  onGap?: (gap: TailGap) => void;
   /**
    * Maximum time to wait for websocket handshake/open before reconnecting or failing.
    *
@@ -658,7 +707,7 @@ export type TailLifecycleEvent =
       type: "connect_attempt";
       sessionId: string;
       attempt: number;
-      cursor: number;
+      cursor: TailCursor;
     }
   | {
       type: "reconnect_scheduled";
@@ -713,6 +762,15 @@ export interface StarciteWebSocketEventMap {
 }
 
 export interface StarciteWebSocket {
+  binaryType?: BinaryType;
+  bufferedAmount?: number;
+  onclose?: ((event: unknown) => void) | null;
+  onerror?: ((event: unknown) => void) | null;
+  onmessage?: ((event: unknown) => void) | null;
+  onopen?: ((event: unknown) => void) | null;
+  readyState?: number;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  timeout?: number;
   addEventListener<TType extends keyof StarciteWebSocketEventMap>(
     type: TType,
     listener: (event: StarciteWebSocketEventMap[TType]) => void
@@ -766,7 +824,8 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Custom WebSocket factory for non-browser runtimes.
+   * Deprecated. The Phoenix Channels tail transport uses the official Phoenix
+   * client and does not support a custom raw WebSocket factory.
    */
   websocketFactory?: StarciteWebSocketFactory;
   /**

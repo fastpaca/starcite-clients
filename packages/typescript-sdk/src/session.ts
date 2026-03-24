@@ -24,6 +24,7 @@ import type {
   SessionEvent,
   SessionEventContext,
   SessionEventListener,
+  SessionGapListener,
   SessionLogOptions,
   SessionOnEventOptions,
   SessionRecord,
@@ -32,6 +33,8 @@ import type {
   SessionStoreState,
   SessionTailItem,
   SessionTailIteratorOptions,
+  TailCursor,
+  TailGap,
 } from "./types";
 import { AppendEventResponseSchema, SessionAppendInputSchema } from "./types";
 
@@ -52,6 +55,7 @@ export interface StarciteSessionOptions {
 interface SessionLifecycleEvents {
   error: (error: Error) => void;
   append: (event: SessionAppendLifecycleEvent) => void;
+  gap: (gap: TailGap) => void;
 }
 
 interface TailRuntime<TEvent extends SessionEvent> {
@@ -293,12 +297,14 @@ export class StarciteSession {
     options: SessionOnEventOptions<TEvent>
   ): () => void;
   on(eventName: "append", listener: SessionAppendListener): () => void;
+  on(eventName: "gap", listener: SessionGapListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "event" | "append" | "error",
+    eventName: "event" | "append" | "gap" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
+      | SessionGapListener
       | ((error: Error) => void),
     options?: SessionOnEventOptions
   ): () => void {
@@ -349,6 +355,15 @@ export class StarciteSession {
       };
     }
 
+    if (eventName === "gap") {
+      const gapListener = listener as SessionGapListener;
+      this.lifecycle.on("gap", gapListener);
+      this.ensureLiveSync();
+      return () => {
+        this.off("gap", gapListener);
+      };
+    }
+
     if (eventName === "error") {
       const errorListener = listener as (error: Error) => void;
       this.lifecycle.on("error", errorListener);
@@ -365,12 +380,14 @@ export class StarciteSession {
    */
   off(eventName: "event", listener: SessionEventListener): void;
   off(eventName: "append", listener: SessionAppendListener): void;
+  off(eventName: "gap", listener: SessionGapListener): void;
   off(eventName: "error", listener: (error: Error) => void): void;
   off(
-    eventName: "event" | "append" | "error",
+    eventName: "event" | "append" | "gap" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
+      | SessionGapListener
       | ((error: Error) => void)
   ): void {
     if (eventName === "event") {
@@ -383,7 +400,7 @@ export class StarciteSession {
       this.eventSubscriptions.delete(eventListener);
       unsubscribe();
 
-      if (this.eventSubscriptions.size === 0) {
+      if (!this.shouldKeepLiveSync()) {
         this.liveSyncController?.abort();
       }
       return;
@@ -391,6 +408,14 @@ export class StarciteSession {
 
     if (eventName === "append") {
       this.lifecycle.off("append", listener as SessionAppendListener);
+      return;
+    }
+
+    if (eventName === "gap") {
+      this.lifecycle.off("gap", listener as SessionGapListener);
+      if (!this.shouldKeepLiveSync()) {
+        this.liveSyncController?.abort();
+      }
       return;
     }
 
@@ -600,7 +625,7 @@ export class StarciteSession {
   }: {
     parseEvent: (event: SessionEvent) => TEvent;
     replayCutoffSeq: number;
-    startCursor: number;
+    startCursor: TailCursor;
     tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
   }): TailRuntime<TEvent> {
     const queue: SessionTailItem<TEvent>[] = [];
@@ -617,15 +642,17 @@ export class StarciteSession {
     };
 
     const streamTask = new TailStream({
-      sessionId: this.id,
-      token: this.token,
-      websocketBaseUrl: this.transport.websocketBaseUrl,
-      websocketFactory: this.transport.websocketFactory,
       options: {
         ...tailOptions,
         cursor: startCursor,
         signal: controller.signal,
       },
+      customWebSocketFactoryProvided:
+        this.transport.customWebSocketFactoryProvided,
+      sessionId: this.id,
+      socketAuth: this.transport.socketAuth,
+      socketManagerRegistry: this.transport.tailSocketRegistry,
+      socketUrl: `${this.transport.websocketBaseUrl}/socket`,
     })
       .subscribe((batch) => {
         const queuedEvents = shouldApplyToLog
@@ -680,7 +707,7 @@ export class StarciteSession {
   }: {
     parseEvent: (event: SessionEvent) => TEvent;
     replayCutoffSeq: number;
-    startCursor: number;
+    startCursor: TailCursor;
     tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
   }): AsyncGenerator<SessionTailItem<TEvent>> {
     const runtime = this.createTailRuntime({
@@ -726,8 +753,15 @@ export class StarciteSession {
     });
   }
 
+  private shouldKeepLiveSync(): boolean {
+    return (
+      this.eventSubscriptions.size > 0 ||
+      this.lifecycle.listenerCount("gap") > 0
+    );
+  }
+
   private ensureLiveSync(): void {
-    if (this.liveSyncTask || this.eventSubscriptions.size === 0) {
+    if (this.liveSyncTask || !this.shouldKeepLiveSync()) {
       return;
     }
 
@@ -743,7 +777,7 @@ export class StarciteSession {
       .finally(() => {
         this.liveSyncTask = undefined;
         this.liveSyncController = undefined;
-        if (this.eventSubscriptions.size > 0) {
+        if (this.shouldKeepLiveSync()) {
           this.ensureLiveSync();
         }
       });
@@ -753,7 +787,7 @@ export class StarciteSession {
     let shouldRunCatchUpPass = this.log.lastSeq === 0;
     let retryDelayMs = 250;
 
-    while (!signal.aborted && this.eventSubscriptions.size > 0) {
+    while (!signal.aborted && this.shouldKeepLiveSync()) {
       this.liveSyncCatchUpActive = shouldRunCatchUpPass;
 
       try {
@@ -785,15 +819,22 @@ export class StarciteSession {
     follow: boolean
   ): Promise<void> {
     const stream = new TailStream({
-      sessionId: this.id,
-      token: this.token,
-      websocketBaseUrl: this.transport.websocketBaseUrl,
-      websocketFactory: this.transport.websocketFactory,
       options: {
         cursor: this.log.lastSeq,
         follow,
+        onGap: (gap) => {
+          if (this.lifecycle.listenerCount("gap") > 0) {
+            this.lifecycle.emit("gap", gap);
+          }
+        },
         signal,
       },
+      customWebSocketFactoryProvided:
+        this.transport.customWebSocketFactoryProvided,
+      sessionId: this.id,
+      socketAuth: this.transport.socketAuth,
+      socketManagerRegistry: this.transport.tailSocketRegistry,
+      socketUrl: `${this.transport.websocketBaseUrl}/socket`,
     });
 
     await stream.subscribe((batch) => {

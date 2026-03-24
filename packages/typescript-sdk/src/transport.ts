@@ -4,6 +4,10 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
+import type {
+  TailSocketAuthContext,
+  TailSocketManagerRegistry,
+} from "./tail/socket-manager";
 import type { StarciteWebSocket } from "./types";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
@@ -17,7 +21,10 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
 export interface TransportConfig {
   readonly baseUrl: string;
   readonly websocketBaseUrl: string;
-  readonly authorization: string | null;
+  readonly customWebSocketFactoryProvided: boolean;
+  readonly socketAuth: TailSocketAuthContext;
+  readonly tailSocketRegistry: TailSocketManagerRegistry;
+  authorization: string | null;
   readonly fetchFn: typeof fetch;
   readonly headers: Headers;
   readonly websocketFactory: (url: string) => StarciteWebSocket;
@@ -61,7 +68,7 @@ export function defaultWebSocketFactory(url: string): StarciteWebSocket {
     );
   }
 
-  return new WebSocket(url);
+  return new WebSocket(url) as unknown as StarciteWebSocket;
 }
 
 /**

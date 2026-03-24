@@ -49,7 +49,8 @@ export type StarciteTailErrorStage =
   | "connect"
   | "stream"
   | "retry_limit"
-  | "consumer_backpressure";
+  | "consumer_backpressure"
+  | "gap";
 
 /**
  * Thrown for tail-stream failures with structured stage/context fields.
@@ -137,5 +138,21 @@ export class StarciteRetryLimitError extends StarciteTailError {
   ) {
     super(message, { ...options, stage: "retry_limit" });
     this.name = "StarciteRetryLimitError";
+  }
+}
+
+/**
+ * Thrown when the tail transport reports an explicit replay/live gap.
+ */
+export class StarciteTailGapError extends StarciteTailError {
+  constructor(
+    message: string,
+    options: {
+      sessionId: string;
+      attempts?: number;
+    }
+  ) {
+    super(message, { ...options, stage: "gap" });
+    this.name = "StarciteTailGapError";
   }
 }

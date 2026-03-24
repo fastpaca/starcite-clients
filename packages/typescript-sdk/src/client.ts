@@ -6,6 +6,7 @@ import {
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
+import { TailSocketManagerRegistry } from "./tail/socket-manager";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
@@ -120,13 +121,20 @@ export class Starcite {
 
     const websocketFactory =
       options.websocketFactory ?? defaultWebSocketFactory;
+    const socketAuthToken = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
 
     this.transport = {
       baseUrl,
       websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
+      customWebSocketFactoryProvided: options.websocketFactory !== undefined,
       authorization: authorization ?? null,
+      socketAuth: {
+        key: socketAuthToken ? `api:${socketAuthToken}` : "anonymous",
+        token: socketAuthToken,
+      },
+      tailSocketRegistry: new TailSocketManagerRegistry(),
       fetchFn,
       headers,
       websocketFactory,
@@ -284,7 +292,12 @@ export class Starcite {
       id: sessionId,
       token: tokenResponse.token,
       identity: input.identity,
-      transport: this.buildSessionTransport(tokenResponse.token),
+      transport: this.buildSessionTransport(tokenResponse.token, {
+        key: this.transport.socketAuth.token
+          ? this.transport.socketAuth.key
+          : `session:${tokenResponse.token}`,
+        token: this.transport.socketAuth.token ?? tokenResponse.token,
+      }),
       store: this.store,
       record,
       logOptions: input.logOptions,
@@ -313,17 +326,24 @@ export class Starcite {
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport: this.buildSessionTransport(token),
+      transport: this.buildSessionTransport(token, {
+        key: `session:${token}`,
+        token,
+      }),
       store: this.store,
       logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
-  private buildSessionTransport(token: string): TransportConfig {
+  private buildSessionTransport(
+    token: string,
+    socketAuth: TransportConfig["socketAuth"]
+  ): TransportConfig {
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
+      socketAuth,
     };
   }
 

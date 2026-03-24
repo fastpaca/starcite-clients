@@ -8,6 +8,7 @@ export {
   StarciteError,
   StarciteRetryLimitError,
   StarciteTailError,
+  StarciteTailGapError,
   StarciteTokenExpiredError,
 } from "./errors";
 export type { PrincipalType } from "./identity";
@@ -41,6 +42,7 @@ export type {
   SessionEventContext,
   SessionEventListener,
   SessionEventPhase,
+  SessionGapListener,
   SessionListItem,
   SessionListOptions,
   SessionListPage,
@@ -62,8 +64,10 @@ export type {
   StarciteWebSocketEventMap,
   StarciteWebSocketFactory,
   StarciteWebSocketMessageEvent,
+  TailCursor,
   TailEvent,
   TailEventBatch,
+  TailGap,
   TailLifecycleEvent,
   TailReconnectPolicy,
 } from "./types";

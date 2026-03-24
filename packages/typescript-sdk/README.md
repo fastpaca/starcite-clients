@@ -213,12 +213,8 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
-  websocketFactory: (url) => new WebSocket(url),
   store: new MemoryStore(), // cursor + event persistence
 });
-
-// WebSocketFactory — simplified, auth is always in access_token query string.
-type WebSocketFactory = (url: string) => StarciteWebSocket;
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
 
