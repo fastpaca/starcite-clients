@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
+  inferTenantIdFromApiKey,
 } from "../src/auth";
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
@@ -112,5 +113,27 @@ describe("inferIdentityFromApiKey", () => {
   it("returns undefined when claims are empty", () => {
     const token = tokenFromClaims({});
     expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+
+  it("returns undefined for service principals", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "svc-backend",
+      principal_type: "service",
+    });
+
+    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+});
+
+describe("inferTenantIdFromApiKey", () => {
+  it("extracts tenant_id for service principals", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "svc-backend",
+      principal_type: "service",
+    });
+
+    expect(inferTenantIdFromApiKey(token)).toBe("acme");
   });
 });
