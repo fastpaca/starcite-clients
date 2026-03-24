@@ -148,36 +148,10 @@ export interface AppendResult {
 }
 
 /**
- * Cursor object used by the tail stream.
- */
-export const TailWireCursorSchema = z.object({
-  epoch: z.number().int().positive(),
-  seq: z.number().int().nonnegative(),
-});
-
-export type TailWireCursor = z.infer<typeof TailWireCursorSchema>;
-
-/**
- * Tail resume cursor accepted by the SDK.
- */
-export const TailCursorSchema = TailWireCursorSchema;
-
-/**
- * User-facing tail cursor input.
- */
-export type TailCursor = z.infer<typeof TailCursorSchema>;
-
-/**
- * Tail frame batch size accepted by the SDK.
- */
-export const TailBatchSizeSchema = z.number().int().min(1).max(1000);
-
-/**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
-  cursor: TailWireCursorSchema.optional(),
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
@@ -228,6 +202,20 @@ export type SessionEventListener<TEvent extends SessionEvent = SessionEvent> = (
 ) => void | Promise<void>;
 
 /**
+ * Item yielded by `session.tail(...)` async iterators.
+ */
+export interface SessionTailItem<TEvent extends SessionEvent = SessionEvent> {
+  /**
+   * Canonical ordered event.
+   */
+  event: TEvent;
+  /**
+   * Replay/live classification for this event.
+   */
+  context: SessionEventContext;
+}
+
+/**
  * Listener options for `session.on("event", ...)`.
  */
 export interface SessionOnEventOptions<
@@ -245,42 +233,19 @@ export interface SessionOnEventOptions<
    * Schema validation failures are surfaced as session `error` events.
    */
   schema?: z.ZodType<TEvent>;
-  /**
-   * Optional filter for `agent:<name>` events.
-   */
-  agent?: string;
 }
 
 /**
- * Server-emitted gap payload surfaced by the tail transport.
+ * Options for async iterator tails.
  */
-export const TailGapSchema = z.object({
-  type: z.literal("gap"),
-  reason: z.enum(["cursor_expired", "epoch_stale", "rollback"]),
-  from_cursor: TailWireCursorSchema,
-  next_cursor: TailWireCursorSchema,
-  committed_cursor: TailWireCursorSchema,
-  earliest_available_cursor: TailWireCursorSchema,
-});
-
+export interface SessionTailIteratorOptions<
+  TEvent extends SessionEvent = SessionEvent,
+> extends SessionTailOptions,
+    SessionOnEventOptions<TEvent> {}
 /**
- * Inferred TypeScript type for {@link TailGapSchema}.
+ * Raw tail event batch grouped by a single WebSocket frame.
  */
-export type TailGap = z.infer<typeof TailGapSchema>;
-
-/**
- * Server-emitted auth expiry signal surfaced by the tail transport.
- */
-export const TailTokenExpiredPayloadSchema = z.object({
-  reason: z.literal("token_expired"),
-});
-
-/**
- * Inferred TypeScript type for {@link TailTokenExpiredPayloadSchema}.
- */
-export type TailTokenExpiredPayload = z.infer<
-  typeof TailTokenExpiredPayloadSchema
->;
+export type TailEventBatch = TailEvent[];
 
 /**
  * Retention options for a session's in-memory canonical log.
@@ -306,10 +271,6 @@ export interface SessionSnapshot {
    * Highest contiguous sequence applied to the log.
    */
   lastSeq: number;
-  /**
-   * Exact tail resume cursor for the latest retained event, when available.
-   */
-  cursor?: TailCursor;
   /**
    * Indicates whether the session is actively streaming tail updates.
    */
@@ -487,11 +448,6 @@ export type SessionAppendListener = (
   event: SessionAppendLifecycleEvent
 ) => void | Promise<void>;
 
-/**
- * Listener invoked when the server reports an explicit tail gap.
- */
-export type SessionGapListener = (gap: TailGap) => void | Promise<void>;
-
 export const SessionStoredAppendSchema = z.object({
   id: z.string().min(1),
   request: AppendEventRequestSchema,
@@ -520,7 +476,7 @@ export interface SessionStoreMetadata {
   /**
    * Store payload schema version.
    */
-  schemaVersion: 4;
+  schemaVersion: 1 | 2;
   /**
    * Unix epoch milliseconds when this snapshot was written.
    */
@@ -534,11 +490,7 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
   /**
    * Highest contiguous sequence applied for this session.
    */
-  lastSeq: number;
-  /**
-   * Exact tail resume cursor for continuing replay.
-   */
-  cursor?: TailCursor;
+  cursor: number;
   /**
    * Retained events snapshot used for immediate replay.
    */
@@ -554,7 +506,7 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
 }
 
 /**
- * Persistence interface for session resume state + retained events.
+ * Persistence interface for session cursor + retained events.
  */
 export interface SessionStore<TEvent extends TailEvent = TailEvent> {
   load(sessionId: string): SessionStoreState<TEvent> | undefined;
@@ -565,8 +517,8 @@ export interface SessionStore<TEvent extends TailEvent = TailEvent> {
 /**
  * High-level `session.append()` input.
  *
- * The SDK manages `producer_id` and `producer_seq` automatically.
- * Provide `text` or `payload`, and optionally override `actor`.
+ * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
+ * Just provide `text` or `payload`.
  */
 export const SessionAppendInputSchema = z
   .object({
@@ -590,6 +542,147 @@ export const SessionAppendInputSchema = z
 export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
 
 /**
+ * Options for streaming events from a session.
+ */
+export interface SessionTailOptions {
+  /**
+   * Starting cursor (inclusive) in the event stream.
+   */
+  cursor?: number;
+  /**
+   * Tail frame batch size (`1..1000`).
+   *
+   * When greater than `1`, Starcite may emit batched WebSocket frames.
+   */
+  batchSize?: number;
+  /**
+   * Optional filter for `agent:<name>` events.
+   */
+  agent?: string;
+  /**
+   * Idle window in milliseconds used for replay-only tails (`follow=false`) before auto-close.
+   *
+   * Defaults to `1000`.
+   */
+  catchUpIdleMs?: number;
+  /**
+   * Automatically reconnect on transport failures and continue from the last observed sequence.
+   *
+   * Defaults to `true`.
+   */
+  reconnect?: boolean;
+  /**
+   * Reconnect policy for transport failures.
+   */
+  reconnectPolicy?: TailReconnectPolicy;
+  /**
+   * When `false`, exit after replaying stored events instead of streaming live.
+   *
+   * Defaults to `true`.
+   */
+  follow?: boolean;
+  /**
+   * Optional abort signal to close the stream.
+   */
+  signal?: AbortSignal;
+  /**
+   * Maximum number of tail batches buffered in-memory while the consumer is busy.
+   *
+   * Defaults to `1024`. When exceeded, the stream fails with `StarciteTailError`.
+   */
+  maxBufferedBatches?: number;
+  /**
+   * Optional lifecycle callback invoked for reconnect/drop/terminal stream state changes.
+   */
+  onLifecycleEvent?: (event: TailLifecycleEvent) => void;
+  /**
+   * Maximum time to wait for websocket handshake/open before reconnecting or failing.
+   *
+   * Defaults to `12000`.
+   */
+  connectionTimeoutMs?: number;
+  /**
+   * Optional inactivity watchdog. When set, the stream reconnects when no messages
+   * arrive within this duration.
+   */
+  inactivityTimeoutMs?: number;
+}
+
+/**
+ * Tail reconnect tuning knobs.
+ */
+export interface TailReconnectPolicy {
+  /**
+   * Reconnect mode. `fixed` retries at the same delay, `exponential` increases delay after repeated failures.
+   *
+   * Defaults to `exponential`.
+   */
+  mode?: "fixed" | "exponential";
+  /**
+   * Initial reconnect delay in milliseconds.
+   *
+   * Defaults to `500`.
+   */
+  initialDelayMs?: number;
+  /**
+   * Maximum reconnect delay in milliseconds.
+   *
+   * Defaults to `15000`.
+   */
+  maxDelayMs?: number;
+  /**
+   * Exponential growth factor applied after each failed reconnect attempt.
+   *
+   * Defaults to `2`.
+   */
+  multiplier?: number;
+  /**
+   * Optional jitter ratio (`0..1`) applied around the computed delay.
+   *
+   * Defaults to `0.2`.
+   */
+  jitterRatio?: number;
+  /**
+   * Maximum number of reconnect attempts before failing.
+   *
+   * Defaults to unlimited retries.
+   */
+  maxAttempts?: number;
+}
+
+/**
+ * Stream lifecycle event emitted by `tail*()` APIs.
+ */
+export type TailLifecycleEvent =
+  | {
+      type: "connect_attempt";
+      sessionId: string;
+      attempt: number;
+      cursor: number;
+    }
+  | {
+      type: "reconnect_scheduled";
+      sessionId: string;
+      attempt: number;
+      delayMs: number;
+      trigger: "connect_failed" | "dropped";
+      closeCode?: number;
+      closeReason?: string;
+    }
+  | {
+      type: "stream_dropped";
+      sessionId: string;
+      attempt: number;
+      closeCode?: number;
+      closeReason?: string;
+    }
+  | {
+      type: "stream_ended";
+      sessionId: string;
+      reason: "aborted" | "caught_up" | "graceful";
+    };
+
+/**
  * Options for listing sessions.
  */
 export const SessionListOptionsSchema = z.object({
@@ -599,6 +692,43 @@ export const SessionListOptionsSchema = z.object({
 });
 
 export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
+
+/**
+ * Minimal WebSocket contract required by the SDK.
+ */
+export interface StarciteWebSocketMessageEvent {
+  data: unknown;
+}
+
+export interface StarciteWebSocketCloseEvent {
+  code?: number;
+  reason?: string;
+}
+
+export interface StarciteWebSocketEventMap {
+  open: unknown;
+  message: StarciteWebSocketMessageEvent;
+  error: unknown;
+  close: StarciteWebSocketCloseEvent;
+}
+
+export interface StarciteWebSocket {
+  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void;
+  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+}
+
+/**
+ * Factory used to create the WebSocket connection for `tail`.
+ */
+export type StarciteWebSocketFactory = (url: string) => StarciteWebSocket;
 
 /**
  * Options forwarded to individual HTTP requests.
@@ -637,9 +767,13 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Optional session store used for resume state + retained event persistence.
+   * Custom WebSocket factory for non-browser runtimes.
+   */
+  websocketFactory?: StarciteWebSocketFactory;
+  /**
+   * Optional session store used for cursor + retained event persistence.
    *
-   * When omitted, fresh attaches replay from the start of the server tail.
+   * When omitted, fresh attaches start from cursor `0` and replay from server tail.
    */
   store?: SessionStore;
   /**
@@ -647,6 +781,22 @@ export interface StarciteOptions {
    */
   appendOptions?: SessionAppendOptions;
 }
+
+/**
+ * Live tenant-scoped lifecycle event emitted by `starcite.on(...)`.
+ */
+export const SessionCreatedLifecycleEventSchema = z.object({
+  kind: z.literal("session.created"),
+  session_id: z.string().min(1),
+  tenant_id: z.string().min(1),
+  title: z.string().nullable().optional(),
+  metadata: ArbitraryObjectSchema,
+  created_at: z.string().min(1),
+});
+
+export type SessionCreatedLifecycleEvent = z.infer<
+  typeof SessionCreatedLifecycleEventSchema
+>;
 
 /**
  * Error payload shape returned by non-2xx API responses.

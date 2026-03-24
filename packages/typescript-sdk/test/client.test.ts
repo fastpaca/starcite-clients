@@ -2,10 +2,121 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
 import {
   StarciteApiError,
+  StarciteBackpressureError,
   StarciteConnectionError,
   StarciteError,
+  StarciteRetryLimitError,
+  StarciteTailError,
+  StarciteTokenExpiredError,
 } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
+import type {
+  StarciteWebSocket,
+  StarciteWebSocketEventMap,
+  TailEvent,
+  TailLifecycleEvent,
+} from "../src/types";
+
+class FakeWebSocket implements StarciteWebSocket {
+  readonly url: string;
+  closeCallCount = 0;
+  closed = false;
+  readonly closeHistory: Array<{ code?: number; reason?: string }> = [];
+  readonly sentMessages: string[] = [];
+
+  private readonly listeners = new Map<
+    keyof StarciteWebSocketEventMap,
+    Set<(event: unknown) => void>
+  >();
+
+  constructor(url: string) {
+    this.url = url;
+    queueMicrotask(() => {
+      if (this.closed) {
+        return;
+      }
+
+      this.emit("open", undefined);
+    });
+  }
+
+  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void {
+    const handlers = this.listeners.get(type) ?? new Set();
+    handlers.add(listener as (event: unknown) => void);
+    this.listeners.set(type, handlers);
+  }
+
+  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    listener: (event: StarciteWebSocketEventMap[TType]) => void
+  ): void {
+    const handlers = this.listeners.get(type);
+    if (!handlers) {
+      return;
+    }
+
+    handlers.delete(listener as (event: unknown) => void);
+    if (handlers.size === 0) {
+      this.listeners.delete(type);
+    }
+  }
+
+  send(data: string): void {
+    this.sentMessages.push(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closeCallCount += 1;
+    this.closeHistory.push({ code, reason });
+    if (this.closed) {
+      return;
+    }
+
+    this.closed = true;
+    this.emit("close", { code, reason });
+  }
+
+  emit<TType extends keyof StarciteWebSocketEventMap>(
+    type: TType,
+    event: StarciteWebSocketEventMap[TType]
+  ): void {
+    const handlers = this.listeners.get(type);
+    if (!handlers) {
+      return;
+    }
+
+    for (const handler of handlers) {
+      handler(event);
+    }
+  }
+}
+
+async function waitForSocketCount(
+  sockets: FakeWebSocket[],
+  expectedCount: number
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (sockets.length >= expectedCount) {
+      return;
+    }
+
+    if (
+      (vi as unknown as { isFakeTimers?: () => boolean }).isFakeTimers?.() ===
+      true
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedCount} socket(s); saw ${sockets.length}`
+  );
+}
 
 async function waitForValues<T>(
   values: T[],
@@ -16,7 +127,14 @@ async function waitForValues<T>(
       return;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (
+      (vi as unknown as { isFakeTimers?: () => boolean }).isFakeTimers?.() ===
+      true
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   throw new Error(
@@ -33,7 +151,14 @@ async function waitForCondition(
       return;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (
+      (vi as unknown as { isFakeTimers?: () => boolean }).isFakeTimers?.() ===
+      true
+    ) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   throw new Error(`Timed out waiting for condition: ${description}`);
@@ -74,6 +199,59 @@ function makeApiKey(overrides: Record<string, unknown> = {}): string {
     principal_type: "user",
     ...overrides,
   });
+}
+
+/**
+ * Builds a `Starcite` instance wired to a fake WebSocket factory and
+ * returns both the client and the captured sockets list.
+ */
+function buildTailClient(
+  fetchMock: ReturnType<typeof vi.fn>,
+  options: ConstructorParameters<typeof Starcite>[0] = {}
+) {
+  const sockets: FakeWebSocket[] = [];
+  const starcite = new Starcite({
+    baseUrl: "http://localhost:4000",
+    fetch: fetchMock,
+    websocketFactory: (url) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    ...options,
+  });
+  return { starcite, sockets };
+}
+
+function seedSessionStore(sessionId = "ses_tail"): MemoryStore {
+  const store = new MemoryStore();
+  store.save(sessionId, {
+    cursor: 1,
+    events: [
+      {
+        seq: 1,
+        type: "content",
+        payload: { text: "seed frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      },
+    ],
+    metadata: {
+      schemaVersion: 2,
+      updatedAtMs: Date.now(),
+    },
+  });
+  return store;
+}
+
+function parsePhoenixFrame(socket: FakeWebSocket, index = 0): unknown[] {
+  const payload = socket.sentMessages[index];
+  if (!payload) {
+    throw new Error(`Missing Phoenix frame at index ${index}`);
+  }
+
+  return JSON.parse(payload) as unknown[];
 }
 
 describe("Starcite", () => {
@@ -162,41 +340,12 @@ describe("Starcite", () => {
       expect.objectContaining({
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
+        actor: "agent:researcher",
         source: "agent",
       })
     );
-    expect(body.actor).toBeUndefined();
     expect(body.producer_id).toEqual(expect.any(String));
     expect(body.producer_seq).toBe(1);
-  });
-
-  it("preserves an explicit actor override when appending", async () => {
-    const sessionToken = makeTailSessionToken("ses_actor_override", "writer");
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
-        status: 201,
-      })
-    );
-
-    const starcite = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-    });
-    const session = await starcite.session({ token: sessionToken });
-
-    await session.append({
-      actor: "agent:researcher",
-      payload: { text: "custom actor" },
-      type: "custom",
-    });
-
-    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const body = JSON.parse(requestInit.body as string);
-
-    expect(body.actor).toBe("agent:researcher");
-    expect(body.type).toBe("custom");
-    expect(body.payload).toEqual({ text: "custom actor" });
   });
 
   it("serializes concurrent appends for a session producer", async () => {
@@ -898,6 +1047,54 @@ describe("Starcite", () => {
     });
   });
 
+  it("identity acquisition skips hydration for freshly created empty sessions", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-a",
+    });
+    const sockets: FakeWebSocket[] = [];
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_demo",
+          title: null,
+          metadata: {},
+          last_seq: 0,
+          created_at: "2026-02-11T00:00:00Z",
+          updated_at: "2026-02-11T00:00:00Z",
+        }),
+        { status: 201 }
+      )
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          token: makeTailSessionToken("ses_demo", "user-42", "user"),
+          expires_in: 3600,
+        }),
+        { status: 200 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const identity = starcite.user({ id: "user-42" });
+    const session = await starcite.session({ identity, id: "ses_demo" });
+
+    expect(session.events()).toEqual([]);
+    expect(sockets).toHaveLength(0);
+  });
+
   it("session({ identity, id }) binds when create returns conflict", async () => {
     const apiKey = makeApiKey({
       iss: "https://starcite.ai",
@@ -921,10 +1118,20 @@ describe("Starcite", () => {
         )
       );
 
+    const sockets: FakeWebSocket[] = [];
+
     const starcite = new Starcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
       apiKey,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => {
+          socket.emit("close", { code: 1000, reason: "caught up" });
+        });
+        return socket;
+      },
     });
 
     const identity = starcite.user({ id: "user-42" });
@@ -944,6 +1151,69 @@ describe("Starcite", () => {
         method: "POST",
       })
     );
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("identity acquisition hydrates existing sessions before returning", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-a",
+    });
+    const sockets: FakeWebSocket[] = [];
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_demo", "user-42", "user"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const identity = starcite.user({ id: "user-42" });
+    const sessionPromise = starcite.session({ identity, id: "ses_demo" });
+
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "wss://tenant-a.starcite.io/v1/sessions/ses_demo/tail?cursor=0"
+      )
+    );
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "chat.user.message",
+        payload: { parts: [{ type: "text", text: "existing prompt" }] },
+        actor: "user:user-42",
+        producer_id: "producer:user-42",
+        producer_seq: 1,
+      }),
+    });
+
+    const session = await sessionPromise;
+    expect(session.events().map((event) => event.seq)).toEqual([1]);
   });
 
   it("uses authUrl override for session token minting", async () => {
@@ -1019,6 +1289,152 @@ describe("Starcite", () => {
 
     expect(session).not.toBeInstanceOf(Promise);
     expect(session.id).toBe("ses_sync");
+  });
+
+  it("infers tenant scope from service api keys for user()/agent()", () => {
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey: makeApiKey({
+        tenant_id: "tenant-a",
+        principal_id: "svc-backend",
+        principal_type: "service",
+      }),
+    });
+
+    expect(starcite.agent({ id: "planner" })).toEqual(
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        id: "planner",
+        type: "agent",
+      })
+    );
+  });
+
+  it("subscribes to live session lifecycle events over the shared Phoenix socket", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock, {
+      baseUrl: "https://tenant-a.starcite.io",
+      apiKey: makeApiKey({
+        tenant_id: "tenant-a",
+        principal_id: "svc-backend",
+        principal_type: "service",
+      }),
+    });
+    const createdEvents: Array<{ session_id: string; kind: string }> = [];
+
+    const unsubscribe = starcite.on("session.created", (event) => {
+      createdEvents.push({
+        session_id: event.session_id,
+        kind: event.kind,
+      });
+    });
+
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "wss://tenant-a.starcite.io/v1/socket/websocket?token="
+      )
+    );
+    expect(sockets[0]?.url).toEqual(expect.stringContaining("vsn=2.0.0"));
+
+    const lifecycleSocket = sockets[0];
+    if (!lifecycleSocket) {
+      throw new Error("Expected lifecycle socket to be created");
+    }
+
+    expect(parsePhoenixFrame(lifecycleSocket)).toEqual([
+      "1",
+      "1",
+      "lifecycle",
+      "phx_join",
+      {},
+    ]);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        "1",
+        "1",
+        "lifecycle",
+        "phx_reply",
+        { status: "ok", response: {} },
+      ]),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        null,
+        null,
+        "lifecycle",
+        "lifecycle",
+        {
+          event: {
+            kind: "session.created",
+            session_id: "ses_created",
+            tenant_id: "tenant-a",
+            title: "Draft",
+            metadata: { workflow: "contract" },
+            created_at: "2026-03-24T10:00:00Z",
+          },
+        },
+      ]),
+    });
+
+    await waitForValues(createdEvents, 1);
+    expect(createdEvents).toEqual([
+      {
+        session_id: "ses_created",
+        kind: "session.created",
+      },
+    ]);
+
+    unsubscribe();
+    expect(sockets[0]?.closeCallCount).toBe(1);
+    expect(sockets[0]?.closeHistory[0]).toEqual({
+      code: 1000,
+      reason: "closed",
+    });
+  });
+
+  it("surfaces lifecycle token expiry through starcite.on('error') listeners", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock, {
+      baseUrl: "https://tenant-a.starcite.io",
+      apiKey: makeApiKey({
+        tenant_id: "tenant-a",
+        principal_id: "svc-backend",
+        principal_type: "service",
+      }),
+    });
+    const errors: string[] = [];
+
+    const offCreated = starcite.on("session.created", () => undefined);
+    const offError = starcite.on("error", (error) => {
+      errors.push(error.message);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        "1",
+        "1",
+        "lifecycle",
+        "phx_reply",
+        { status: "ok", response: {} },
+      ]),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        null,
+        null,
+        "lifecycle",
+        "token_expired",
+        { reason: "token_expired" },
+      ]),
+    });
+
+    await waitForValues(errors, 1);
+    expect(errors[0]).toContain("Lifecycle subscription token expired");
+
+    offCreated();
+    offError();
   });
 
   it("wraps malformed JSON success responses as connection errors", async () => {
@@ -1213,5 +1629,1635 @@ describe("Starcite", () => {
       id: "foo",
       type: "agent",
     });
+  });
+
+  it("tails events and filters by agent", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken("ses_tail", "drafter");
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        agent: "drafter",
+        cursor: 0,
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "ignore me" },
+        actor: "agent:researcher",
+        producer_id: "producer:researcher",
+        producer_seq: 10,
+      }),
+    });
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "Drafting clause 4.2..." },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 11,
+      }),
+    });
+
+    await waitForValues(events, 1);
+    expect(events[0]).toMatchObject({
+      seq: 2,
+      actor: "agent:drafter",
+      payload: { text: "Drafting clause 4.2..." },
+    });
+
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toBeUndefined();
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+      )
+    );
+  });
+
+  it("tails batched frames and appends batch_size query param", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        batchSize: 2,
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await waitForValues(events, 2);
+    expect(events[0]).toMatchObject({ seq: 1 });
+    expect(events[1]).toMatchObject({ seq: 2 });
+
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toBeUndefined();
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=2"
+      )
+    );
+  });
+
+  it("tails ordered events from batched frames without loss", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        batchSize: 2,
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await waitForValues(events, 2);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
+
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("tails events for batched ingestion", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        batchSize: 2,
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "Draft one" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "Draft two" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await waitForValues(events, 2);
+    expect(events).toMatchObject([
+      { seq: 1, actor: "agent:drafter", payload: { text: "Draft one" } },
+      { seq: 2, actor: "agent:drafter", payload: { text: "Draft two" } },
+    ]);
+
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("uses query-token websocket auth even when apiKey is set", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const websocketFactory = vi.fn((url: string) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: makeApiKey(),
+      websocketFactory,
+    });
+
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail());
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(tailDone).resolves.toEqual([]);
+    expect(websocketFactory).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token="
+      )
+    );
+  });
+
+  it("sends only a URL argument to custom websocket factories", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const websocketFactory = vi.fn((url: string) => {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey: makeApiKey(),
+      websocketFactory,
+    });
+
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail());
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1000 });
+
+    await expect(tailDone).resolves.toEqual([]);
+
+    expect(websocketFactory).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&access_token="
+      )
+    );
+  });
+
+  it("throws a token-expired connection error on close code 4001", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail());
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 4001, reason: "token_expired" });
+
+    const error = await tailDone.catch((err) => err);
+    expect(error).toBeInstanceOf(StarciteTokenExpiredError);
+    expect((error as Error).message).toContain("token expired");
+  });
+
+  it("reconnects on abnormal close and resumes from the last observed seq", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+      )
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await waitForValues(events, 2);
+    expect(events[1]?.seq).toBe(2);
+
+    sockets[1]?.emit("close", { code: 1000 });
+
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("resumes from the latest seq in a batched frame after reconnect", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        batchSize: 2,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await waitForValues(events, 2);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+      )
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await waitForValues(events, 3);
+    expect(events[2]?.seq).toBe(3);
+
+    sockets[1]?.emit("close", { code: 1000 });
+
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("resumes ingestion from latest observed seq after reconnect", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        batchSize: 2,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "first frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+        {
+          seq: 2,
+          type: "content",
+          payload: { text: "second frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        },
+      ]),
+    });
+
+    await waitForValues(events, 2);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "upstream reset" });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2&batch_size=2"
+      )
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await waitForValues(events, 3);
+    expect(events.map((event) => event.seq)).toEqual([1, 2, 3]);
+
+    sockets[1]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("keeps reconnecting until the transport recovers", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const events: TailEvent[] = [];
+
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+        },
+      })) {
+        events.push(event);
+      }
+    })();
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
+    await waitForSocketCount(sockets, 3);
+
+    sockets[2]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "stream resumed" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await waitForValues(events, 1);
+    expect(events[0]?.seq).toBe(1);
+
+    sockets[2]?.emit("close", { code: 1000 });
+
+    await expect(tailDone).resolves.toBeUndefined();
+  });
+
+  it("fails when reconnectPolicy maxAttempts is exceeded", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 1,
+        },
+      })
+    );
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+    await waitForSocketCount(sockets, 2);
+    sockets[1]?.emit("close", { code: 1006, reason: "network still down" });
+
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteRetryLimitError);
+
+    await tailDone.catch((error) => {
+      const tailError = error as StarciteRetryLimitError;
+      expect(tailError.stage).toBe("retry_limit");
+      expect(tailError.sessionId).toBe("ses_tail");
+      expect(tailError.closeCode).toBe(1006);
+    });
+  });
+
+  it("supports zero reconnect attempts via reconnectPolicy", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+      })
+    );
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteRetryLimitError);
+    await tailDone.catch((error) => {
+      const tailError = error as StarciteRetryLimitError;
+      expect(tailError.stage).toBe("retry_limit");
+      expect(tailError.sessionId).toBe("ses_tail");
+      expect(tailError.attempts).toBe(1);
+      expect(tailError.closeCode).toBe(1006);
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("emits lifecycle events for dropped streams", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const lifecycleEvents: TailLifecycleEvent[] = [];
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: true,
+        reconnectPolicy: {
+          mode: "fixed",
+          initialDelayMs: 0,
+          maxAttempts: 0,
+        },
+        onLifecycleEvent: (event) => {
+          lifecycleEvents.push(event);
+        },
+      })
+    );
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("close", { code: 1006, reason: "deployment restart" });
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteTailError);
+
+    expect(lifecycleEvents).toHaveLength(2);
+    expect(lifecycleEvents[0]).toMatchObject({
+      type: "connect_attempt",
+      sessionId: "ses_tail",
+      attempt: 1,
+      cursor: 0,
+    });
+    expect(lifecycleEvents[1]).toMatchObject({
+      type: "stream_dropped",
+      sessionId: "ses_tail",
+      attempt: 1,
+      closeCode: 1006,
+      closeReason: "deployment restart",
+    });
+  });
+
+  it("propagates lifecycle callback exceptions", async () => {
+    const { starcite } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(
+      session.tail({
+        reconnect: false,
+        onLifecycleEvent: () => {
+          throw new Error("observer failure");
+        },
+      })
+    );
+
+    await expect(tailDone).rejects.toThrow("observer failure");
+  });
+
+  it("lists sessions with pagination and metadata filters", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          sessions: [
+            {
+              id: "ses_a",
+              title: "A",
+              metadata: { tenant_id: "acme" },
+              created_at: "2026-02-13T00:00:00Z",
+            },
+          ],
+          next_cursor: "ses_a",
+        }),
+        { status: 200 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const page = await starcite.listSessions({
+      limit: 1,
+      cursor: "ses_0",
+      metadata: { tenant_id: "acme" },
+    });
+
+    expect(page.sessions[0]?.id).toBe("ses_a");
+    expect(page.next_cursor).toBe("ses_a");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions?limit=1&cursor=ses_0&metadata.tenant_id=acme",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("raises a connection error on malformed tail data", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail());
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", { data: "not json" });
+
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteConnectionError);
+  });
+
+  it("fails fast when the tail consumer falls behind buffered batches", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+    const events: TailEvent[] = [];
+    let releaseFirstEvent: (() => void) | undefined;
+    const firstEventGate = new Promise<void>((resolve) => {
+      releaseFirstEvent = resolve;
+    });
+
+    let callbackInvocations = 0;
+    const tailDone = (async () => {
+      for await (const { event } of session.tail({
+        cursor: 0,
+        reconnect: false,
+        maxBufferedBatches: 1,
+      })) {
+        events.push(event);
+        callbackInvocations += 1;
+
+        if (callbackInvocations === 1) {
+          // Keep the first callback pending so later frames accumulate and
+          // trigger the stream's buffered-batch backpressure guard.
+          await firstEventGate;
+        }
+      }
+    })();
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    releaseFirstEvent?.();
+
+    await expect(tailDone).rejects.toBeInstanceOf(StarciteBackpressureError);
+    expect(events[0]?.seq).toBe(1);
+    await tailDone.catch((error) => {
+      const tailError = error as StarciteBackpressureError;
+      expect(tailError.stage).toBe("consumer_backpressure");
+      expect(tailError.sessionId).toBe("ses_tail");
+    });
+  });
+
+  it("syncs session snapshot updates via on('event')", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+    const observedSeqs: number[] = [];
+
+    const unsubscribe = session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2]);
+    expect(session.state()).toMatchObject({
+      lastSeq: 2,
+      syncing: true,
+    });
+    expect(session.state().events.map((event) => event.seq)).toEqual([1, 2]);
+
+    unsubscribe();
+    session.disconnect();
+  });
+
+  it("keeps live sync warm during the default cooldown after unsubscribe", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { starcite, sockets } = buildTailClient(fetchMock, {
+        store: seedSessionStore(),
+      });
+      const session = await starcite.session({ token: makeTailSessionToken() });
+
+      const unsubscribe = session.on("event", () => undefined);
+      await waitForSocketCount(sockets, 1);
+
+      const socket = sockets[0];
+      expect(socket?.closeCallCount).toBe(0);
+
+      unsubscribe();
+      await vi.advanceTimersByTimeAsync(14_999);
+
+      expect(session.state().syncing).toBe(true);
+      expect(socket?.closeCallCount).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(session.state().syncing).toBe(false);
+      expect(socket?.closeCallCount).toBe(1);
+      expect(socket?.closeHistory[0]).toEqual({
+        code: 1000,
+        reason: "aborted",
+      });
+
+      session.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shares one live mirror across multiple handles for the same session", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { starcite, sockets } = buildTailClient(fetchMock, {
+        store: seedSessionStore(),
+      });
+      const sessionToken = makeTailSessionToken();
+      const firstSession = await starcite.session({ token: sessionToken });
+      const secondSession = await starcite.session({ token: sessionToken });
+      const firstObserved: number[] = [];
+      const secondObserved: number[] = [];
+
+      firstSession.on("event", (event) => {
+        firstObserved.push(event.seq);
+      });
+      secondSession.on("event", (event) => {
+        secondObserved.push(event.seq);
+      });
+
+      await waitForSocketCount(sockets, 1);
+
+      sockets[0]?.emit("message", {
+        data: JSON.stringify({
+          seq: 2,
+          type: "content",
+          payload: { text: "first live frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        }),
+      });
+      await waitForValues(firstObserved, 2);
+      await waitForValues(secondObserved, 2);
+
+      firstSession.disconnect();
+      await waitForCondition(() => {
+        return sockets[0]?.closeCallCount === 0;
+      }, "shared mirror to stay open for the second handle");
+
+      sockets[0]?.emit("message", {
+        data: JSON.stringify({
+          seq: 3,
+          type: "content",
+          payload: { text: "second live frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 3,
+        }),
+      });
+      await waitForValues(secondObserved, 3);
+
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0]?.closeCallCount).toBe(0);
+      expect(firstObserved).toEqual([1, 2]);
+      expect(secondObserved).toEqual([1, 2, 3]);
+
+      secondSession.disconnect();
+      await waitForCondition(() => {
+        return (sockets[0]?.closeCallCount ?? 0) === 1;
+      }, "shared mirror to close after the final handle disconnects");
+      expect(sockets[0]?.closeCallCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("evicts idle mirrors after the default cooldown and idle ttl", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { starcite, sockets } = buildTailClient(fetchMock, {
+        store: seedSessionStore(),
+      });
+      const sessionToken = makeTailSessionToken();
+      const firstSession = await starcite.session({ token: sessionToken });
+      const firstObserved: number[] = [];
+
+      const firstUnsubscribe = firstSession.on("event", (event) => {
+        firstObserved.push(event.seq);
+      });
+
+      await waitForSocketCount(sockets, 1);
+      sockets[0]?.emit("message", {
+        data: JSON.stringify({
+          seq: 2,
+          type: "content",
+          payload: { text: "ephemeral frame" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 2,
+        }),
+      });
+      await waitForValues(firstObserved, 2);
+
+      firstUnsubscribe();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(sockets[0]?.closeCallCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(300_000);
+
+      const secondSession = await starcite.session({ token: sessionToken });
+      const replayed: number[] = [];
+      secondSession.on("event", (event) => {
+        replayed.push(event.seq);
+      });
+
+      await waitForSocketCount(sockets, 2);
+      expect(replayed).toEqual([1, 2]);
+      expect(secondSession.state()).toMatchObject({
+        lastSeq: 2,
+      });
+
+      secondSession.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("deduplicates identical repeated events in session snapshot", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+    const observedSeqs: number[] = [];
+
+    const unsubscribe = session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    const repeatedEvent = {
+      seq: 1,
+      type: "content",
+      payload: { text: "first frame" },
+      actor: "agent:drafter",
+      producer_id: "producer:drafter",
+      producer_seq: 1,
+    };
+
+    sockets[0]?.emit("message", { data: JSON.stringify(repeatedEvent) });
+    sockets[0]?.emit("message", { data: JSON.stringify(repeatedEvent) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1]);
+    unsubscribe();
+  });
+
+  it("hydrates session.log from SessionStore persisted state", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const persistedBySession = new Map<
+      string,
+      { cursor: number; events: TailEvent[] }
+    >();
+    const store = {
+      load(sessionId: string) {
+        return persistedBySession.get(sessionId);
+      },
+      save(
+        sessionId: string,
+        state: {
+          cursor: number;
+          events: TailEvent[];
+        }
+      ) {
+        persistedBySession.set(sessionId, {
+          cursor: state.cursor,
+          events: [...state.events],
+        });
+      },
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const sessionToken = makeTailSessionToken();
+    const firstSession = await starcite.session({ token: sessionToken });
+    const unsubscribe = firstSession.on("event", () => undefined);
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    unsubscribe();
+    firstSession.disconnect();
+
+    const secondSession = await starcite.session({ token: sessionToken });
+    expect(secondSession.log.cursor).toBe(2);
+    expect(secondSession.log.events.map((event) => event.seq)).toEqual([1, 2]);
+
+    const replayedSeqs: number[] = [];
+    const stopReplay = secondSession.on("event", (event) => {
+      replayedSeqs.push(event.seq);
+    });
+    expect(replayedSeqs).toEqual([1, 2]);
+    stopReplay();
+    secondSession.disconnect();
+  });
+
+  it("ignores corrupt persisted session state and clears the cache", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const clearStore = vi.fn();
+    const store = {
+      load() {
+        return {
+          cursor: 1,
+          events: [
+            {
+              seq: 2,
+              type: "content",
+              payload: { text: "corrupt cached frame" },
+              actor: "agent:drafter",
+              producer_id: "producer:drafter",
+              producer_seq: 2,
+            },
+          ],
+        };
+      },
+      save() {
+        return;
+      },
+      clear: clearStore,
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    expect(session.log.cursor).toBe(0);
+    expect(session.log.events).toEqual([]);
+    expect(clearStore).toHaveBeenCalledWith("ses_tail");
+
+    session.on("event", () => undefined);
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+      )
+    );
+
+    session.disconnect();
+  });
+
+  it("continues live sync when session store save fails", async () => {
+    const sockets: FakeWebSocket[] = [];
+    let shouldFailSave = true;
+    const saveStore = vi.fn(() => {
+      if (shouldFailSave) {
+        shouldFailSave = false;
+        throw new Error("quota exceeded");
+      }
+    });
+    const store = {
+      load() {
+        return undefined;
+      },
+      save: saveStore,
+    };
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+      websocketFactory: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+
+    await waitForValues(observedSeqs, 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2]);
+    expect(syncErrors).toHaveLength(1);
+    expect(syncErrors[0]?.message).toContain("Session store save failed");
+    expect(saveStore).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(1);
+
+    session.disconnect();
+  });
+
+  it("marks cold-start catch-up events as replay before switching to live", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    const observed: Array<{
+      seq: number;
+      phase: "replay" | "live";
+      replayed: boolean;
+    }> = [];
+
+    session.on("event", (event, context) => {
+      observed.push({
+        seq: event.seq,
+        phase: context.phase,
+        replayed: context.replayed,
+      });
+    });
+
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0"
+      )
+    );
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "chat.user.message",
+        payload: { parts: [{ type: "text", text: "older prompt" }] },
+        actor: "user:alice",
+        producer_id: "producer:alice",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "chat.user.message",
+        payload: { parts: [{ type: "text", text: "newer prompt" }] },
+        actor: "user:alice",
+        producer_id: "producer:alice",
+        producer_seq: 2,
+      }),
+    });
+
+    await waitForValues(observed, 2);
+    expect(observed[0]).toMatchObject({
+      seq: 1,
+      phase: "replay",
+      replayed: true,
+    });
+    expect(observed[1]).toMatchObject({
+      seq: 2,
+      phase: "replay",
+      replayed: true,
+    });
+
+    sockets[0]?.emit("close", { code: 1000, reason: "caught up" });
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=2"
+      )
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "chat.user.message",
+        payload: { parts: [{ type: "text", text: "live prompt" }] },
+        actor: "user:alice",
+        producer_id: "producer:alice",
+        producer_seq: 3,
+      }),
+    });
+
+    await waitForValues(observed, 3);
+    expect(observed[2]).toMatchObject({
+      seq: 3,
+      phase: "live",
+      replayed: false,
+    });
+
+    session.disconnect();
+  });
+
+  it("replays retained events to late session listeners", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+
+    const firstListenerSeqs: number[] = [];
+    const secondListenerSeqs: number[] = [];
+
+    session.on("event", (event) => {
+      firstListenerSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    session.on("event", (event) => {
+      secondListenerSeqs.push(event.seq);
+    });
+
+    expect(secondListenerSeqs).toEqual([1, 2]);
+    expect(firstListenerSeqs).toEqual([1, 2]);
+    session.disconnect();
+  });
+
+  it("recovers from session log gaps by reconnecting from the last applied seq", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "gap frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await waitForSocketCount(sockets, 2);
+    expect(sockets[1]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=1"
+      )
+    );
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observedSeqs).toEqual([1, 2, 3]);
+    session.disconnect();
+  });
+
+  it("routes fatal live-sync failures to on('error') listeners", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", () => undefined);
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "conflict frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:other",
+        producer_seq: 99,
+      }),
+    });
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      if (syncErrors.length > 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(syncErrors).toHaveLength(1);
+    expect(syncErrors[0]).toBeInstanceOf(StarciteError);
+    expect(syncErrors[0]?.message).toContain("Session log conflict for seq 1");
+    session.disconnect();
+  });
+
+  it("retries live sync after non-gap catch-up failures", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({ token: makeTailSessionToken() });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("close", { code: 1006, reason: "dial failed" });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (sockets.length >= 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(sockets.length).toBeGreaterThanOrEqual(2);
+    expect(syncErrors).toHaveLength(1);
+
+    sockets[1]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "recovered frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+
+    await waitForValues(observedSeqs, 1);
+    expect(observedSeqs).toEqual([1]);
+    session.disconnect();
+  });
+
+  it("applies log retention limits in session snapshot", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({
+      token: sessionToken,
+      logOptions: { maxEvents: 2 },
+    });
+
+    const unsubscribe = session.on("event", () => undefined);
+    await waitForSocketCount(sockets, 1);
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const snapshot = session.state();
+    expect(snapshot.lastSeq).toBe(3);
+    expect(snapshot.events.map((event) => event.seq)).toEqual([2, 3]);
+    unsubscribe();
+    session.disconnect();
+  });
+
+  it("ignores duplicates that are older than retained log history", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const session = await starcite.session({
+      token: makeTailSessionToken(),
+      logOptions: { maxEvents: 2 },
+    });
+    const observedSeqs: number[] = [];
+    const syncErrors: Error[] = [];
+
+    session.on("error", (error) => {
+      syncErrors.push(error);
+    });
+    session.on("event", (event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 2,
+        type: "content",
+        payload: { text: "second frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 2,
+      }),
+    });
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 3,
+        type: "content",
+        payload: { text: "third frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 3,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    sockets[0]?.emit("message", {
+      data: JSON.stringify({
+        seq: 1,
+        type: "content",
+        payload: { text: "first frame" },
+        actor: "agent:drafter",
+        producer_id: "producer:drafter",
+        producer_seq: 1,
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(session.state().events.map((event) => event.seq)).toEqual([2, 3]);
+    expect(observedSeqs).toEqual([1, 2, 3]);
+    expect(syncErrors).toEqual([]);
+    session.disconnect();
+  });
+
+  it("does not fail fast when maxBufferedBatches is provided", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail({ maxBufferedBatches: 0 }));
+    await waitForSocketCount(sockets, 1);
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toEqual([]);
+  });
+
+  it("does not fail fast when batchSize is provided", async () => {
+    const { starcite, sockets } = buildTailClient(fetchMock);
+    const sessionToken = makeTailSessionToken();
+    const session = await starcite.session({ token: sessionToken });
+
+    const tailDone = Array.fromAsync(session.tail({ batchSize: 0 }));
+    await waitForSocketCount(sockets, 1);
+    expect(sockets[0]?.url).toEqual(
+      expect.stringContaining(
+        "ws://localhost:4000/v1/sessions/ses_tail/tail?cursor=0&batch_size=0"
+      )
+    );
+    sockets[0]?.emit("close", { code: 1000 });
+    await expect(tailDone).resolves.toEqual([]);
   });
 });

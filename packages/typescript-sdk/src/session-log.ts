@@ -26,6 +26,73 @@ export class SessionLogConflictError extends StarciteError {
   }
 }
 
+function sortCanonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortCanonicalValue(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(
+      ([_key, entryValue]) => entryValue !== undefined
+    );
+    entries.sort(([left], [right]) => left.localeCompare(right));
+    return Object.fromEntries(
+      entries.map(([key, entryValue]) => [key, sortCanonicalValue(entryValue)])
+    );
+  }
+
+  return value;
+}
+
+function normalizeOptionalObject(
+  value: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = sortCanonicalValue(value);
+  if (
+    !normalized ||
+    typeof normalized !== "object" ||
+    Array.isArray(normalized)
+  ) {
+    return undefined;
+  }
+
+  return Object.keys(normalized).length > 0
+    ? (normalized as Record<string, unknown>)
+    : undefined;
+}
+
+function normalizeMetadata(
+  metadata: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const { starcite_principal: _starcitePrincipal, ...rest } = metadata;
+  return normalizeOptionalObject(rest);
+}
+
+function canonicalizeEvent(event: TailEvent): string {
+  return JSON.stringify(
+    sortCanonicalValue({
+      seq: event.seq,
+      type: event.type,
+      payload: event.payload,
+      actor: event.actor,
+      producer_id: event.producer_id,
+      producer_seq: event.producer_seq,
+      source: event.source,
+      metadata: normalizeMetadata(event.metadata),
+      refs: normalizeOptionalObject(event.refs),
+      idempotency_key: event.idempotency_key,
+    })
+  );
+}
+
 /**
  * Canonical in-memory log for one session.
  *
@@ -97,7 +164,7 @@ export class SessionLog {
       }
 
       nextHistory.push(event);
-      nextCanonicalBySeq.set(event.seq, JSON.stringify(event));
+      nextCanonicalBySeq.set(event.seq, canonicalizeEvent(event));
       previousSeq = event.seq;
     }
 
@@ -141,7 +208,7 @@ export class SessionLog {
     const existingCanonical = this.canonicalBySeq.get(event.seq);
 
     if (event.seq <= this.appliedSeq) {
-      const incomingCanonical = JSON.stringify(event);
+      const incomingCanonical = canonicalizeEvent(event);
       if (!existingCanonical) {
         const oldestRetainedSeq = this.history[0]?.seq;
         if (oldestRetainedSeq === undefined || event.seq < oldestRetainedSeq) {
@@ -170,7 +237,7 @@ export class SessionLog {
     }
 
     this.history.push(event);
-    this.canonicalBySeq.set(event.seq, JSON.stringify(event));
+    this.canonicalBySeq.set(event.seq, canonicalizeEvent(event));
     this.appliedSeq = event.seq;
     if (event.cursor) {
       this.appliedCursor = { ...event.cursor };

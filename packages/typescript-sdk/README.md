@@ -203,6 +203,7 @@ import {
   type AppendResult,
   type SessionEvent,
   type SessionStore,
+  type StarciteWebSocket,
 } from "@starcite/sdk";
 
 // ── Construction ────────────────────────────────────────────────────────────
@@ -212,13 +213,23 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
-  store: new MemoryStore(), // log state + resume cursor + event persistence
+  websocketFactory: (url) => new WebSocket(url),
+  store: new MemoryStore(), // cursor + event persistence
 });
+
+// WebSocketFactory — simplified, auth is always in access_token query string.
+type WebSocketFactory = (url: string) => StarciteWebSocket;
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
 
 const alice = starcite.user({ id: "u_123" });
 const bot = starcite.agent({ id: "planner" });
+
+// ── Lifecycle (backend-only, live-only for now) ────────────────────────────
+
+const stopCreated = starcite.on("session.created", (event) => {
+  console.log("new session", event.session_id);
+});
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
@@ -242,8 +253,7 @@ session.log; // SessionLog — canonical source of truth
 // ── Session log ─────────────────────────────────────────────────────────────
 
 session.log.events; // readonly SessionEvent[] — ordered by seq, no gaps
-session.log.cursor; // { epoch, seq } | undefined — last tail resume cursor
-session.log.lastSeq; // number — highest applied seq
+session.log.cursor; // number — highest applied seq
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -267,47 +277,46 @@ session.resetAppendQueue(); // drop queued appends and rotate managed producer i
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
 // Late subscribers get synchronous replay of log.events, then live events.
-// The shared socket connects lazily on first subscriber and disconnects when all leave.
 const unsub = session.on("event", (event) => {
   console.log(event.seq);
 });
 
-// Transport failures surface here.
+// Fatal errors only (for example token expiry). Transient drops auto-reconnect.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
 });
 
-const unsubGap = session.on("gap", (gap) => {
-  console.warn(gap.reason, gap.next_cursor);
-});
-
 unsub();
 unsubErr();
-unsubGap();
 
 // ── Teardown ────────────────────────────────────────────────────────────────
 
-session.disconnect(); // leaves the channel immediately, removes all listeners
+session.disconnect(); // stops WS immediately, removes all listeners
 ```
 
-## Streaming Model
+## Tail Reliability Controls
 
-- `session.on("event")` is the only streaming API.
-- Listeners replay retained `session.log.events` synchronously by default, then receive live events.
-- The session resumes from `session.log.cursor` when a store is configured.
-- `session.on("gap")` surfaces explicit server gap payloads with `from_cursor`, `next_cursor`, `committed_cursor`, and `earliest_available_cursor`.
-- Use `SessionOnEventOptions.agent` to filter `agent:<name>` events without opening another channel.
+`SessionTailOptions` supports:
+
+- `cursor`, `batchSize`, `agent`
+- `follow`, `reconnect`, `reconnectPolicy`
+- `connectionTimeoutMs`, `inactivityTimeoutMs`
+- `maxBufferedBatches`
+- `signal`
+- `onLifecycleEvent`
+
+This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
 
 ## Session Stores
 
-`new Starcite({ store })` accepts a `SessionStore` for `lastSeq`, resume
-`cursor`, retained events, and the append outbox across session rebinds.
+`new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
+and the append outbox across session rebinds.
 
-- No default store is configured. When omitted, fresh attaches replay from the
-  start of the server tail.
+- No default store is configured. When omitted, startup catch-up replays from
+  stream cursor `0`.
 - Bring your own by implementing:
   - `load(sessionId)`
-  - `save(sessionId, { lastSeq, cursor, events })`
+  - `save(sessionId, { cursor, events })`
   - optional `clear(sessionId)`
 - `MemoryStore` and `LocalStorageSessionStore` persist the append queue through
   the same contract.
@@ -319,8 +328,9 @@ session.disconnect(); // leaves the channel immediately, removes all listeners
 - `StarciteApiError` for non-2xx responses
 - `StarciteConnectionError` for transport/JSON issues
 - `StarciteTailError` for streaming failures
-- `StarciteTailGapError` when the server reports an explicit gap and no gap listener handles it
-- `StarciteTokenExpiredError` when the server emits `token_expired`
+- `StarciteTokenExpiredError` when close code `4001` is observed
+- `StarciteRetryLimitError` when reconnect budget is exhausted
+- `StarciteBackpressureError` when consumer buffering limits are exceeded
 
 ## Local Development
 
