@@ -13,13 +13,13 @@ import type {
   TailEvent,
   TailGap,
   TailLifecycleEvent,
-  TailReconnectPolicy,
   TailTokenExpiredPayload,
 } from "../types";
 import type {
   TailSocketAuthContext,
   TailSocketLifecycleEvent,
-  TailSocketManagerRegistry,
+  TailSocketManager,
+  TailSocketReconnectPolicy,
 } from "./socket-manager";
 
 interface ResolvedReconnectPolicy {
@@ -36,24 +36,6 @@ interface LifecycleCallbacks {
   fail: (error: unknown) => void;
   resetInactivityTimer: () => void;
   scheduleCatchUpClose: () => void;
-}
-
-function resolveReconnectPolicy(
-  policy: TailReconnectPolicy | undefined
-): ResolvedReconnectPolicy {
-  const mode = policy?.mode === "fixed" ? "fixed" : "exponential";
-  const initialDelayMs = policy?.initialDelayMs ?? 500;
-
-  return {
-    initialDelayMs,
-    jitterRatio: policy?.jitterRatio ?? 0.2,
-    maxAttempts: policy?.maxAttempts ?? Number.POSITIVE_INFINITY,
-    maxDelayMs:
-      policy?.maxDelayMs ??
-      (mode === "fixed" ? initialDelayMs : Math.max(initialDelayMs, 15_000)),
-    mode,
-    multiplier: mode === "fixed" ? 1 : (policy?.multiplier ?? 2),
-  };
 }
 
 function describeClose(closeCode?: number, closeReason?: string): string {
@@ -77,7 +59,7 @@ export class TailStream {
   private readonly customWebSocketFactoryProvided: boolean;
   private readonly sessionId: string;
   private readonly socketAuth: TailSocketAuthContext;
-  private readonly socketManagerRegistry: TailSocketManagerRegistry;
+  private readonly socketManager: TailSocketManager;
   private readonly socketUrl: string;
 
   private readonly agent: string | undefined;
@@ -102,15 +84,19 @@ export class TailStream {
     options: SessionTailOptions;
     sessionId: string;
     socketAuth: TailSocketAuthContext;
-    socketManagerRegistry: TailSocketManagerRegistry;
+    socketManager: TailSocketManager;
     socketUrl: string;
   }) {
     const opts = input.options;
+    const reconnectPolicy = opts.reconnectPolicy;
+    const reconnectMode =
+      reconnectPolicy?.mode === "fixed" ? "fixed" : "exponential";
+    const initialReconnectDelayMs = reconnectPolicy?.initialDelayMs ?? 500;
 
     this.customWebSocketFactoryProvided = input.customWebSocketFactoryProvided;
     this.sessionId = input.sessionId;
     this.socketAuth = input.socketAuth;
-    this.socketManagerRegistry = input.socketManagerRegistry;
+    this.socketManager = input.socketManager;
     this.socketUrl = input.socketUrl;
 
     this.agent = opts.agent;
@@ -123,7 +109,19 @@ export class TailStream {
     this.maxBufferedBatches = opts.maxBufferedBatches ?? 1024;
     this.onGap = opts.onGap;
     this.onLifecycleEvent = opts.onLifecycleEvent;
-    this.reconnectPolicy = resolveReconnectPolicy(opts.reconnectPolicy);
+    this.reconnectPolicy = {
+      initialDelayMs: initialReconnectDelayMs,
+      jitterRatio: reconnectPolicy?.jitterRatio ?? 0.2,
+      maxAttempts: reconnectPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY,
+      maxDelayMs:
+        reconnectPolicy?.maxDelayMs ??
+        (reconnectMode === "fixed"
+          ? initialReconnectDelayMs
+          : Math.max(initialReconnectDelayMs, 15_000)),
+      mode: reconnectMode,
+      multiplier:
+        reconnectMode === "fixed" ? 1 : (reconnectPolicy?.multiplier ?? 2),
+    };
     this.shouldReconnect = this.follow ? (opts.reconnect ?? true) : false;
     this.signal = opts.signal;
   }
@@ -414,18 +412,20 @@ export class TailStream {
       }
     };
 
-    const manager = this.socketManagerRegistry.getManager({
-      auth: this.socketAuth,
-      socketUrl: this.socketUrl,
-    });
-
     if (this.signal?.aborted) {
       streamReason = "aborted";
       finish();
     } else {
       this.signal?.addEventListener("abort", abortListener, { once: true });
+      const socketReconnectPolicy: TailSocketReconnectPolicy = {
+        initialDelayMs: this.reconnectPolicy.initialDelayMs,
+        jitterRatio: this.reconnectPolicy.jitterRatio,
+        maxDelayMs: this.reconnectPolicy.maxDelayMs,
+        mode: this.reconnectPolicy.mode,
+        multiplier: this.reconnectPolicy.multiplier,
+      };
 
-      unsubscribe = manager.subscribe({
+      unsubscribe = this.socketManager.subscribe({
         batchSize: this.batchSize,
         connectionTimeoutMs: this.connectionTimeoutMs,
         cursor: this.cursor,
@@ -484,17 +484,10 @@ export class TailStream {
             )
           );
         },
-        reconnectPolicy: this.shouldReconnect
-          ? {
-              initialDelayMs: this.reconnectPolicy.initialDelayMs,
-              jitterRatio: this.reconnectPolicy.jitterRatio,
-              maxAttempts: this.reconnectPolicy.maxAttempts,
-              maxDelayMs: this.reconnectPolicy.maxDelayMs,
-              mode: this.reconnectPolicy.mode,
-              multiplier: this.reconnectPolicy.multiplier,
-            }
-          : undefined,
+        reconnectPolicy: socketReconnectPolicy,
         sessionId: this.sessionId,
+        socketAuth: this.socketAuth,
+        socketUrl: this.socketUrl,
       });
     }
 

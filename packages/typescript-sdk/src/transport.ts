@@ -6,7 +6,7 @@ import {
 } from "./errors";
 import type {
   TailSocketAuthContext,
-  TailSocketManagerRegistry,
+  TailSocketManager,
 } from "./tail/socket-manager";
 import type { StarciteWebSocket } from "./types";
 
@@ -23,7 +23,7 @@ export interface TransportConfig {
   readonly websocketBaseUrl: string;
   readonly customWebSocketFactoryProvided: boolean;
   readonly socketAuth: TailSocketAuthContext;
-  readonly tailSocketRegistry: TailSocketManagerRegistry;
+  readonly tailSocketManager: TailSocketManager;
   authorization: string | null;
   readonly fetchFn: typeof fetch;
   readonly headers: Headers;

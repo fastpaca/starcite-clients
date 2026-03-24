@@ -651,7 +651,7 @@ export class StarciteSession {
         this.transport.customWebSocketFactoryProvided,
       sessionId: this.id,
       socketAuth: this.transport.socketAuth,
-      socketManagerRegistry: this.transport.tailSocketRegistry,
+      socketManager: this.transport.tailSocketManager,
       socketUrl: `${this.transport.websocketBaseUrl}/socket`,
     })
       .subscribe((batch) => {
@@ -833,7 +833,7 @@ export class StarciteSession {
         this.transport.customWebSocketFactoryProvided,
       sessionId: this.id,
       socketAuth: this.transport.socketAuth,
-      socketManagerRegistry: this.transport.tailSocketRegistry,
+      socketManager: this.transport.tailSocketManager,
       socketUrl: `${this.transport.websocketBaseUrl}/socket`,
     });
 

@@ -6,7 +6,7 @@ import {
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
-import { TailSocketManagerRegistry } from "./tail/socket-manager";
+import { TailSocketManager } from "./tail/socket-manager";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
@@ -134,7 +134,7 @@ export class Starcite {
         key: socketAuthToken ? `api:${socketAuthToken}` : "anonymous",
         token: socketAuthToken,
       },
-      tailSocketRegistry: new TailSocketManagerRegistry(),
+      tailSocketManager: new TailSocketManager(),
       fetchFn,
       headers,
       websocketFactory,
