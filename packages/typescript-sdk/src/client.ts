@@ -9,7 +9,6 @@ import { StarciteSession } from "./session";
 import { TailSocketManager } from "./tail/socket-manager";
 import type { TransportConfig } from "./transport";
 import {
-  defaultWebSocketFactory,
   request,
   requestWithBaseUrl,
   toApiBaseUrl,
@@ -119,8 +118,6 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiKey);
 
-    const websocketFactory =
-      options.websocketFactory ?? defaultWebSocketFactory;
     const socketAuthToken = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
@@ -137,7 +134,6 @@ export class Starcite {
       tailSocketManager: new TailSocketManager(),
       fetchFn,
       headers,
-      websocketFactory,
     };
   }
 

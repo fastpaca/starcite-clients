@@ -8,7 +8,6 @@ import type {
   TailSocketAuthContext,
   TailSocketManager,
 } from "./tail/socket-manager";
-import type { StarciteWebSocket } from "./types";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -27,7 +26,6 @@ export interface TransportConfig {
   authorization: string | null;
   readonly fetchFn: typeof fetch;
   readonly headers: Headers;
-  readonly websocketFactory: (url: string) => StarciteWebSocket;
 }
 
 function parseHttpUrl(value: string, context: string): URL {
@@ -56,19 +54,6 @@ export function toWebSocketBaseUrl(apiBaseUrl: string): string {
   const url = parseHttpUrl(apiBaseUrl, "apiBaseUrl");
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString().replace(TRAILING_SLASHES_REGEX, "");
-}
-
-/**
- * Default websocket connector used when no custom factory is provided.
- */
-export function defaultWebSocketFactory(url: string): StarciteWebSocket {
-  if (typeof WebSocket === "undefined") {
-    throw new StarciteError(
-      "WebSocket is not available in this runtime. Provide websocketFactory in StarciteOptions."
-    );
-  }
-
-  return new WebSocket(url) as unknown as StarciteWebSocket;
 }
 
 /**

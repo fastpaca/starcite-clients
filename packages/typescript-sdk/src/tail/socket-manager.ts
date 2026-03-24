@@ -77,7 +77,6 @@ interface TailSocketConsumer {
 interface ConnectionState {
   auth: TailSocketAuthContext;
   closedByClient: boolean;
-  key: string;
   manualReconnectTimer: ReturnType<typeof setTimeout> | undefined;
   reconnectContext:
     | {
@@ -335,17 +334,15 @@ export class TailSocketManager {
           policy.initialDelayMs * policy.multiplier ** exponent,
           policy.maxDelayMs
         );
-
+        const spreadMs = Math.round(baseDelayMs * policy.jitterRatio);
+        const minimumDelayMs = Math.max(0, baseDelayMs - spreadMs);
+        const maximumDelayMs = baseDelayMs + spreadMs;
         const candidateDelayMs =
-          policy.jitterRatio <= 0
+          spreadMs === 0
             ? baseDelayMs
             : Math.round(
-                Math.max(
-                  0,
-                  baseDelayMs - Math.round(baseDelayMs * policy.jitterRatio)
-                ) +
-                  Math.random() *
-                    (Math.round(baseDelayMs * policy.jitterRatio) * 2)
+                minimumDelayMs +
+                  Math.random() * (maximumDelayMs - minimumDelayMs)
               );
 
         delayMs =
@@ -356,13 +353,6 @@ export class TailSocketManager {
     }
 
     return delayMs ?? 500;
-  }
-
-  private connectionKey(
-    socketUrl: string,
-    auth: TailSocketAuthContext
-  ): string {
-    return `${socketUrl}|${auth.key}`;
   }
 
   private ensureConnected(connection: ConnectionState): void {
@@ -500,14 +490,13 @@ export class TailSocketManager {
     socketUrl: string,
     auth: TailSocketAuthContext
   ): ConnectionState {
-    const key = this.connectionKey(socketUrl, auth);
+    const key = `${socketUrl}|${auth.key}`;
     let connection = this.connections.get(key);
 
     if (!connection) {
       connection = {
         auth,
         closedByClient: false,
-        key,
         manualReconnectTimer: undefined,
         reconnectContext: undefined,
         sawTransportErrorSinceOpen: false,
@@ -671,7 +660,7 @@ export class TailSocketManager {
       connection.socket = undefined;
     }
 
-    this.connections.delete(connection.key);
+    this.connections.delete(`${connection.socketUrl}|${connection.auth.key}`);
   }
 
   private unsubscribe(

@@ -17,26 +17,9 @@ import type {
 } from "../types";
 import type {
   TailSocketAuthContext,
-  TailSocketLifecycleEvent,
   TailSocketManager,
   TailSocketReconnectPolicy,
 } from "./socket-manager";
-
-interface ResolvedReconnectPolicy {
-  initialDelayMs: number;
-  jitterRatio: number;
-  maxAttempts: number;
-  maxDelayMs: number;
-  mode: "fixed" | "exponential";
-  multiplier: number;
-}
-
-interface LifecycleCallbacks {
-  emitLifecycle: (event: TailLifecycleEvent) => void;
-  fail: (error: unknown) => void;
-  resetInactivityTimer: () => void;
-  scheduleCatchUpClose: () => void;
-}
 
 function describeClose(closeCode?: number, closeReason?: string): string {
   if (closeCode === undefined && !closeReason) {
@@ -73,7 +56,8 @@ export class TailStream {
   private readonly onLifecycleEvent:
     | ((event: TailLifecycleEvent) => void)
     | undefined;
-  private readonly reconnectPolicy: ResolvedReconnectPolicy;
+  private readonly maxReconnectAttempts: number;
+  private readonly reconnectPolicy: TailSocketReconnectPolicy;
   private readonly shouldReconnect: boolean;
   private readonly signal: AbortSignal | undefined;
 
@@ -109,10 +93,11 @@ export class TailStream {
     this.maxBufferedBatches = opts.maxBufferedBatches ?? 1024;
     this.onGap = opts.onGap;
     this.onLifecycleEvent = opts.onLifecycleEvent;
+    this.maxReconnectAttempts =
+      reconnectPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY;
     this.reconnectPolicy = {
       initialDelayMs: initialReconnectDelayMs,
       jitterRatio: reconnectPolicy?.jitterRatio ?? 0.2,
-      maxAttempts: reconnectPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY,
       maxDelayMs:
         reconnectPolicy?.maxDelayMs ??
         (reconnectMode === "fixed"
@@ -124,130 +109,6 @@ export class TailStream {
     };
     this.shouldReconnect = this.follow ? (opts.reconnect ?? true) : false;
     this.signal = opts.signal;
-  }
-
-  private handleConnectAttempt(
-    event: Extract<TailSocketLifecycleEvent, { type: "connect_attempt" }>,
-    callbacks: LifecycleCallbacks
-  ): void {
-    callbacks.emitLifecycle({
-      attempt: event.attempt,
-      cursor: this.cursor,
-      sessionId: this.sessionId,
-      type: "connect_attempt",
-    });
-    callbacks.resetInactivityTimer();
-    callbacks.scheduleCatchUpClose();
-  }
-
-  private handleConnectFailed(
-    event: Extract<TailSocketLifecycleEvent, { type: "connect_failed" }>,
-    fail: (error: unknown) => void
-  ): string {
-    if (!this.shouldReconnect) {
-      fail(
-        new StarciteTailError(
-          `Tail connection failed for session '${this.sessionId}': ${event.rootCause}`,
-          {
-            attempts: Math.max(0, event.attempt - 1),
-            sessionId: this.sessionId,
-            stage: "connect",
-          }
-        )
-      );
-    }
-
-    return event.rootCause;
-  }
-
-  private handleReconnectScheduled(
-    event: Extract<TailSocketLifecycleEvent, { type: "reconnect_scheduled" }>,
-    callbacks: LifecycleCallbacks,
-    lastConnectFailureReason: string | undefined
-  ): void {
-    if (event.attempt > this.reconnectPolicy.maxAttempts) {
-      const message =
-        event.trigger === "connect_failed"
-          ? `Tail connection failed for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s): ${lastConnectFailureReason ?? "Unknown error"}`
-          : `Tail connection dropped for session '${this.sessionId}' after ${this.reconnectPolicy.maxAttempts} reconnect attempt(s) (${describeClose(event.closeCode, event.closeReason)})`;
-      callbacks.fail(
-        new StarciteRetryLimitError(message, {
-          attempts: event.attempt,
-          closeCode: event.closeCode,
-          closeReason: event.closeReason,
-          sessionId: this.sessionId,
-        })
-      );
-      return;
-    }
-
-    callbacks.emitLifecycle({
-      attempt: event.attempt,
-      closeCode: event.closeCode,
-      closeReason: event.closeReason,
-      delayMs: event.delayMs,
-      sessionId: this.sessionId,
-      trigger: event.trigger,
-      type: "reconnect_scheduled",
-    });
-  }
-
-  private handleDropped(
-    event: Extract<TailSocketLifecycleEvent, { type: "dropped" }>,
-    callbacks: LifecycleCallbacks
-  ): void {
-    callbacks.emitLifecycle({
-      attempt: event.attempt,
-      closeCode: event.closeCode,
-      closeReason: event.closeReason,
-      sessionId: this.sessionId,
-      type: "stream_dropped",
-    });
-
-    if (!this.shouldReconnect) {
-      callbacks.fail(
-        new StarciteTailError(
-          `Tail connection dropped for session '${this.sessionId}' (${describeClose(event.closeCode, event.closeReason)})`,
-          {
-            attempts: Math.max(0, event.attempt - 1),
-            closeCode: event.closeCode,
-            closeReason: event.closeReason,
-            sessionId: this.sessionId,
-            stage: "stream",
-          }
-        )
-      );
-    }
-  }
-
-  private handleSocketLifecycleEvent(
-    event: TailSocketLifecycleEvent,
-    callbacks: LifecycleCallbacks,
-    lastConnectFailureReason: string | undefined
-  ): string | undefined {
-    switch (event.type) {
-      case "connect_attempt":
-        this.handleConnectAttempt(event, callbacks);
-        return lastConnectFailureReason;
-      case "connect_failed":
-        return this.handleConnectFailed(event, callbacks.fail);
-      case "reconnect_scheduled":
-        this.handleReconnectScheduled(
-          event,
-          callbacks,
-          lastConnectFailureReason
-        );
-        return lastConnectFailureReason;
-      case "dropped":
-        this.handleDropped(event, callbacks);
-        return lastConnectFailureReason;
-      case "open":
-        callbacks.scheduleCatchUpClose();
-        callbacks.resetInactivityTimer();
-        return lastConnectFailureReason;
-      default:
-        return lastConnectFailureReason;
-    }
   }
 
   async subscribe(
@@ -412,18 +273,94 @@ export class TailStream {
       }
     };
 
+    const handleConnectFailure = (rootCause: string, attempt: number): void => {
+      lastConnectFailureReason = rootCause;
+      if (this.shouldReconnect) {
+        return;
+      }
+
+      fail(
+        new StarciteTailError(
+          `Tail connection failed for session '${this.sessionId}': ${rootCause}`,
+          {
+            attempts: Math.max(0, attempt - 1),
+            sessionId: this.sessionId,
+            stage: "connect",
+          }
+        )
+      );
+    };
+
+    const handleReconnectScheduled = (event: {
+      attempt: number;
+      closeCode?: number;
+      closeReason?: string;
+      delayMs: number;
+      trigger: "connect_failed" | "dropped";
+    }): void => {
+      if (event.attempt > this.maxReconnectAttempts) {
+        const message =
+          event.trigger === "connect_failed"
+            ? `Tail connection failed for session '${this.sessionId}' after ${this.maxReconnectAttempts} reconnect attempt(s): ${lastConnectFailureReason ?? "Unknown error"}`
+            : `Tail connection dropped for session '${this.sessionId}' after ${this.maxReconnectAttempts} reconnect attempt(s) (${describeClose(event.closeCode, event.closeReason)})`;
+        fail(
+          new StarciteRetryLimitError(message, {
+            attempts: event.attempt,
+            closeCode: event.closeCode,
+            closeReason: event.closeReason,
+            sessionId: this.sessionId,
+          })
+        );
+        return;
+      }
+
+      emitLifecycle({
+        attempt: event.attempt,
+        closeCode: event.closeCode,
+        closeReason: event.closeReason,
+        delayMs: event.delayMs,
+        sessionId: this.sessionId,
+        trigger: event.trigger,
+        type: "reconnect_scheduled",
+      });
+    };
+
+    const handleDropped = (event: {
+      attempt: number;
+      closeCode?: number;
+      closeReason?: string;
+    }): void => {
+      emitLifecycle({
+        attempt: event.attempt,
+        closeCode: event.closeCode,
+        closeReason: event.closeReason,
+        sessionId: this.sessionId,
+        type: "stream_dropped",
+      });
+
+      if (this.shouldReconnect) {
+        return;
+      }
+
+      fail(
+        new StarciteTailError(
+          `Tail connection dropped for session '${this.sessionId}' (${describeClose(event.closeCode, event.closeReason)})`,
+          {
+            attempts: Math.max(0, event.attempt - 1),
+            closeCode: event.closeCode,
+            closeReason: event.closeReason,
+            sessionId: this.sessionId,
+            stage: "stream",
+          }
+        )
+      );
+    };
+
     if (this.signal?.aborted) {
       streamReason = "aborted";
       finish();
     } else {
       this.signal?.addEventListener("abort", abortListener, { once: true });
-      const socketReconnectPolicy: TailSocketReconnectPolicy = {
-        initialDelayMs: this.reconnectPolicy.initialDelayMs,
-        jitterRatio: this.reconnectPolicy.jitterRatio,
-        maxDelayMs: this.reconnectPolicy.maxDelayMs,
-        mode: this.reconnectPolicy.mode,
-        multiplier: this.reconnectPolicy.multiplier,
-      };
 
       unsubscribe = this.socketManager.subscribe({
         batchSize: this.batchSize,
@@ -462,16 +399,33 @@ export class TailStream {
         },
         onGap: handleGap,
         onLifecycle: (event) => {
-          lastConnectFailureReason = this.handleSocketLifecycleEvent(
-            event,
-            {
-              emitLifecycle,
-              fail,
-              resetInactivityTimer,
-              scheduleCatchUpClose,
-            },
-            lastConnectFailureReason
-          );
+          switch (event.type) {
+            case "connect_attempt":
+              emitLifecycle({
+                attempt: event.attempt,
+                cursor: this.cursor,
+                sessionId: this.sessionId,
+                type: "connect_attempt",
+              });
+              resetInactivityTimer();
+              scheduleCatchUpClose();
+              return;
+            case "connect_failed":
+              handleConnectFailure(event.rootCause, event.attempt);
+              return;
+            case "reconnect_scheduled":
+              handleReconnectScheduled(event);
+              return;
+            case "dropped":
+              handleDropped(event);
+              return;
+            case "open":
+              scheduleCatchUpClose();
+              resetInactivityTimer();
+              return;
+            default:
+              return;
+          }
         },
         onTokenExpired: (payload: TailTokenExpiredPayload) => {
           fail(
@@ -484,7 +438,7 @@ export class TailStream {
             )
           );
         },
-        reconnectPolicy: socketReconnectPolicy,
+        reconnectPolicy: this.reconnectPolicy,
         sessionId: this.sessionId,
         socketAuth: this.socketAuth,
         socketUrl: this.socketUrl,
