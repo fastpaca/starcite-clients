@@ -114,6 +114,11 @@ interface TailSession {
 export class TailSocketManager {
   private readonly connections = new Map<string, ConnectionState>();
 
+  /**
+   * Maintains one shared Phoenix socket per auth context and one joined
+   * `tail:<sessionId>` channel per active session topic. Multiple local SDK
+   * consumers can attach to the same TailSession and receive the same events.
+   */
   subscribe(input: {
     batchSize?: number;
     connectionTimeoutMs: number;
@@ -146,6 +151,8 @@ export class TailSocketManager {
     const existingSession = connection.sessions.get(input.sessionId);
     if (existingSession) {
       existingSession.consumers.add(consumer);
+      // A second local subscriber must catch up from the existing channel's
+      // buffered history instead of opening a second Phoenix channel.
       const bufferedEvents = existingSession.history.filter((event) => {
         return this.isEventAfterCursor(event, input.cursor);
       });
@@ -165,6 +172,8 @@ export class TailSocketManager {
     const channel = this.ensureSocket(connection).channel(
       `tail:${input.sessionId}`,
       () => {
+        // Phoenix re-evaluates channel params on rejoin, so this closure always
+        // sends the session's latest resume cursor instead of the original one.
         const payload: {
           batch_size?: number;
           cursor: TailCursor;
@@ -197,6 +206,8 @@ export class TailSocketManager {
 
     const rejoin = channel.rejoin.bind(channel);
     channel.rejoin = (timeout?: number) => {
+      // Phoenix tracks socket reconnects for us, but we still need per-session
+      // attempt accounting for lifecycle events and timeout enforcement.
       this.startAttempt(session);
       return rejoin(timeout);
     };
@@ -394,6 +405,8 @@ export class TailSocketManager {
           trigger: "dropped" as const,
         };
 
+        // Phoenix invokes this while it is scheduling its own reconnect work.
+        // Defer our fan-out so consumers observe the updated session state.
         queueMicrotask(() => {
           this.broadcastAll(connection, (session) => {
             this.clearConnectionTimeouts(session);
@@ -471,6 +484,8 @@ export class TailSocketManager {
       }
 
       if (establishedConnections > 0) {
+        // Phoenix will follow an established transport error with onClose. Keep
+        // this marker so a later close(1000) is still treated as a drop.
         connection.sawTransportErrorSinceOpen = true;
         return;
       }
@@ -519,6 +534,9 @@ export class TailSocketManager {
   }
 
   private isEventAfterCursor(event: TailEvent, cursor: TailCursor): boolean {
+    // Local subscribers share one joined channel, so late subscribers replay
+    // from buffered channel history by comparing each event against their
+    // requested resume cursor.
     if (typeof cursor === "number") {
       return event.seq > cursor;
     }
@@ -640,6 +658,8 @@ export class TailSocketManager {
       return;
     }
 
+    // Phoenix does not reconnect after a normal close code. When we know that
+    // close(1000) followed a transport error, schedule one reconnect ourselves.
     const delayMs = this.computeReconnectDelay(
       connection,
       Math.max(
@@ -718,6 +738,8 @@ export class TailSocketManager {
       return;
     }
 
+    // The physical channel only goes away after the last local consumer for
+    // that session detaches.
     session.channel.off("events", session.eventBindingRef);
     session.channel.off("gap", session.gapBindingRef);
     session.channel.off("token_expired", session.tokenExpiredBindingRef);
