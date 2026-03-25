@@ -1,11 +1,8 @@
-import {
-  StarciteApiError,
-  StarciteClient,
-} from "../packages/typescript-sdk/src/index.ts";
+import { Starcite, StarciteApiError } from "../packages/typescript-sdk/src/index.ts";
 
 const DEFAULT_BASE_URL = "https://api.starcite.io";
 const DEFAULT_TAIL_TIMEOUT_MS = 15_000;
-const DEFAULT_TAIL_BATCH_SIZE = 50;
+const DEFAULT_SETTLE_MS = 1_000;
 
 interface LiveSmokeResult {
   baseUrl: string;
@@ -20,7 +17,6 @@ interface LiveSmokeResult {
   tailReplay: {
     ok: boolean;
     observedEvents: number;
-    lifecycle: string[];
   };
 }
 
@@ -76,9 +72,9 @@ async function main(): Promise<void> {
   const baseUrl = readBaseUrl();
   const tailTimeoutMs = readTailTimeoutMs();
   const requireListSessions = shouldRequireListSessions();
-  const client = new StarciteClient({ baseUrl, apiKey });
-
-  const session = await client.create({
+  const client = new Starcite({ baseUrl, apiKey });
+  const session = await client.session({
+    identity: client.agent({ id: "live-smoke" }),
     title: `live-smoke-${new Date().toISOString()}`,
     metadata: {
       source: "scripts/live-smoke.ts",
@@ -94,7 +90,6 @@ async function main(): Promise<void> {
     tailReplay: {
       ok: false,
       observedEvents: 0,
-      lifecycle: [],
     },
   };
 
@@ -117,26 +112,70 @@ async function main(): Promise<void> {
     }
   }
 
-  const lifecycleEvents: string[] = [];
   let observedEvents = 0;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), tailTimeoutMs);
 
   try {
-    await session.tailBatches(
-      (batch) => {
-        observedEvents += batch.length;
-      },
-      {
-        cursor: 0,
-        follow: false,
-        batchSize: DEFAULT_TAIL_BATCH_SIZE,
-        signal: controller.signal,
-        onLifecycleEvent: (event) => {
-          lifecycleEvents.push(event.type);
-        },
-      }
-    );
+    await new Promise<void>((resolve, reject) => {
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        stopEvents();
+        stopGap();
+        stopError();
+        controller.signal.removeEventListener("abort", handleAbort);
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        session.disconnect();
+      };
+
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+
+      const fail = (error: unknown) => {
+        cleanup();
+        reject(error);
+      };
+
+      const resetIdleTimer = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+
+        idleTimer = setTimeout(() => {
+          finish();
+        }, DEFAULT_SETTLE_MS);
+      };
+
+      const handleAbort = () => {
+        fail(new Error(`tail replay timed out after ${tailTimeoutMs}ms`));
+      };
+
+      const stopError = session.on("error", (error) => {
+        fail(error);
+      });
+      const stopGap = session.on("gap", (gap) => {
+        fail(new Error(`tail gap reported: ${gap.reason}`));
+      });
+      const stopEvents = session.on("event", () => {
+        observedEvents += 1;
+        resetIdleTimer();
+      });
+
+      controller.signal.addEventListener("abort", handleAbort, { once: true });
+      session
+        .append({
+          metadata: { source: "scripts/live-smoke.ts" },
+          text: "live smoke tail event",
+        })
+        .catch((error) => {
+          fail(error);
+        });
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -144,7 +183,6 @@ async function main(): Promise<void> {
   result.tailReplay = {
     ok: true,
     observedEvents,
-    lifecycle: lifecycleEvents,
   };
 
   console.log(JSON.stringify(result, null, 2));

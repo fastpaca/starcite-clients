@@ -6,6 +6,7 @@ import {
   SessionAppendStoreStateSchema,
   type SessionStore,
   type SessionStoreState,
+  TailCursorSchema,
   type TailEvent,
   TailEventSchema,
 } from "./types";
@@ -13,12 +14,13 @@ import {
 const DEFAULT_KEY_PREFIX = "starcite";
 
 const SessionStoreMetadataSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2)]),
+  schemaVersion: z.literal(4),
   updatedAtMs: z.number().int().nonnegative(),
 });
 
 const SessionStoreStateSchema = z.object({
-  cursor: z.number().int().nonnegative(),
+  lastSeq: z.number().int().nonnegative(),
+  cursor: TailCursorSchema.optional(),
   events: z.array(TailEventSchema),
   append: SessionAppendStoreStateSchema.optional(),
   metadata: SessionStoreMetadataSchema.optional(),
@@ -74,7 +76,8 @@ function cloneState<TEvent extends TailEvent>(
   state: SessionStoreState<TEvent>
 ): SessionStoreState<TEvent> {
   return {
-    cursor: state.cursor,
+    lastSeq: state.lastSeq,
+    cursor: state.cursor ? { ...state.cursor } : undefined,
     events: cloneEvents(state.events),
     append: cloneAppendState(state.append),
     metadata: state.metadata ? { ...state.metadata } : undefined,
@@ -107,8 +110,8 @@ function cloneAppendState(
 /**
  * Default in-memory session store.
  *
- * Persists both cursor and retained events for each session so late subscribers
- * can replay immediately after process-local reconnect/rebind.
+ * Persists both `lastSeq` and resume `cursor` for each session so late
+ * subscribers can replay immediately after process-local reconnect/rebind.
  */
 export class MemoryStore<TEvent extends TailEvent = TailEvent>
   implements SessionStore<TEvent>

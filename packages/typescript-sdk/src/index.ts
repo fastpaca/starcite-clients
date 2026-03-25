@@ -3,11 +3,10 @@ export { Starcite } from "./client";
 export type { StarciteTailErrorStage } from "./errors";
 export {
   StarciteApiError,
-  StarciteBackpressureError,
   StarciteConnectionError,
   StarciteError,
-  StarciteRetryLimitError,
   StarciteTailError,
+  StarciteTailGapError,
   StarciteTokenExpiredError,
 } from "./errors";
 export type { PrincipalType } from "./identity";
@@ -41,6 +40,7 @@ export type {
   SessionEventContext,
   SessionEventListener,
   SessionEventPhase,
+  SessionGapListener,
   SessionListItem,
   SessionListOptions,
   SessionListPage,
@@ -52,18 +52,9 @@ export type {
   SessionStoredAppend,
   SessionStoreMetadata,
   SessionStoreState,
-  SessionTailItem,
-  SessionTailIteratorOptions,
-  SessionTailOptions,
   SessionTokenScope,
   StarciteOptions,
-  StarciteWebSocket,
-  StarciteWebSocketCloseEvent,
-  StarciteWebSocketEventMap,
-  StarciteWebSocketFactory,
-  StarciteWebSocketMessageEvent,
+  TailCursor,
   TailEvent,
-  TailEventBatch,
-  TailLifecycleEvent,
-  TailReconnectPolicy,
+  TailGap,
 } from "./types";

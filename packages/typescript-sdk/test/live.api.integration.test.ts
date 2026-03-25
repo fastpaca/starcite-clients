@@ -76,14 +76,48 @@ describeLive("Starcite live API integration", () => {
     });
     expect(appendResult.seq).toBeGreaterThanOrEqual(1);
 
-    const tailedSeqs: number[] = [];
-    for await (const { event } of session.tail({
-      cursor: Math.max(appendResult.seq - 1, 0),
-      follow: false,
-      catchUpIdleMs: 800,
-    })) {
-      tailedSeqs.push(event.seq);
-    }
+    const tailedSeqs = await new Promise<number[]>((resolve, reject) => {
+      const seen: number[] = [];
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        stopEvents();
+        stopError();
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        session.disconnect();
+      };
+
+      const settle = (callback: () => void) => {
+        cleanup();
+        callback();
+      };
+
+      const armIdle = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+
+        idleTimer = setTimeout(() => {
+          settle(() => {
+            resolve(seen);
+          });
+        }, 800);
+      };
+
+      const stopError = session.on("error", (error) => {
+        settle(() => {
+          reject(error);
+        });
+      });
+      const stopEvents = session.on("event", (event) => {
+        seen.push(event.seq);
+        armIdle();
+      });
+
+      armIdle();
+    });
 
     expect(tailedSeqs).toContain(appendResult.seq);
 

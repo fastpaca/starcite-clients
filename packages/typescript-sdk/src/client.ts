@@ -6,9 +6,9 @@ import {
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
+import { TailSocketManager } from "./tail/socket-manager";
 import type { TransportConfig } from "./transport";
 import {
-  defaultWebSocketFactory,
   request,
   requestWithBaseUrl,
   toApiBaseUrl,
@@ -96,6 +96,8 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredIdentity?: StarciteIdentity;
+  private readonly socketAuthToken: string | undefined;
+  private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
 
@@ -118,18 +120,21 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiKey);
 
-    const websocketFactory =
-      options.websocketFactory ?? defaultWebSocketFactory;
+    const socketAuthToken = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
+    this.socketAuthToken = socketAuthToken;
+    this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
 
     this.transport = {
       baseUrl,
-      websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
       authorization: authorization ?? null,
+      tailSocketManager: new TailSocketManager({
+        socketUrl: this.socketUrl,
+        token: socketAuthToken,
+      }),
       fetchFn,
       headers,
-      websocketFactory,
     };
   }
 
@@ -284,7 +289,9 @@ export class Starcite {
       id: sessionId,
       token: tokenResponse.token,
       identity: input.identity,
-      transport: this.buildSessionTransport(tokenResponse.token),
+      transport: this.buildSessionTransport(tokenResponse.token, {
+        token: this.socketAuthToken ?? tokenResponse.token,
+      }),
       store: this.store,
       record,
       logOptions: input.logOptions,
@@ -313,17 +320,29 @@ export class Starcite {
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport: this.buildSessionTransport(token),
+      transport: this.buildSessionTransport(token, { token }),
       store: this.store,
       logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
-  private buildSessionTransport(token: string): TransportConfig {
+  private buildSessionTransport(
+    token: string,
+    socketAuth: { token: string | undefined }
+  ): TransportConfig {
+    const tailSocketManager =
+      socketAuth.token === this.socketAuthToken
+        ? this.transport.tailSocketManager
+        : new TailSocketManager({
+            socketUrl: this.socketUrl,
+            token: socketAuth.token,
+          });
+
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
+      tailSocketManager,
     };
   }
 

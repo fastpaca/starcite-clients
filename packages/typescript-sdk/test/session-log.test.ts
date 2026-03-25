@@ -5,11 +5,16 @@ import {
   SessionLogConflictError,
   SessionLogGapError,
 } from "../src/session-log";
-import type { TailEvent } from "../src/types";
+import type { TailCursor, TailEvent } from "../src/types";
 
-function makeEvent(seq: number, text = `frame-${seq}`): TailEvent {
+function makeEvent(
+  seq: number,
+  text = `frame-${seq}`,
+  cursor?: TailCursor
+): TailEvent {
   return {
     seq,
+    cursor,
     type: "content",
     payload: { text },
     actor: "agent:drafter",
@@ -22,11 +27,15 @@ describe("SessionLog", () => {
   it("applies contiguous batches and exposes snapshot state", () => {
     const log = new SessionLog();
 
-    const applied = log.applyBatch([makeEvent(1), makeEvent(2)]);
+    const applied = log.applyBatch([
+      makeEvent(1, "frame-1", { epoch: 1, seq: 1 }),
+      makeEvent(2, "frame-2", { epoch: 1, seq: 2 }),
+    ]);
 
     expect(applied.map((event) => event.seq)).toEqual([1, 2]);
     expect(log.lastSeq).toBe(2);
     expect(log.state(false)).toMatchObject({
+      cursor: { epoch: 1, seq: 2 },
       lastSeq: 2,
       syncing: false,
     });
@@ -157,7 +166,7 @@ describe("SessionLog", () => {
 
     expect(() => {
       log.hydrate({
-        cursor: 1,
+        lastSeq: 1,
         events: [makeEvent(2, "invalid cached event")],
       });
     }).toThrow(StarciteError);

@@ -2,7 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SessionLogConflictError, StarciteIdentity } from "@starcite/sdk";
+import {
+  type SessionEvent,
+  SessionLogConflictError,
+  StarciteIdentity,
+} from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
 import { StarciteCliStore } from "../src/store";
@@ -13,7 +17,45 @@ interface FakeSession {
   readonly identity: StarciteIdentity;
   readonly record?: { id: string; title?: string };
   append: ReturnType<typeof vi.fn>;
-  tail: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  log: {
+    hydrate: ReturnType<typeof vi.fn>;
+  };
+}
+
+function createOnMock(input: {
+  error?: Error;
+  events?: SessionEvent[];
+}): ReturnType<typeof vi.fn> {
+  return vi.fn((eventName, listener, options) => {
+    if (eventName === "event") {
+      queueMicrotask(() => {
+        if (input.error) {
+          return;
+        }
+
+        for (const event of input.events ?? []) {
+          if (
+            options?.agent &&
+            event.actor !== `agent:${options.agent as string}`
+          ) {
+            continue;
+          }
+
+          listener(event, { phase: "live", replayed: false });
+        }
+      });
+    }
+
+    if (eventName === "error" && input.error) {
+      queueMicrotask(() => {
+        listener(input.error);
+      });
+    }
+
+    return () => undefined;
+  });
 }
 
 function makeLogger() {
@@ -87,7 +129,11 @@ describe("starcite CLI", () => {
     }),
     record: { id: "ses_123", title: "Draft contract" },
     append: vi.fn(),
-    tail: vi.fn(),
+    on: vi.fn(),
+    disconnect: vi.fn(),
+    log: {
+      hydrate: vi.fn(),
+    },
   };
 
   function createFakeClient() {
@@ -103,7 +149,9 @@ describe("starcite CLI", () => {
     session.mockReset();
     listSessions.mockReset();
     fakeSession.append.mockReset();
-    fakeSession.tail.mockReset();
+    fakeSession.on.mockReset();
+    fakeSession.disconnect.mockReset();
+    fakeSession.log.hydrate.mockReset();
 
     agent.mockImplementation(
       (options: { id: string }) =>
@@ -149,11 +197,10 @@ describe("starcite CLI", () => {
       last_seq: 1,
       deduped: false,
     });
-    fakeSession.tail.mockImplementation(() => ({
-      async *[Symbol.asyncIterator]() {
-        await Promise.resolve();
-        yield {
-          event: {
+    fakeSession.on.mockImplementation(
+      createOnMock({
+        events: [
+          {
             seq: 1,
             type: "content",
             payload: { text: "Drafting clause 4.2..." },
@@ -161,10 +208,9 @@ describe("starcite CLI", () => {
             producer_id: "producer:drafter",
             producer_seq: 1,
           },
-          context: { phase: "live", replayed: false },
-        };
-      },
-    }));
+        ],
+      })
+    );
   });
 
   afterEach(() => {
@@ -1162,12 +1208,8 @@ describe("starcite CLI", () => {
       id: "ses_123",
       identity: expect.any(StarciteIdentity),
     });
-    expect(fakeSession.tail).toHaveBeenCalledWith({
-      cursor: 0,
-      batchSize: 256,
+    expect(fakeSession.on).toHaveBeenCalledWith("event", expect.any(Function), {
       agent: undefined,
-      follow: true,
-      signal: expect.any(AbortSignal),
     });
     expect(info).toEqual(["[drafter] Drafting clause 4.2..."]);
   });
@@ -1180,39 +1222,28 @@ describe("starcite CLI", () => {
     const staleSession: FakeSession = {
       ...fakeSession,
       append: vi.fn(),
-      tail: vi.fn(() => ({
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              await Promise.resolve();
-              throw new SessionLogConflictError(
-                "Session log conflict for seq 1: received different payload for an already-applied event"
-              );
-            },
-          };
-        },
-      })),
+      on: createOnMock({
+        error: new SessionLogConflictError(
+          "Session log conflict for seq 1: received different payload for an already-applied event"
+        ),
+      }),
     };
 
     const recoveredSession: FakeSession = {
       ...fakeSession,
       append: vi.fn(),
-      tail: vi.fn(() => ({
-        async *[Symbol.asyncIterator]() {
-          await Promise.resolve();
-          yield {
-            event: {
-              seq: 1,
-              type: "content",
-              payload: { text: "recovered event" },
-              actor: "agent:drafter",
-              producer_id: "producer:drafter",
-              producer_seq: 1,
-            },
-            context: { phase: "live", replayed: false },
-          };
-        },
-      })),
+      on: createOnMock({
+        events: [
+          {
+            seq: 1,
+            type: "content",
+            payload: { text: "recovered event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 1,
+          },
+        ],
+      }),
     };
 
     const program = buildProgram({
@@ -1220,7 +1251,8 @@ describe("starcite CLI", () => {
       createClient: (_baseUrl, _apiKey, store) => {
         capturedStore = store;
         store.sessionStore("http://localhost:45187").save("ses_123", {
-          cursor: 1,
+          cursor: { epoch: 1, seq: 1 },
+          lastSeq: 1,
           events: [
             {
               seq: 1,
@@ -1232,7 +1264,7 @@ describe("starcite CLI", () => {
             },
           ],
           metadata: {
-            schemaVersion: 2,
+            schemaVersion: 4,
             updatedAtMs: Date.now(),
           },
         });
@@ -1270,11 +1302,10 @@ describe("starcite CLI", () => {
   it("tail --limit applies a hard cap even when multiple events arrive in one callback stream", async () => {
     const { logger, info } = makeLogger();
 
-    fakeSession.tail.mockImplementation(() => ({
-      async *[Symbol.asyncIterator]() {
-        await Promise.resolve();
-        yield {
-          event: {
+    fakeSession.on.mockImplementation(
+      createOnMock({
+        events: [
+          {
             seq: 1,
             type: "content",
             payload: { text: "first event" },
@@ -1282,10 +1313,7 @@ describe("starcite CLI", () => {
             producer_id: "producer:drafter",
             producer_seq: 1,
           },
-          context: { phase: "live", replayed: false },
-        };
-        yield {
-          event: {
+          {
             seq: 2,
             type: "content",
             payload: { text: "second event" },
@@ -1293,10 +1321,9 @@ describe("starcite CLI", () => {
             producer_id: "producer:drafter",
             producer_seq: 2,
           },
-          context: { phase: "live", replayed: false },
-        };
-      },
-    }));
+        ],
+      })
+    );
 
     const program = buildProgram({
       logger,

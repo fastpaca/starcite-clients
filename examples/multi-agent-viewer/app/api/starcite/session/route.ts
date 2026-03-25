@@ -1,6 +1,11 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { streamText } from "ai";
-import { Starcite, type StarciteSession, type SessionEvent } from "@starcite/sdk";
+import {
+  Starcite,
+  type SessionEvent,
+  type SessionEventContext,
+  type StarciteSession,
+} from "@starcite/sdk";
 import { NextResponse } from "next/server";
 
 // -- Event types --
@@ -122,7 +127,13 @@ function onAllFindings(coordinator: StarciteSession, model: Parameters<typeof st
 function onPlanAssigned(worker: StarciteSession, model: Parameters<typeof streamText>[0]["model"], spec: Agent): () => void {
   return listen(worker, async (event) => {
     if (event.type !== EV.plan) return;
-    if (worker.events().some((e) => e.type === EV.finding && pl(e).planSeq === event.seq)) return;
+    if (worker.events().some((e) => {
+      return (
+        e.type === EV.finding &&
+        pl(e).planSeq === event.seq &&
+        pl(e).agent === spec.id
+      );
+    })) return;
 
     const me = (pl(event).agents as Agent[] ?? []).find((a) => a.id === spec.id);
     if (!me) return;
@@ -139,7 +150,7 @@ function onPlanAssigned(worker: StarciteSession, model: Parameters<typeof stream
       type: EV.finding, source: "agent",
       payload: { planSeq: event.seq, agent: spec.id, name: me.name, task: me.task, text },
     });
-  });
+  }, { replay: true });
 }
 
 // -- Stream LLM response, emit chunks to session --
@@ -178,22 +189,44 @@ async function streamToSession(
 
 // -- Helpers --
 
-function listen(session: StarciteSession, handler: (event: SessionEvent) => void | Promise<void>): () => void {
+function listen(
+  session: StarciteSession,
+  handler: (event: SessionEvent, context: SessionEventContext) => void | Promise<void>,
+  options: {
+    replay?: boolean;
+  } = {},
+): () => void {
   let busy = false;
-  let queued: SessionEvent | null = null;
+  let queued:
+    | {
+        context: SessionEventContext;
+        event: SessionEvent;
+      }
+    | null = null;
 
-  function run(event: SessionEvent) {
-    const result = handler(event);
+  function run(event: SessionEvent, context: SessionEventContext) {
+    const result = handler(event, context);
     if (!(result instanceof Promise)) return;
     busy = true;
-    const done = () => { busy = false; if (queued) { const next = queued; queued = null; run(next); } };
+    const done = () => {
+      busy = false;
+      if (queued) {
+        const next = queued;
+        queued = null;
+        run(next.event, next.context);
+      }
+    };
     result.then(done, (err) => { console.error(err); done(); });
   }
 
-  return session.on("event", (event) => {
-    if (busy) { queued = event; return; }
-    run(event);
-  }, { replay: false });
+  return session.on("event", (event, context) => {
+    if (!options.replay && context.replayed) return;
+    if (busy) {
+      queued = { context, event };
+      return;
+    }
+    run(event, context);
+  }, { replay: options.replay ?? false });
 }
 
 function pl(event: SessionEvent): Record<string, unknown> {
