@@ -33,7 +33,6 @@ export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
 export interface UseStarciteChatOptions {
   session: StarciteSessionLike | null | undefined;
   id?: string;
-  api?: string;
   userMessageSource?: string;
   onError?: (error: Error) => void;
 }
@@ -101,7 +100,7 @@ function normalizeOutgoing<TMessage extends UIMessage>(
 export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   options: UseStarciteChatOptions
 ): UseStarciteChatResult<TMessage> {
-  const { session, id, api, userMessageSource = "use-chat", onError } = options;
+  const { session, id, userMessageSource = "use-chat", onError } = options;
 
   const { events, append } = useStarciteSession({ session, id, onError });
 
@@ -151,20 +150,6 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
           source: userMessageSource,
           payload: envelope,
         });
-
-        if (api && session) {
-          const response = await fetch(api, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId: session.id }),
-          });
-
-          if (!response.ok) {
-            throw new Error(
-              `Chat response request failed (${response.status}).`
-            );
-          }
-        }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         setStatus("error");
@@ -172,7 +157,7 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
         throw err;
       }
     },
-    [api, append, onError, session, userMessageSource]
+    [append, onError, userMessageSource]
   );
 
   return useMemo(

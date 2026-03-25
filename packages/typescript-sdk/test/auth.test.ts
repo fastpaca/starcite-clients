@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeApiKeyContext,
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
-  inferTenantIdFromApiKey,
 } from "../src/auth";
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
@@ -126,14 +126,18 @@ describe("inferIdentityFromApiKey", () => {
   });
 });
 
-describe("inferTenantIdFromApiKey", () => {
-  it("extracts tenant_id for service principals", () => {
+describe("decodeApiKeyContext", () => {
+  it("keeps tenant scope for service principals without inventing an identity", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
       principal_id: "svc-backend",
       principal_type: "service",
     });
 
-    expect(inferTenantIdFromApiKey(token)).toBe("acme");
+    expect(decodeApiKeyContext(token)).toEqual({
+      issuerAuthority: undefined,
+      tenantId: "acme",
+      identity: undefined,
+    });
   });
 });

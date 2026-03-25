@@ -303,57 +303,6 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("error");
   });
 
-  it("posts to the configured api after appending the user message", async () => {
-    const session = new FakeSession("ses_api");
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ ok: true }), { status: 200 })
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { result } = renderHook(() =>
-      useStarciteChat({ session, api: "/api/chat" })
-    );
-
-    await act(async () => {
-      await result.current.sendMessage({ text: "hello" });
-    });
-
-    expect(session.appendCalls).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/chat",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ sessionId: "ses_api" }),
-      })
-    );
-    expect(result.current.status).toBe("submitted");
-  });
-
-  it("surfaces api trigger failures as error status", async () => {
-    const session = new FakeSession("ses_api_error");
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: "boom" }), { status: 500 })
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { result } = renderHook(() =>
-      useStarciteChat({ session, api: "/api/chat" })
-    );
-
-    await act(async () => {
-      await expect(
-        result.current.sendMessage({ text: "hello" })
-      ).rejects.toThrow("Chat response request failed (500).");
-    });
-
-    expect(session.appendCalls).toHaveLength(1);
-    expect(result.current.status).toBe("error");
-  });
-
   it("rejects non-user sendMessage payloads before appending", async () => {
     const session = new FakeSession("ses_invalid_outgoing_role");
     const { result } = renderHook(() => useStarciteChat({ session }));
