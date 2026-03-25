@@ -122,21 +122,11 @@ starcite.on("session.created", (event) => {
 Bind only sessions that this agent should own:
 
 ```ts
-const attachedSessionIds = new Set<string>();
-
 async function attachOwnedSession(sessionId: string): Promise<void> {
-  if (attachedSessionIds.has(sessionId)) {
-    return;
-  }
-
   const session = await starcite.session({
     identity: agentIdentity,
     id: sessionId,
   });
-
-  if (attachedSessionIds.has(sessionId)) {
-    return;
-  }
 
   session.on("event", (event, context) => {
     if (context.replayed || event.type !== "chat.user.message") {
@@ -145,8 +135,6 @@ async function attachOwnedSession(sessionId: string): Promise<void> {
 
     void respondToUserMessage(session);
   });
-
-  attachedSessionIds.add(sessionId);
 }
 ```
 
@@ -189,16 +177,19 @@ In a real app, inspect metadata, routing, or the existing ownership logic first.
 
 The app still needs a session bootstrap/token route.
 
-That route must:
+That route should:
 
 1. create or reuse the user session
 2. return `{ token, sessionId }`
-3. ensure already-owned sessions are attached before returning
 
-Why step 3 exists:
+Do not use the bootstrap route to smuggle backend orchestration logic into the
+browser happy path.
 
-- `starcite.on("session.created", ...)` is live-only right now
-- existing sessions must be reattached during bootstrap after a restart
+Current limitation:
+
+- `starcite.on("session.created", ...)` is live-only today
+- sessions created before backend startup are not rediscovered automatically yet
+- lifecycle replay/cursor support should solve this later
 
 ## What To Look For In The Existing App
 
@@ -237,7 +228,8 @@ If you need to give another LLM minimal instructions, use this:
 - After binding, attach `session.on("event", ...)`.
 - On live `chat.user.message`, backend reads `session.events()`, runs
   `streamText(...)`, and appends assistant chunks back into the same session.
-- Session bootstrap must also re-attach already-owned sessions because lifecycle is live-only today.
+- Keep backend orchestration out of the browser/bootstrap path.
+- Today `session.created` is live-only, so pre-existing sessions are not auto-rediscovered after backend restart.
 - Do not add browser-triggered request fallback code.
 
 ## Reference Implementation In This Repo
