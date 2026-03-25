@@ -1,113 +1,126 @@
-# Prompt Reference: Rewiring An AI SDK App Onto Starcite
+# AI SDK To Starcite Migration Spec
 
-Use this file as prompt context for a coding agent or LLM during onboarding.
-It is not a human tutorial. Write code that follows these rules.
+This document defines the migration model for moving an existing AI SDK app
+onto Starcite.
 
-## Task
+It is a specification for how the migrated system should work. It is not a
+tutorial and not a standalone prompt.
 
-You are rewiring an existing app that already uses AI SDK in some form onto
-Starcite.
+## 1. Identity Model
 
-Do not assume:
+Starcite has two relevant identity roles in this migration:
 
-- the app uses `useChat`
-- the app has a single `/api/chat` route
-- the app streams assistant output directly from one obvious backend endpoint
+- user identity
+- agent identity
 
-First inspect the actual frontend and backend. Then apply the rules below.
+User identity:
 
-## What Stays The Same
+- represents the human/app user in a session
+- is used by the backend to mint a frontend session token
+- is the identity the browser uses when appending user messages
 
-The app can keep:
+Agent identity:
 
-- AI SDK model calls like `streamText(...)`
-- tool definitions
-- system prompts
-- auth and business logic
-- app-specific request parsing
+- represents the backend responder
+- is used by the backend to bind owned sessions
+- is the identity the backend uses when appending assistant output
 
-Do not rewrite the app around a new framework abstraction.
+Rules:
 
-## What Must Change
+- frontend code should only ever receive a session token
+- frontend code should never receive the Starcite API key
+- frontend code should never bind as the agent identity
+- backend code should explicitly choose which identity binds a session
 
-Move the app from request/response chat transport onto Starcite session
-transport.
+## 2. Frontend Tokens
 
-Target model:
+Frontend chat state is session-scoped. The browser needs a session token, not
+an API key.
 
-- frontend appends durable user events to a Starcite session
-- backend discovers sessions with Starcite lifecycle events
-- app code decides which agent owns which sessions
-- owned sessions are bound explicitly with `starcite.session({ identity, id })`
-- backend appends assistant chunks back into those same sessions
-- frontend renders from `session.events()` + `session.on("event")`
+The bootstrap route must:
 
-## Public Primitives To Use
+1. create or reuse a session for the user
+2. bind that session as the user identity
+3. return `{ token, sessionId }`
 
-Use these public APIs:
+The frontend must then:
 
-- `starcite.on("session.created", ...)`
-- `session.on("event", ...)`
-- `session.events()`
-- `session.append(...)`
-- `useStarciteChat({ session, id? })`
+```ts
+const session = starcite.session({ token });
+```
 
-The SDK handles the per-session stream lifecycle after a session has been
-bound.
+Why:
 
-## Hard Rules
+- the browser only needs session-scoped read/append access
+- the browser should not hold tenant-wide backend credentials
+- the browser should interact with Starcite directly for durable chat state
 
-- Do not make the browser manually trigger model execution after `sendMessage(...)`.
-- Do not keep the assistant response outside Starcite as a special HTTP stream.
-- Do not read the browser transcript as the canonical backend history.
-- Do not introduce a public runtime/framework layer on top of Starcite.
-- Do not assume every agent responds to every session.
+## 3. Protocol Model
 
-## Frontend Transformation
+Starcite is not request/response chat transport.
 
-### Required shape
+Do not model the system as:
 
-The frontend should:
+1. browser sends transcript to backend
+2. backend returns assistant stream over HTTP
+3. browser renders from that HTTP stream
 
-1. fetch a Starcite session token from a bootstrap route
+The required Starcite model is:
+
+1. frontend appends a durable user message to a Starcite session
+2. backend discovers sessions from lifecycle events
+3. application code decides which agent owns a session
+4. backend binds owned sessions explicitly with `starcite.session({ identity, id })`
+5. backend listens to live session events with `session.on("event", ...)`
+6. backend appends assistant chunks back into the same session
+7. frontend renders from the session timeline with `session.events()` + `session.on("event")`
+
+These responsibilities must stay distinct:
+
+- `starcite.on(...)` is lifecycle discovery
+- `starcite.session(...)` is explicit identity binding
+- `session.on(...)` is per-session event handling
+- `session.events()` is the canonical session read model
+
+## 4. Frontend Migration
+
+Frontend must:
+
+1. fetch `{ token, sessionId }` from a bootstrap route
 2. create `const session = starcite.session({ token })`
-3. call `useStarciteChat({ session, id: session.id })`
-4. use `sendMessage(...)`
+3. use `useStarciteChat({ session, id: session.id })`
+4. call `sendMessage(...)`
 
-### Required behavior
-
-`sendMessage(...)` should:
-
-- append the user message to Starcite
-- not call a separate backend chat route
-
-### Example target
+Reference shape:
 
 ```tsx
+const session = starcite.session({ token });
+
 const { messages, sendMessage, status } = useStarciteChat({
   session,
   id: session.id,
 });
 ```
 
-## Backend Transformation
+Frontend behavior requirements:
 
-### Required shape
+- `sendMessage(...)` must only durably append the user message
+- frontend must render from Starcite session state
+- frontend must not manually trigger backend execution after append
+- frontend must not treat local/browser transcript state as canonical
 
-Create one long-lived backend `Starcite` client:
+## 5. Backend Migration
+
+Backend must use one long-lived `Starcite` client:
 
 ```ts
 const starcite = new Starcite({
   apiKey: process.env.STARCITE_API_KEY!,
   baseUrl: process.env.STARCITE_BASE_URL || "https://api.starcite.io",
 });
-
-const agentIdentity = starcite.agent({
-  id: process.env.STARCITE_AGENT_ID || "assistant",
-});
 ```
 
-Register one lifecycle listener at module scope:
+Backend must use lifecycle events for session discovery:
 
 ```ts
 starcite.on("session.created", (event) => {
@@ -119,12 +132,14 @@ starcite.on("session.created", (event) => {
 });
 ```
 
-Bind only sessions that this agent should own:
+Backend must explicitly bind owned sessions as the responding identity:
 
 ```ts
+const agent = starcite.agent({ id: "assistant" });
+
 async function attachOwnedSession(sessionId: string): Promise<void> {
   const session = await starcite.session({
-    identity: agentIdentity,
+    identity: agent,
     id: sessionId,
   });
 
@@ -133,19 +148,16 @@ async function attachOwnedSession(sessionId: string): Promise<void> {
       return;
     }
 
-    void respondToUserMessage(session);
+    void respond(session);
   });
 }
 ```
 
-Generate the assistant response from session history:
+Backend must use the session timeline as model input:
 
 ```ts
-async function respondToUserMessage(session: StarciteSession): Promise<void> {
+async function respond(session: StarciteSession): Promise<void> {
   const messages = await toUIMessagesFromEvents(session.events());
-  if (messages.length === 0) {
-    return;
-  }
 
   const result = streamText({
     model,
@@ -160,82 +172,80 @@ async function respondToUserMessage(session: StarciteSession): Promise<void> {
 }
 ```
 
-## Ownership Rule
+Backend behavior requirements:
 
-Do not assume a lifecycle event means "respond to this session now".
+- preserve existing model/tool/prompt/business logic
+- change only the transport/orchestration substrate
+- use `session.events()` as the canonical chat history
+- append assistant output back into Starcite instead of returning it as the UI transport
 
-`starcite.on("session.created", ...)` is discovery. Your app must still decide:
+## 6. Ownership And Routing
 
-- which sessions this agent should own
-- which identity to bind as
-- whether some sessions should be ignored entirely
+Lifecycle discovery is not ownership.
 
-In a single-agent demo, `shouldHandleSession(...)` can always return `true`.
-In a real app, inspect metadata, routing, or the existing ownership logic first.
+The application must decide:
 
-## Session Bootstrap Rule
+- whether an agent should handle a session
+- which identity should bind to that session
+- whether the session should be ignored
 
-The app still needs a session bootstrap/token route.
+Never assume every agent handles every session.
 
-That route should:
+For a single-agent demo, ownership can be simplified to “all sessions”.
 
-1. create or reuse the user session
-2. return `{ token, sessionId }`
+For a real app, inspect the existing routing/assignment logic first.
 
-Do not use the bootstrap route to smuggle backend orchestration logic into the
-browser happy path.
+## 7. Current Constraints
 
-Current limitation:
+Current lifecycle behavior:
 
-- `starcite.on("session.created", ...)` is live-only today
-- sessions created before backend startup are not rediscovered automatically yet
-- lifecycle replay/cursor support should solve this later
+- `session.created` is live-only
+- sessions created before backend startup are not rediscovered automatically
 
-## What To Look For In The Existing App
+Implications:
 
-When inspecting the app before migrating it, identify:
+- bootstrap routes should create or reuse sessions and return `{ token, sessionId }`
+- bootstrap routes should not be used to perform backend orchestration
+- lifecycle replay/cursor support is the future fix for pre-existing session discovery
 
-- where the browser currently sends messages
-- where the backend currently calls `streamText(...)`
-- where AI SDK chunks currently go
-- whether the backend already has a long-lived process/module scope
+## 8. Anti-Patterns
 
-Then move only the transport/orchestration pieces onto Starcite.
+Do not implement any of these patterns:
 
-Keep the model logic.
+- browser appends a message and then separately triggers backend execution
+- browser transcript is treated as canonical backend history
+- backend returns `toUIMessageStreamResponse()` to drive the UI
+- assistant output is kept outside Starcite as a special HTTP stream
+- bootstrap/session-token route is used to perform backend orchestration
+- public worker/runtime/framework abstractions are introduced on top of Starcite
+- every agent is attached to every session by default
 
-## Anti-Patterns To Remove
+## 9. Required Public Surface
 
-If the app currently does any of these, remove them from the paved path:
+The migration should use these public APIs:
 
-- browser sends `messages[]` as the canonical source of truth
-- browser calls `sendMessage(...)` and then separately POSTs to trigger the model
-- backend returns `toUIMessageStreamResponse()` directly to drive the UI
-- frontend renders from special route responses instead of Starcite events
-- backend blindly attaches every agent to every session
+- `starcite.on("session.created", ...)`
+- `starcite.session({ identity, id })`
+- `session.on("event", ...)`
+- `session.events()`
+- `session.append(...)`
+- `useStarciteChat({ session, id? })`
 
-## Short Prompt Snippet
+## 10. References
 
-If you need to give another LLM minimal instructions, use this:
+Starcite server code:
 
-- Inspect the current AI SDK app first; do not assume `useChat` or a specific route shape.
-- Move chat transport onto Starcite sessions.
-- Frontend uses `useStarciteChat({ session })`.
-- `sendMessage(...)` durably appends the user message only.
-- Backend listens with `starcite.on("session.created", ...)` to discover sessions.
-- App code decides whether the current agent should handle that session.
-- Owned sessions are bound explicitly with `starcite.session({ identity, id })`.
-- After binding, attach `session.on("event", ...)`.
-- On live `chat.user.message`, backend reads `session.events()`, runs
-  `streamText(...)`, and appends assistant chunks back into the same session.
-- Keep backend orchestration out of the browser/bootstrap path.
-- Today `session.created` is live-only, so pre-existing sessions are not auto-rediscovered after backend restart.
-- Do not add browser-triggered request fallback code.
+- `https://github.com/fastpaca/starcite`
 
-## Reference Implementation In This Repo
+Client SDK code in this repo:
+
+- `packages/typescript-sdk/src/client.ts`
+- `packages/typescript-sdk/src/lifecycle-runtime.ts`
+- `packages/typescript-sdk/src/session.ts`
+- `packages/starcite-react/src/use-starcite-chat.ts`
+- `packages/starcite-react/src/chat-protocol.ts`
+
+Reference implementation in this repo:
 
 - `examples/nextjs-chat-ui/app/api/starcite/session/route.ts`
 - `examples/nextjs-chat-ui/app/page.tsx`
-- `packages/starcite-react/src/use-starcite-chat.ts`
-- `packages/starcite-react/src/chat-protocol.ts`
-- `packages/typescript-sdk/src/client.ts`
