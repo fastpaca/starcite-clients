@@ -200,6 +200,10 @@ export class SessionLog {
     return this.appliedSeq;
   }
 
+  advanceCursor(cursor: TailCursor): void {
+    this.appliedCursor = { ...cursor };
+  }
+
   private enforceRetention(): void {
     if (this.maxEvents === undefined) {
       return;

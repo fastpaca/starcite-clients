@@ -4,10 +4,7 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import type {
-  TailSocketAuthContext,
-  TailSocketManager,
-} from "./tail/socket-manager";
+import type { TailSocketManager } from "./tail/socket-manager";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -19,9 +16,6 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
  */
 export interface TransportConfig {
   readonly baseUrl: string;
-  readonly websocketBaseUrl: string;
-  readonly customWebSocketFactoryProvided: boolean;
-  readonly socketAuth: TailSocketAuthContext;
   readonly tailSocketManager: TailSocketManager;
   authorization: string | null;
   readonly fetchFn: typeof fetch;

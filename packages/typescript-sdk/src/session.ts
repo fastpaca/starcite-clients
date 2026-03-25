@@ -1,12 +1,16 @@
 import EventEmitter from "eventemitter3";
+import type { Channel } from "phoenix";
+import { z } from "zod";
 import {
   StarciteApiError,
   StarciteConnectionError,
   StarciteError,
+  StarciteTailError,
+  StarciteTailGapError,
+  StarciteTokenExpiredError,
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
-import { SessionLog, SessionLogGapError } from "./session-log";
-import { TailStream } from "./tail/stream";
+import { SessionLog } from "./session-log";
 import type { TransportConfig } from "./transport";
 import { request } from "./transport";
 import type {
@@ -31,12 +35,16 @@ import type {
   SessionSnapshot,
   SessionStore,
   SessionStoreState,
-  SessionTailItem,
-  SessionTailIteratorOptions,
   TailCursor,
   TailGap,
 } from "./types";
-import { AppendEventResponseSchema, SessionAppendInputSchema } from "./types";
+import {
+  AppendEventResponseSchema,
+  SessionAppendInputSchema,
+  TailEventSchema,
+  TailGapSchema,
+  TailTokenExpiredPayloadSchema,
+} from "./types";
 
 /**
  * Construction options for a `StarciteSession`.
@@ -58,10 +66,8 @@ interface SessionLifecycleEvents {
   gap: (gap: TailGap) => void;
 }
 
-interface TailRuntime<TEvent extends SessionEvent> {
-  next: () => Promise<SessionTailItem<TEvent> | undefined>;
-  getFailure: () => unknown;
-  dispose: () => Promise<void>;
+interface RejoinableChannel extends Channel {
+  rejoin: (timeout?: number) => void;
 }
 
 interface Deferred<T> {
@@ -101,6 +107,31 @@ const APPEND_RETRY_JITTER_RATIO = 0;
 const RETRYABLE_APPEND_STATUS_CODES = new Set([
   408, 425, 429, 500, 502, 503, 504,
 ]);
+const TailEventsPayloadSchema = z.object({
+  events: z.array(TailEventSchema),
+});
+
+function readJoinFailureReason(payload: unknown): string {
+  if (payload instanceof Error) {
+    return payload.message;
+  }
+
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (typeof payload === "object" && payload !== null) {
+    if ("reason" in payload && typeof payload.reason === "string") {
+      return payload.reason;
+    }
+
+    if ("message" in payload && typeof payload.message === "string") {
+      return payload.message;
+    }
+  }
+
+  return "join failed";
+}
 
 function calculateAppendRetryDelay(
   retryAttempt: number,
@@ -205,9 +236,11 @@ export class StarciteSession {
     SessionEventListener,
     () => void
   >();
-  private liveSyncController: AbortController | undefined;
-  private liveSyncTask: Promise<void> | undefined;
-  private liveSyncCatchUpActive = false;
+  private tailChannel: RejoinableChannel | undefined;
+  private tailEventBindingRef = 0;
+  private tailGapBindingRef = 0;
+  private tailTokenExpiredBindingRef = 0;
+  private releaseTailSocket: (() => void) | undefined;
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -314,18 +347,16 @@ export class StarciteSession {
         const eventOptions = options as SessionOnEventOptions | undefined;
         const replay = eventOptions?.replay ?? true;
         const replayCutoffSeq = replay ? this.log.lastSeq : -1;
-        const schema = eventOptions?.schema;
 
         const dispatch = (event: SessionEvent): void => {
-          const parsedEvent = this.parseOnEvent(event, schema);
+          const parsedEvent = this.parseOnEvent(event, eventOptions);
           if (!parsedEvent) {
             return;
           }
 
           const classifiedContext = this.resolveEventContext(
             event.seq,
-            replayCutoffSeq,
-            this.liveSyncCatchUpActive
+            replayCutoffSeq
           );
 
           try {
@@ -341,7 +372,7 @@ export class StarciteSession {
         this.eventSubscriptions.set(eventListener, unsubscribe);
       }
 
-      this.ensureLiveSync();
+      this.ensureChannelAttached();
       return () => {
         this.off("event", eventListener);
       };
@@ -358,7 +389,7 @@ export class StarciteSession {
     if (eventName === "gap") {
       const gapListener = listener as SessionGapListener;
       this.lifecycle.on("gap", gapListener);
-      this.ensureLiveSync();
+      this.ensureChannelAttached();
       return () => {
         this.off("gap", gapListener);
       };
@@ -400,9 +431,7 @@ export class StarciteSession {
       this.eventSubscriptions.delete(eventListener);
       unsubscribe();
 
-      if (!this.shouldKeepLiveSync()) {
-        this.liveSyncController?.abort();
-      }
+      this.detachTailChannelIfIdle();
       return;
     }
 
@@ -413,9 +442,7 @@ export class StarciteSession {
 
     if (eventName === "gap") {
       this.lifecycle.off("gap", listener as SessionGapListener);
-      if (!this.shouldKeepLiveSync()) {
-        this.liveSyncController?.abort();
-      }
+      this.detachTailChannelIfIdle();
       return;
     }
 
@@ -428,15 +455,14 @@ export class StarciteSession {
   }
 
   /**
-   * Stops live syncing and removes listeners registered via `on()`.
+   * Stops tailing and removes listeners registered via `on()`.
    */
   disconnect(): void {
-    this.liveSyncController?.abort();
-
     for (const unsubscribe of this.eventSubscriptions.values()) {
       unsubscribe();
     }
     this.eventSubscriptions.clear();
+    this.detachTailChannel();
     this.lifecycle.removeAllListeners();
   }
 
@@ -510,7 +536,7 @@ export class StarciteSession {
    * Returns a stable view of the current canonical in-memory log state.
    */
   state(): SessionSnapshot {
-    return this.log.state(this.liveSyncTask !== undefined);
+    return this.log.state(this.tailChannel !== undefined);
   }
 
   /**
@@ -520,52 +546,20 @@ export class StarciteSession {
     return this.log.events;
   }
 
-  /**
-   * Streams canonical events as an async iterator.
-   *
-   * Replay semantics and schema validation mirror `session.on("event", ...)`.
-   */
-  tail<TEvent extends SessionEvent = SessionEvent>(
-    options: SessionTailIteratorOptions<TEvent> = {}
-  ): AsyncIterable<SessionTailItem<TEvent>> {
-    const { replay = true, schema, ...tailOptions } = options;
-    const replayCutoffSeq = replay ? this.log.lastSeq : -1;
-    const startCursor = tailOptions.cursor ?? this.log.cursor;
-    const session = this;
-
-    const parseEvent = (event: SessionEvent): TEvent =>
-      session.parseTailEvent(event, schema);
-
-    return {
-      async *[Symbol.asyncIterator](): AsyncIterator<SessionTailItem<TEvent>> {
-        if (replay) {
-          for (const replayEvent of session.log.events) {
-            yield {
-              event: parseEvent(replayEvent),
-              context: { phase: "replay", replayed: true },
-            };
-          }
-        }
-        yield* session.iterateLiveTail({
-          parseEvent,
-          replayCutoffSeq,
-          startCursor,
-          tailOptions,
-        });
-      },
-    };
-  }
-
   private parseOnEvent<TEvent extends SessionEvent>(
     event: SessionEvent,
-    schema: SessionOnEventOptions<TEvent>["schema"] | undefined
+    options: SessionOnEventOptions<TEvent> | undefined
   ): TEvent | undefined {
-    if (!schema) {
+    if (options?.agent && event.actor !== `agent:${options.agent}`) {
+      return undefined;
+    }
+
+    if (!options?.schema) {
       return event as TEvent;
     }
 
     try {
-      return schema.parse(event);
+      return options.schema.parse(event);
     } catch (error) {
       this.emitStreamError(
         new StarciteError(
@@ -576,29 +570,11 @@ export class StarciteSession {
     }
   }
 
-  private parseTailEvent<TEvent extends SessionEvent>(
-    event: SessionEvent,
-    schema: SessionTailIteratorOptions<TEvent>["schema"] | undefined
-  ): TEvent {
-    if (!schema) {
-      return event as TEvent;
-    }
-
-    try {
-      return schema.parse(event);
-    } catch (error) {
-      throw new StarciteError(
-        `session.tail() schema validation failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
   private resolveEventContext(
     eventSeq: number,
-    replayCutoffSeq: number,
-    forceReplay = false
+    replayCutoffSeq: number
   ): SessionEventContext {
-    const replayed = forceReplay || eventSeq <= replayCutoffSeq;
+    const replayed = eventSeq <= replayCutoffSeq;
     return replayed
       ? { phase: "replay", replayed: true }
       : { phase: "live", replayed: false };
@@ -608,133 +584,6 @@ export class StarciteSession {
     Promise.resolve(result).catch((error) => {
       this.emitStreamError(error);
     });
-  }
-
-  private createTailAbortController(outerSignal: AbortSignal | undefined): {
-    controller: AbortController;
-    detach: () => void;
-  } {
-    return createLinkedAbortController([outerSignal]);
-  }
-
-  private createTailRuntime<TEvent extends SessionEvent>({
-    parseEvent,
-    replayCutoffSeq,
-    startCursor,
-    tailOptions,
-  }: {
-    parseEvent: (event: SessionEvent) => TEvent;
-    replayCutoffSeq: number;
-    startCursor: TailCursor | undefined;
-    tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
-  }): TailRuntime<TEvent> {
-    const queue: SessionTailItem<TEvent>[] = [];
-    let notify: (() => void) | undefined;
-    let done = false;
-    let failure: unknown;
-    const shouldApplyToLog = tailOptions.agent === undefined;
-
-    const { controller, detach } = this.createTailAbortController(
-      tailOptions.signal
-    );
-    const wake = () => {
-      notify?.();
-    };
-
-    const streamTask = new TailStream({
-      options: {
-        ...tailOptions,
-        cursor: startCursor,
-        signal: controller.signal,
-      },
-      customWebSocketFactoryProvided:
-        this.transport.customWebSocketFactoryProvided,
-      sessionId: this.id,
-      socketAuth: this.transport.socketAuth,
-      socketManager: this.transport.tailSocketManager,
-      socketUrl: `${this.transport.websocketBaseUrl}/socket`,
-    })
-      .subscribe((batch) => {
-        const queuedEvents = shouldApplyToLog
-          ? this.log.applyBatch(batch)
-          : batch;
-        if (shouldApplyToLog && queuedEvents.length > 0) {
-          this.persistLogState();
-        }
-
-        for (const event of queuedEvents) {
-          queue.push({
-            event: parseEvent(event),
-            context: this.resolveEventContext(event.seq, replayCutoffSeq),
-          });
-        }
-
-        wake();
-      })
-      .catch((error) => {
-        failure = error;
-      })
-      .finally(() => {
-        done = true;
-        wake();
-      });
-
-    return {
-      next: async () => {
-        while (queue.length === 0 && !done && !failure) {
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-          });
-          notify = undefined;
-        }
-
-        return queue.shift();
-      },
-      getFailure: () => failure,
-      dispose: async () => {
-        controller.abort();
-        detach();
-        await streamTask;
-      },
-    };
-  }
-
-  private async *iterateLiveTail<TEvent extends SessionEvent>({
-    parseEvent,
-    replayCutoffSeq,
-    startCursor,
-    tailOptions,
-  }: {
-    parseEvent: (event: SessionEvent) => TEvent;
-    replayCutoffSeq: number;
-    startCursor: TailCursor | undefined;
-    tailOptions: Omit<SessionTailIteratorOptions<TEvent>, "schema" | "replay">;
-  }): AsyncGenerator<SessionTailItem<TEvent>> {
-    const runtime = this.createTailRuntime({
-      parseEvent,
-      replayCutoffSeq,
-      startCursor,
-      tailOptions,
-    });
-
-    try {
-      while (true) {
-        const next = await runtime.next();
-        if (next) {
-          yield next;
-          continue;
-        }
-
-        const failure = runtime.getFailure();
-        if (failure) {
-          throw failure;
-        }
-
-        return;
-      }
-    } finally {
-      await runtime.dispose();
-    }
   }
 
   private emitStreamError(error: unknown): void {
@@ -753,96 +602,139 @@ export class StarciteSession {
     });
   }
 
-  private shouldKeepLiveSync(): boolean {
+  private shouldKeepChannelAttached(): boolean {
     return (
       this.eventSubscriptions.size > 0 ||
       this.lifecycle.listenerCount("gap") > 0
     );
   }
 
-  private ensureLiveSync(): void {
-    if (this.liveSyncTask || !this.shouldKeepLiveSync()) {
+  private ensureChannelAttached(): void {
+    if (this.tailChannel || !this.shouldKeepChannelAttached()) {
       return;
     }
 
-    const controller = new AbortController();
-    this.liveSyncController = controller;
+    const lease = this.transport.tailSocketManager.acquire();
+    const channel = lease.socket.channel(`tail:${this.id}`, () => {
+      const payload: {
+        cursor?: TailCursor;
+      } = {};
 
-    this.liveSyncTask = this.runLiveSync(controller.signal)
-      .catch((error) => {
-        if (!controller.signal.aborted) {
-          this.emitStreamError(error);
+      if (this.log.cursor) {
+        payload.cursor = this.log.cursor;
+      }
+
+      return payload;
+    }) as RejoinableChannel;
+
+    this.releaseTailSocket = lease.release;
+    this.tailChannel = channel;
+
+    this.tailEventBindingRef = channel.on("events", (payload) => {
+      const result = TailEventsPayloadSchema.safeParse(payload);
+      if (!result.success) {
+        return;
+      }
+
+      try {
+        const appliedEvents = this.log.applyBatch(result.data.events);
+        if (appliedEvents.length > 0) {
+          this.persistLogState();
         }
+      } catch (error) {
+        this.emitStreamError(error);
+      }
+    });
+
+    this.tailGapBindingRef = channel.on("gap", (payload) => {
+      const result = TailGapSchema.safeParse(payload);
+      if (!result.success) {
+        return;
+      }
+
+      this.log.advanceCursor(result.data.next_cursor);
+      this.persistLogState();
+
+      if (this.lifecycle.listenerCount("gap") > 0) {
+        this.lifecycle.emit("gap", result.data);
+      } else {
+        this.emitStreamError(
+          new StarciteTailGapError(
+            `Tail gap reported for session '${this.id}'`,
+            { sessionId: this.id }
+          )
+        );
+      }
+
+      channel.rejoin();
+    });
+
+    this.tailTokenExpiredBindingRef = channel.on("token_expired", (payload) => {
+      const result = TailTokenExpiredPayloadSchema.safeParse(payload);
+      if (!result.success) {
+        return;
+      }
+
+      this.detachTailChannel();
+      this.emitStreamError(
+        new StarciteTokenExpiredError(
+          `Tail token expired for session '${this.id}'. Re-issue a session token and reconnect from the last processed cursor.`,
+          {
+            closeReason: result.data.reason,
+            sessionId: this.id,
+          }
+        )
+      );
+    });
+
+    channel
+      .join()
+      .receive("error", (payload) => {
+        this.emitStreamError(
+          new StarciteTailError(
+            `Tail connection failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
+            {
+              sessionId: this.id,
+              stage: "connect",
+            }
+          )
+        );
       })
-      .finally(() => {
-        this.liveSyncTask = undefined;
-        this.liveSyncController = undefined;
-        if (this.shouldKeepLiveSync()) {
-          this.ensureLiveSync();
-        }
+      .receive("timeout", () => {
+        this.emitStreamError(
+          new StarciteTailError(
+            `Tail connection failed for session '${this.id}': join timeout`,
+            {
+              sessionId: this.id,
+              stage: "connect",
+            }
+          )
+        );
       });
   }
 
-  private async runLiveSync(signal: AbortSignal): Promise<void> {
-    let shouldRunCatchUpPass = this.log.lastSeq === 0;
-    let retryDelayMs = 250;
-
-    while (!signal.aborted && this.shouldKeepLiveSync()) {
-      this.liveSyncCatchUpActive = shouldRunCatchUpPass;
-
-      try {
-        await this.subscribeLiveSyncPass(signal, !shouldRunCatchUpPass);
-        shouldRunCatchUpPass = false;
-        retryDelayMs = 250;
-      } catch (error) {
-        if (signal.aborted) {
-          return;
-        }
-
-        if (error instanceof SessionLogGapError) {
-          shouldRunCatchUpPass = true;
-          continue;
-        }
-
-        this.emitStreamError(error);
-        shouldRunCatchUpPass = true;
-        await this.waitForLiveSyncRetry(retryDelayMs, signal);
-        retryDelayMs = Math.min(retryDelayMs * 2, 5000);
-      } finally {
-        this.liveSyncCatchUpActive = false;
-      }
+  private detachTailChannelIfIdle(): void {
+    if (this.shouldKeepChannelAttached()) {
+      return;
     }
+
+    this.detachTailChannel();
   }
 
-  private async subscribeLiveSyncPass(
-    signal: AbortSignal,
-    follow: boolean
-  ): Promise<void> {
-    const stream = new TailStream({
-      options: {
-        cursor: this.log.cursor,
-        follow,
-        onGap: (gap) => {
-          if (this.lifecycle.listenerCount("gap") > 0) {
-            this.lifecycle.emit("gap", gap);
-          }
-        },
-        signal,
-      },
-      customWebSocketFactoryProvided:
-        this.transport.customWebSocketFactoryProvided,
-      sessionId: this.id,
-      socketAuth: this.transport.socketAuth,
-      socketManager: this.transport.tailSocketManager,
-      socketUrl: `${this.transport.websocketBaseUrl}/socket`,
-    });
+  private detachTailChannel(): void {
+    if (this.tailChannel) {
+      this.tailChannel.off("events", this.tailEventBindingRef);
+      this.tailChannel.off("gap", this.tailGapBindingRef);
+      this.tailChannel.off("token_expired", this.tailTokenExpiredBindingRef);
+      this.tailChannel.leave();
+      this.tailChannel = undefined;
+    }
 
-    await stream.subscribe((batch) => {
-      const appliedEvents = this.log.applyBatch(batch);
-      if (appliedEvents.length > 0) {
-        this.persistLogState();
-      }
-    });
+    this.tailEventBindingRef = 0;
+    this.tailGapBindingRef = 0;
+    this.tailTokenExpiredBindingRef = 0;
+    this.releaseTailSocket?.();
+    this.releaseTailSocket = undefined;
   }
 
   private loadPersistedState(): SessionStoreState | undefined {
@@ -1416,39 +1308,6 @@ export class StarciteSession {
       }, delayMs);
 
       controller.signal.addEventListener("abort", finish, { once: true });
-    });
-  }
-
-  private waitForLiveSyncRetry(
-    delayMs: number,
-    signal: AbortSignal
-  ): Promise<void> {
-    if (delayMs <= 0 || signal.aborted) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, delayMs);
-
-      const onAbort = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      };
-
-      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 }

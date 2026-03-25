@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Starcite } from "../src/client";
+import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
+import { MemoryStore } from "../src/session-store";
 
 const phoenixMock = vi.hoisted(() => {
   class MockPush {
@@ -163,8 +166,6 @@ const phoenixMock = vi.hoisted(() => {
     readonly endPoint: string;
     readonly options: {
       params?: Record<string, unknown> | (() => Record<string, unknown>);
-      reconnectAfterMs?: (tries: number) => number;
-      rejoinAfterMs?: (tries: number) => number;
     };
     private readonly closeCallbacks = new Map<
       string,
@@ -185,8 +186,6 @@ const phoenixMock = vi.hoisted(() => {
       endPoint: string,
       options: {
         params?: Record<string, unknown> | (() => Record<string, unknown>);
-        reconnectAfterMs?: (tries: number) => number;
-        rejoinAfterMs?: (tries: number) => number;
       } = {}
     ) {
       this.endPoint = endPoint;
@@ -290,10 +289,6 @@ const phoenixMock = vi.hoisted(() => {
       return typeof params === "function" ? params() : params;
     }
 
-    reconnectDelay(tries: number): number | undefined {
-      return this.options.reconnectAfterMs?.(tries);
-    }
-
     private makeRef(): string {
       this.refCounter += 1;
       return `${this.refCounter}`;
@@ -309,15 +304,6 @@ vi.mock("phoenix", () => {
     Socket: phoenixMock.MockPhoenixSocket,
   };
 });
-
-import { Starcite } from "../src/client";
-import {
-  StarciteError,
-  StarciteRetryLimitError,
-  StarciteTailError,
-  StarciteTokenExpiredError,
-} from "../src/errors";
-import type { TailLifecycleEvent } from "../src/types";
 
 function flush(): Promise<void> {
   return new Promise((resolve) => {
@@ -434,7 +420,7 @@ describe("Phoenix Tail Transport", () => {
     vi.useRealTimers();
   });
 
-  it("uses one Phoenix socket for multiple tailed sessions and rejoins each topic from its own cursor", async () => {
+  it("uses one Phoenix socket for multiple subscribed sessions and rejoins each topic from its own cursor", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(makeSessionRecord("ses_alpha"))
@@ -450,30 +436,28 @@ describe("Phoenix Tail Transport", () => {
     const identity = client.agent({ id: "planner" });
     const alpha = await client.session({ identity, id: "ses_alpha" });
     const beta = await client.session({ identity, id: "ses_beta" });
+    beta.log.hydrate({
+      cursor: { epoch: 1, seq: 6 },
+      events: [],
+      lastSeq: 6,
+    });
 
     const alphaSeen: number[] = [];
     const betaSeen: number[] = [];
-    const alphaController = new AbortController();
-    const betaController = new AbortController();
-
-    const alphaTail = (async () => {
-      for await (const { event } of alpha.tail({
-        agent: "planner",
-        reconnectPolicy: { initialDelayMs: 1, mode: "fixed" },
-        signal: alphaController.signal,
-      })) {
+    const stopAlpha = alpha.on(
+      "event",
+      (event) => {
         alphaSeen.push(event.seq);
-      }
-    })();
-    const betaTail = (async () => {
-      for await (const { event } of beta.tail({
-        agent: "planner",
-        reconnectPolicy: { initialDelayMs: 1, mode: "fixed" },
-        signal: betaController.signal,
-      })) {
+      },
+      { agent: "planner" }
+    );
+    const stopBeta = beta.on(
+      "event",
+      (event) => {
         betaSeen.push(event.seq);
-      }
-    })();
+      },
+      { agent: "planner" }
+    );
 
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
@@ -485,7 +469,9 @@ describe("Phoenix Tail Transport", () => {
     const alphaChannel = await waitForChannel("tail:ses_alpha");
     const betaChannel = await waitForChannel("tail:ses_beta");
     expect(alphaChannel.joinCalls[0]).toEqual({});
-    expect(betaChannel.joinCalls[0]).toEqual({});
+    expect(betaChannel.joinCalls[0]).toEqual({
+      cursor: { epoch: 1, seq: 6 },
+    });
 
     socket?.emitOpen();
     alphaChannel.emitJoinOk({});
@@ -502,7 +488,6 @@ describe("Phoenix Tail Transport", () => {
     expect(betaSeen).toEqual([7]);
 
     socket?.emitClose({ code: 1006, reason: "network reset" });
-    socket?.reconnectDelay(1);
     socket?.emitOpen();
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
@@ -525,137 +510,120 @@ describe("Phoenix Tail Transport", () => {
     expect(alphaSeen).toEqual([1, 2]);
     expect(betaSeen).toEqual([7, 8]);
 
-    alphaController.abort();
-    betaController.abort();
-    await Promise.all([alphaTail, betaTail]);
+    stopAlpha();
+    stopBeta();
+    alpha.disconnect();
+    beta.disconnect();
   });
 
-  it("starts replay from the provided object cursor and keeps live delivery fan-out one event at a time", async () => {
+  it("joins from the stored cursor and replays retained events to late listeners", async () => {
+    const store = new MemoryStore();
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_cursor") });
+      store,
+    }).session({ token: makeSessionToken("ses_replay") });
 
-    const tail = Array.fromAsync(
-      session.tail({
-        cursor: { epoch: 1, seq: 0 },
-        follow: false,
-        catchUpIdleMs: 10,
-      })
-    );
-
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    const channel = await waitForChannel("tail:ses_cursor");
-    expect(channel.joinCalls[0]).toEqual({
-      cursor: { epoch: 1, seq: 0 },
+    session.log.hydrate({
+      cursor: { epoch: 3, seq: 4 },
+      events: [],
+      lastSeq: 4,
     });
-    socket?.emitOpen();
-    channel.emitJoinOk({});
-
-    channel.emit("events", {
-      events: [
-        makeEvent(1, "agent:planner", { epoch: 1, seq: 1 }),
-        makeEvent(2, "agent:planner", { epoch: 1, seq: 2 }),
-      ],
-    });
-    await flush();
-
-    const replay = await tail;
-
-    expect(replay.map(({ event }) => event.seq)).toEqual([1, 2]);
-
-    session.disconnect();
-  });
-
-  it("replays buffered events to late subscribers on the same shared session channel", async () => {
-    const client = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    });
-    const token = makeSessionToken("ses_shared");
-    const first = client.session({ token });
-    const second = client.session({ token });
 
     const firstSeen: number[] = [];
     const secondSeen: number[] = [];
-
-    const stopFirst = first.on("event", (event) => {
+    const stopFirst = session.on("event", (event) => {
       firstSeen.push(event.seq);
     });
 
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    const channel = await waitForChannel("tail:ses_shared");
+    const channel = await waitForChannel("tail:ses_replay");
+    expect(channel.joinCalls[0]).toEqual({
+      cursor: { epoch: 3, seq: 4 },
+    });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [
+        makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
+        makeEvent(6, "agent:planner", { epoch: 3, seq: 6 }),
+      ],
+    });
+    await flush();
+
+    const stopSecond = session.on("event", (event) => {
+      secondSeen.push(event.seq);
+    });
+    await flush();
+
+    expect(firstSeen).toEqual([5, 6]);
+    expect(secondSeen).toEqual([5, 6]);
+
+    stopFirst();
+    stopSecond();
+    session.disconnect();
+  });
+
+  it("filters event listeners by agent without creating extra channels", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_filter") });
+
+    const plannerSeen: number[] = [];
+    const drafterSeen: number[] = [];
+    const stopPlanner = session.on(
+      "event",
+      (event) => {
+        plannerSeen.push(event.seq);
+      },
+      { agent: "planner" }
+    );
+    const stopDrafter = session.on(
+      "event",
+      (event) => {
+        drafterSeen.push(event.seq);
+      },
+      { agent: "drafter" }
+    );
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_filter");
+    expect(phoenixMock.MockPhoenixChannel.instances).toHaveLength(1);
+
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
       events: [
         makeEvent(1, "agent:planner", { epoch: 1, seq: 1 }),
-        makeEvent(2, "agent:planner", { epoch: 1, seq: 2 }),
+        makeEvent(2, "agent:drafter", { epoch: 1, seq: 2 }),
+        makeEvent(3, "agent:planner", { epoch: 1, seq: 3 }),
       ],
     });
     await flush();
 
-    const stopSecond = second.on("event", (event) => {
-      secondSeen.push(event.seq);
-    });
-    await flush();
+    expect(plannerSeen).toEqual([1, 3]);
+    expect(drafterSeen).toEqual([2]);
 
-    expect(phoenixMock.MockPhoenixChannel.instances).toHaveLength(1);
-    expect(firstSeen).toEqual([1, 2]);
-    expect(secondSeen).toEqual([1, 2]);
-
-    stopFirst();
-    stopSecond();
-    first.disconnect();
-    second.disconnect();
+    stopPlanner();
+    stopDrafter();
+    session.disconnect();
   });
 
-  it("fails fast if a legacy websocketFactory is provided for Phoenix tailing", async () => {
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-      websocketFactory: () => {
-        throw new Error("should not be used");
-      },
-    }).session({ token: makeSessionToken("ses_legacy_factory") });
-
-    await expect(Array.fromAsync(session.tail())).rejects.toBeInstanceOf(
-      StarciteError
-    );
-    await expect(Array.fromAsync(session.tail())).rejects.toThrow(
-      "websocketFactory is not supported"
-    );
-    expect(phoenixMock.MockPhoenixSocket.instances).toHaveLength(0);
-  });
-
-  it("rejects invalid batch sizes at the SDK boundary", async () => {
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_bad_batch_size") });
-
-    await expect(
-      Array.fromAsync(
-        session.tail({
-          batchSize: 1001,
-        })
-      )
-    ).rejects.toThrow("batchSize must be an integer between 1 and 1000");
-    expect(phoenixMock.MockPhoenixSocket.instances).toHaveLength(0);
-  });
-
-  it("surfaces gap events explicitly and rejoins the channel", async () => {
+  it("surfaces gap events explicitly and rejoins the channel from next_cursor", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_gap") });
 
-    const gaps: TailGapLike[] = [];
-    const stop = session.on("gap", (gap) => {
-      gaps.push(gap as TailGapLike);
+    const gaps: Record<string, unknown>[] = [];
+    const stopGap = session.on("gap", (gap) => {
+      gaps.push(gap as Record<string, unknown>);
     });
+    const stopEvents = session.on("event", () => undefined);
 
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
@@ -686,209 +654,65 @@ describe("Phoenix Tail Transport", () => {
       },
     ]);
     expect(channel.rejoinCalls.at(-1)).toEqual({
-      cursor: { epoch: 1, seq: 1 },
+      cursor: { epoch: 2, seq: 4 },
     });
 
-    stop();
+    stopGap();
+    stopEvents();
     session.disconnect();
   });
 
-  it("rejects tail iterators on token_expired", async () => {
+  it("surfaces token_expired to session error listeners and detaches the channel", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_expired") });
 
-    const controller = new AbortController();
-    const tail = Array.fromAsync(
-      session.tail({
-        signal: controller.signal,
-      })
-    );
-
-    await waitForSocketCount(1);
-    const channel = await waitForChannel("tail:ses_expired");
-    channel.emit("token_expired", { reason: "token_expired" });
-
-    await expect(tail).rejects.toBeInstanceOf(StarciteTokenExpiredError);
-  });
-
-  it("maps stalled Phoenix joins to the legacy connection-timeout error", async () => {
-    vi.useFakeTimers();
-
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_timeout") });
-
-    const tail = Array.fromAsync(
-      session.tail({
-        connectionTimeoutMs: 20,
-        reconnect: false,
-      })
-    );
-    const rejection = tail.catch((failure) => {
-      return failure;
+    const errors: Error[] = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
     });
+    const stopEvents = session.on("event", () => undefined);
 
     await waitForSocketCount(1);
-    await vi.advanceTimersByTimeAsync(21);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_expired");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("token_expired", { reason: "token_expired" });
+    await flush();
 
-    const error = await rejection;
-    expect(error).toBeInstanceOf(StarciteTailError);
-    expect((error as StarciteTailError).closeCode).toBe(4100);
-    expect((error as StarciteTailError).closeReason).toBe("connection timeout");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StarciteTokenExpiredError);
+    expect(channel.leaveCalls).toBe(1);
+
+    stopError();
+    stopEvents();
   });
 
-  it("treats join errors as reconnect failures and enforces retry_limit", async () => {
-    const lifecycleEvents: TailLifecycleEvent[] = [];
+  it("surfaces join failures to session error listeners", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_join_error") });
 
-    const tail = Array.fromAsync(
-      session.tail({
-        reconnect: true,
-        reconnectPolicy: {
-          initialDelayMs: 0,
-          maxAttempts: 0,
-          mode: "fixed",
-        },
-        onLifecycleEvent: (event) => {
-          lifecycleEvents.push(event);
-        },
-      })
-    );
-
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    const channel = await waitForChannel("tail:ses_join_error");
-    socket?.emitOpen();
-    channel.emitJoinError({ reason: "join denied" });
-
-    const error = await tail.catch((failure) => {
-      return failure;
+    const errors: Error[] = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
     });
-    expect(error).toBeInstanceOf(StarciteRetryLimitError);
-    expect(
-      lifecycleEvents.some((event) => {
-        return (
-          event.type === "connect_attempt" &&
-          event.attempt === 1 &&
-          event.cursor === undefined &&
-          event.sessionId === "ses_join_error"
-        );
-      })
-    ).toBe(true);
-  });
-
-  it("emits reconnect_scheduled lifecycle events for join timeouts", async () => {
-    const lifecycleEvents: TailLifecycleEvent[] = [];
-    const controller = new AbortController();
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_join_timeout") });
-
-    const tail = Array.fromAsync(
-      session.tail({
-        reconnect: true,
-        reconnectPolicy: {
-          initialDelayMs: 0,
-          maxAttempts: 1,
-          mode: "fixed",
-        },
-        onLifecycleEvent: (event) => {
-          lifecycleEvents.push(event);
-        },
-        signal: controller.signal,
-      })
-    );
+    const stopEvents = session.on("event", () => undefined);
 
     await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    const channel = await waitForChannel("tail:ses_join_timeout");
-    socket?.emitOpen();
-    channel.emitJoinTimeout();
+    const channel = await waitForChannel("tail:ses_join_error");
+    channel.emitJoinError({ reason: "join denied" });
     await flush();
 
-    expect(
-      lifecycleEvents.some((event) => {
-        return (
-          event.type === "reconnect_scheduled" &&
-          event.attempt === 1 &&
-          event.delayMs === 0 &&
-          event.sessionId === "ses_join_timeout" &&
-          event.trigger === "connect_failed"
-        );
-      })
-    ).toBe(true);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StarciteTailError);
+    expect(errors[0]?.message).toContain("join denied");
 
-    controller.abort();
-    await tail;
-  });
-
-  it("retries after transport error followed by close=1000", async () => {
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_error_then_close") });
-
-    const tail = Array.fromAsync(
-      session.tail({
-        reconnect: true,
-        reconnectPolicy: {
-          initialDelayMs: 0,
-          maxAttempts: 0,
-          mode: "fixed",
-        },
-      })
-    );
-
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    const channel = await waitForChannel("tail:ses_error_then_close");
-    socket?.emitOpen();
-    channel.emitJoinOk({});
-
-    socket?.emitError(new Error("transport failed"), 1);
-    socket?.emitClose({ code: 1000, reason: "normal close" });
-
-    const error = await tail.catch((failure) => {
-      return failure;
-    });
-    expect(error).toBeInstanceOf(StarciteRetryLimitError);
-    expect((error as StarciteRetryLimitError).closeCode).toBe(1000);
-    expect((error as StarciteRetryLimitError).closeReason).toBe("normal close");
-  });
-
-  it("honors reconnect jitter in the shared Phoenix socket policy", async () => {
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
-    const session = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: vi.fn<typeof fetch>(),
-    }).session({ token: makeSessionToken("ses_jitter") });
-
-    const controller = new AbortController();
-    const tail = Array.fromAsync(
-      session.tail({
-        reconnectPolicy: {
-          initialDelayMs: 10,
-          jitterRatio: 0.5,
-          mode: "fixed",
-        },
-        signal: controller.signal,
-      })
-    );
-
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    expect(socket?.reconnectDelay(1)).toBe(15);
-
-    controller.abort();
-    await tail;
-    expect(randomSpy).toHaveBeenCalled();
+    stopError();
+    stopEvents();
   });
 
   it("cleans up channels per session and disconnects the shared socket when the last subscription leaves", async () => {
@@ -927,24 +751,3 @@ describe("Phoenix Tail Transport", () => {
     expect(socket?.disconnectCalls).toHaveLength(1);
   });
 });
-
-interface TailGapLike {
-  type?: "gap";
-  reason?: "cursor_expired" | "epoch_stale" | "rollback";
-  from_cursor?: {
-    epoch: number;
-    seq: number;
-  };
-  next_cursor?: {
-    epoch: number;
-    seq: number;
-  };
-  committed_cursor?: {
-    epoch: number;
-    seq: number;
-  };
-  earliest_available_cursor?: {
-    epoch: number;
-    seq: number;
-  };
-}

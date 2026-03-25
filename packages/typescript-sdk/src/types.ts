@@ -228,20 +228,6 @@ export type SessionEventListener<TEvent extends SessionEvent = SessionEvent> = (
 ) => void | Promise<void>;
 
 /**
- * Item yielded by `session.tail(...)` async iterators.
- */
-export interface SessionTailItem<TEvent extends SessionEvent = SessionEvent> {
-  /**
-   * Canonical ordered event.
-   */
-  event: TEvent;
-  /**
-   * Replay/live classification for this event.
-   */
-  context: SessionEventContext;
-}
-
-/**
  * Listener options for `session.on("event", ...)`.
  */
 export interface SessionOnEventOptions<
@@ -259,19 +245,11 @@ export interface SessionOnEventOptions<
    * Schema validation failures are surfaced as session `error` events.
    */
   schema?: z.ZodType<TEvent>;
+  /**
+   * Optional filter for `agent:<name>` events.
+   */
+  agent?: string;
 }
-
-/**
- * Options for async iterator tails.
- */
-export interface SessionTailIteratorOptions<
-  TEvent extends SessionEvent = SessionEvent,
-> extends SessionTailOptions,
-    SessionOnEventOptions<TEvent> {}
-/**
- * Raw tail event batch grouped by a single WebSocket frame.
- */
-export type TailEventBatch = TailEvent[];
 
 /**
  * Server-emitted gap payload surfaced by the tail transport.
@@ -612,153 +590,6 @@ export const SessionAppendInputSchema = z
 export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
 
 /**
- * Options for streaming events from a session.
- */
-export interface SessionTailOptions {
-  /**
-   * Starting cursor in the event stream.
-   *
-   * Omit to stream from the start.
-   */
-  cursor?: TailCursor;
-  /**
-   * Tail frame batch size (`1..1000`).
-   *
-   * When greater than `1`, Starcite may emit batched WebSocket frames.
-   */
-  batchSize?: number;
-  /**
-   * Optional filter for `agent:<name>` events.
-   */
-  agent?: string;
-  /**
-   * Idle window in milliseconds used for replay-only tails (`follow=false`) before auto-close.
-   *
-   * Defaults to `1000`.
-   */
-  catchUpIdleMs?: number;
-  /**
-   * Automatically reconnect on transport failures and continue from the last observed sequence.
-   *
-   * Defaults to `true`.
-   */
-  reconnect?: boolean;
-  /**
-   * Reconnect policy for transport failures.
-   */
-  reconnectPolicy?: TailReconnectPolicy;
-  /**
-   * When `false`, exit after replaying stored events instead of streaming live.
-   *
-   * Defaults to `true`.
-   */
-  follow?: boolean;
-  /**
-   * Optional abort signal to close the stream.
-   */
-  signal?: AbortSignal;
-  /**
-   * Maximum number of tail batches buffered in-memory while the consumer is busy.
-   *
-   * Defaults to `1024`. When exceeded, the stream fails with `StarciteTailError`.
-   */
-  maxBufferedBatches?: number;
-  /**
-   * Optional lifecycle callback invoked for reconnect/drop/terminal stream state changes.
-   */
-  onLifecycleEvent?: (event: TailLifecycleEvent) => void;
-  /**
-   * Optional callback invoked when the server reports an explicit tail gap.
-   */
-  onGap?: (gap: TailGap) => void;
-  /**
-   * Maximum time to wait for websocket handshake/open before reconnecting or failing.
-   *
-   * Defaults to `12000`.
-   */
-  connectionTimeoutMs?: number;
-  /**
-   * Optional inactivity watchdog. When set, the stream reconnects when no messages
-   * arrive within this duration.
-   */
-  inactivityTimeoutMs?: number;
-}
-
-/**
- * Tail reconnect tuning knobs.
- */
-export interface TailReconnectPolicy {
-  /**
-   * Reconnect mode. `fixed` retries at the same delay, `exponential` increases delay after repeated failures.
-   *
-   * Defaults to `exponential`.
-   */
-  mode?: "fixed" | "exponential";
-  /**
-   * Initial reconnect delay in milliseconds.
-   *
-   * Defaults to `500`.
-   */
-  initialDelayMs?: number;
-  /**
-   * Maximum reconnect delay in milliseconds.
-   *
-   * Defaults to `15000`.
-   */
-  maxDelayMs?: number;
-  /**
-   * Exponential growth factor applied after each failed reconnect attempt.
-   *
-   * Defaults to `2`.
-   */
-  multiplier?: number;
-  /**
-   * Optional jitter ratio (`0..1`) applied around the computed delay.
-   *
-   * Defaults to `0.2`.
-   */
-  jitterRatio?: number;
-  /**
-   * Maximum number of reconnect attempts before failing.
-   *
-   * Defaults to unlimited retries.
-   */
-  maxAttempts?: number;
-}
-
-/**
- * Stream lifecycle event emitted by `tail*()` APIs.
- */
-export type TailLifecycleEvent =
-  | {
-      type: "connect_attempt";
-      sessionId: string;
-      attempt: number;
-      cursor?: TailCursor;
-    }
-  | {
-      type: "reconnect_scheduled";
-      sessionId: string;
-      attempt: number;
-      delayMs: number;
-      trigger: "connect_failed" | "dropped";
-      closeCode?: number;
-      closeReason?: string;
-    }
-  | {
-      type: "stream_dropped";
-      sessionId: string;
-      attempt: number;
-      closeCode?: number;
-      closeReason?: string;
-    }
-  | {
-      type: "stream_ended";
-      sessionId: string;
-      reason: "aborted" | "caught_up" | "graceful";
-    };
-
-/**
  * Options for listing sessions.
  */
 export const SessionListOptionsSchema = z.object({
@@ -768,51 +599,6 @@ export const SessionListOptionsSchema = z.object({
 });
 
 export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
-
-/**
- * Minimal WebSocket contract required by the SDK.
- */
-export interface StarciteWebSocketMessageEvent {
-  data: unknown;
-}
-
-export interface StarciteWebSocketCloseEvent {
-  code?: number;
-  reason?: string;
-}
-
-export interface StarciteWebSocketEventMap {
-  open: unknown;
-  message: StarciteWebSocketMessageEvent;
-  error: unknown;
-  close: StarciteWebSocketCloseEvent;
-}
-
-export interface StarciteWebSocket {
-  binaryType?: BinaryType;
-  bufferedAmount?: number;
-  onclose?: ((event: unknown) => void) | null;
-  onerror?: ((event: unknown) => void) | null;
-  onmessage?: ((event: unknown) => void) | null;
-  onopen?: ((event: unknown) => void) | null;
-  readyState?: number;
-  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
-  timeout?: number;
-  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
-    type: TType,
-    listener: (event: StarciteWebSocketEventMap[TType]) => void
-  ): void;
-  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
-    type: TType,
-    listener: (event: StarciteWebSocketEventMap[TType]) => void
-  ): void;
-  close(code?: number, reason?: string): void;
-}
-
-/**
- * Factory used to create the WebSocket connection for `tail`.
- */
-export type StarciteWebSocketFactory = (url: string) => StarciteWebSocket;
 
 /**
  * Options forwarded to individual HTTP requests.
@@ -850,11 +636,6 @@ export interface StarciteOptions {
    * this from API key JWT `iss` (issuer authority) or `STARCITE_AUTH_URL`.
    */
   authUrl?: string;
-  /**
-   * Deprecated. The shared channel tail transport does not support a custom raw
-   * WebSocket factory.
-   */
-  websocketFactory?: StarciteWebSocketFactory;
   /**
    * Optional session store used for resume state + retained event persistence.
    *

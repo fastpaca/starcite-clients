@@ -203,7 +203,6 @@ import {
   type AppendResult,
   type SessionEvent,
   type SessionStore,
-  type StarciteWebSocket,
 } from "@starcite/sdk";
 
 // ── Construction ────────────────────────────────────────────────────────────
@@ -213,7 +212,7 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
-  store: new MemoryStore(), // log seq cursor + tail resume cursor + event persistence
+  store: new MemoryStore(), // log state + resume cursor + event persistence
 });
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
@@ -268,43 +267,36 @@ session.resetAppendQueue(); // drop queued appends and rotate managed producer i
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
 // Late subscribers get synchronous replay of log.events, then live events.
-// WS connects lazily on first subscriber, disconnects when all leave.
+// The shared socket connects lazily on first subscriber and disconnects when all leave.
 const unsub = session.on("event", (event) => {
   console.log(event.seq);
 });
 
-// Fatal errors only (for example token expiry). Transient drops auto-reconnect.
+// Transport failures surface here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
 });
 
+const unsubGap = session.on("gap", (gap) => {
+  console.warn(gap.reason, gap.next_cursor);
+});
+
 unsub();
 unsubErr();
+unsubGap();
 
 // ── Teardown ────────────────────────────────────────────────────────────────
 
-session.disconnect(); // stops WS immediately, removes all listeners
+session.disconnect(); // leaves the channel immediately, removes all listeners
 ```
 
-## Tail Reliability Controls
+## Streaming Model
 
-`SessionTailOptions` supports:
-
-- `cursor`, `batchSize`, `agent`
-- `follow`, `reconnect`, `reconnectPolicy`
-- `connectionTimeoutMs`, `inactivityTimeoutMs`
-- `maxBufferedBatches`
-- `signal`
-- `onLifecycleEvent`, `onGap`
-
-Tail cursor rules:
-
-- `cursor` is object-only: `{ epoch, seq }`
-- omit `cursor` to stream from the beginning
-- `batchSize` must be an integer `1..1000`
-- `gap` callbacks receive the explicit server payload with `from_cursor`, `next_cursor`, `committed_cursor`, and `earliest_available_cursor`
-
-This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
+- `session.on("event")` is the only streaming API.
+- Listeners replay retained `session.log.events` synchronously by default, then receive live events.
+- The session resumes from `session.log.cursor` when a store is configured.
+- `session.on("gap")` surfaces explicit server gap payloads with `from_cursor`, `next_cursor`, `committed_cursor`, and `earliest_available_cursor`.
+- Use `SessionOnEventOptions.agent` to filter `agent:<name>` events without opening another channel.
 
 ## Session Stores
 
@@ -327,9 +319,8 @@ This is designed for robust reconnect + resume semantics in long-running multi-a
 - `StarciteApiError` for non-2xx responses
 - `StarciteConnectionError` for transport/JSON issues
 - `StarciteTailError` for streaming failures
+- `StarciteTailGapError` when the server reports an explicit gap and no gap listener handles it
 - `StarciteTokenExpiredError` when the server emits `token_expired`
-- `StarciteRetryLimitError` when reconnect budget is exhausted
-- `StarciteBackpressureError` when consumer buffering limits are exceeded
 
 ## Local Development
 

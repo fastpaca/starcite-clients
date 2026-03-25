@@ -96,6 +96,8 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredIdentity?: StarciteIdentity;
+  private readonly socketAuthToken: string | undefined;
+  private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
 
@@ -121,17 +123,16 @@ export class Starcite {
     const socketAuthToken = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
+    this.socketAuthToken = socketAuthToken;
+    this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
 
     this.transport = {
       baseUrl,
-      websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
-      customWebSocketFactoryProvided: options.websocketFactory !== undefined,
       authorization: authorization ?? null,
-      socketAuth: {
-        key: socketAuthToken ? `api:${socketAuthToken}` : "anonymous",
+      tailSocketManager: new TailSocketManager({
+        socketUrl: this.socketUrl,
         token: socketAuthToken,
-      },
-      tailSocketManager: new TailSocketManager(),
+      }),
       fetchFn,
       headers,
     };
@@ -289,10 +290,7 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token, {
-        key: this.transport.socketAuth.token
-          ? this.transport.socketAuth.key
-          : `session:${tokenResponse.token}`,
-        token: this.transport.socketAuth.token ?? tokenResponse.token,
+        token: this.socketAuthToken ?? tokenResponse.token,
       }),
       store: this.store,
       record,
@@ -322,10 +320,7 @@ export class Starcite {
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport: this.buildSessionTransport(token, {
-        key: `session:${token}`,
-        token,
-      }),
+      transport: this.buildSessionTransport(token, { token }),
       store: this.store,
       logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
@@ -334,12 +329,20 @@ export class Starcite {
 
   private buildSessionTransport(
     token: string,
-    socketAuth: TransportConfig["socketAuth"]
+    socketAuth: { token: string | undefined }
   ): TransportConfig {
+    const tailSocketManager =
+      socketAuth.token === this.socketAuthToken
+        ? this.transport.tailSocketManager
+        : new TailSocketManager({
+            socketUrl: this.socketUrl,
+            token: socketAuth.token,
+          });
+
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
-      socketAuth,
+      tailSocketManager,
     };
   }
 

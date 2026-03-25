@@ -2,17 +2,41 @@ import {
   SessionLogConflictError,
   SessionLogGapError,
   type StarciteSession,
+  StarciteTailGapError,
+  type TailCursor,
 } from "@starcite/sdk";
 import {
   type CliRuntime,
   CliUsageError,
-  DEFAULT_TAIL_BATCH_SIZE,
   type GlobalOptions,
   parseArgs,
   parseNonNegativeInteger,
 } from "../runtime";
 
 const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
+const NO_FOLLOW_IDLE_MS = 1000;
+
+function parseTailCursorArg(input: string, flagName: string): TailCursor {
+  const [epoch, seq, extra] = input.split(":");
+  const parsedEpoch = Number(epoch);
+  const parsedSeq = Number(seq);
+  if (
+    extra !== undefined ||
+    epoch === undefined ||
+    seq === undefined ||
+    !Number.isInteger(parsedEpoch) ||
+    parsedEpoch <= 0 ||
+    !Number.isInteger(parsedSeq) ||
+    parsedSeq < 0
+  ) {
+    throw new CliUsageError(`${flagName} must be in <epoch>:<seq> format`);
+  }
+
+  return {
+    epoch: parsedEpoch,
+    seq: parsedSeq,
+  };
+}
 
 export async function runTailCommand(
   args: string[],
@@ -40,8 +64,8 @@ export async function runTailCommand(
     abortController.abort();
   };
   const cursor = parsed["--cursor"]
-    ? parseNonNegativeInteger(parsed["--cursor"], "--cursor")
-    : 0;
+    ? parseTailCursorArg(parsed["--cursor"], "--cursor")
+    : undefined;
   const limit = parsed["--limit"]
     ? parseNonNegativeInteger(parsed["--limit"], "--limit")
     : undefined;
@@ -102,36 +126,116 @@ async function emitTailEvents({
 }: {
   session: StarciteSession;
   agent?: string;
-  cursor: number;
+  cursor: TailCursor | undefined;
   follow: boolean;
   limit: number | undefined;
   json: boolean;
   runtime: CliRuntime;
   signal: AbortSignal;
 }): Promise<void> {
-  let emitted = 0;
-
-  for await (const { event } of session.tail({
-    cursor,
-    batchSize: DEFAULT_TAIL_BATCH_SIZE,
-    agent,
-    follow,
-    signal,
-  })) {
-    if (limit !== undefined && emitted >= limit) {
-      return;
-    }
-
-    if (json) {
-      runtime.writeJsonOutput(event);
-    } else {
-      runtime.logger.info(runtime.formatTailEvent(event));
-    }
-
-    emitted += 1;
-
-    if (limit !== undefined && emitted >= limit) {
-      return;
-    }
+  if (cursor) {
+    session.log.hydrate({
+      cursor,
+      events: [],
+      lastSeq: cursor.seq,
+    });
   }
+
+  if (limit !== undefined && limit <= 0) {
+    return;
+  }
+
+  return await new Promise<void>((resolve, reject) => {
+    let emitted = 0;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+
+    const cleanup = () => {
+      stopEvents();
+      stopGap();
+      stopError();
+      signal.removeEventListener("abort", handleAbort);
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+    };
+
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const fail = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const resetIdleTimer = () => {
+      if (follow) {
+        return;
+      }
+
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+
+      idleTimer = setTimeout(() => {
+        finish();
+      }, NO_FOLLOW_IDLE_MS);
+    };
+
+    const handleAbort = () => {
+      finish();
+    };
+
+    const stopError = session.on("error", (error) => {
+      fail(error);
+    });
+    const stopGap = session.on("gap", (_gap) => {
+      fail(
+        new StarciteTailGapError(
+          `Tail gap reported for session '${session.id}'`,
+          { sessionId: session.id }
+        )
+      );
+    });
+    const stopEvents = session.on(
+      "event",
+      (event) => {
+        if (limit !== undefined && emitted >= limit) {
+          finish();
+          return;
+        }
+
+        if (json) {
+          runtime.writeJsonOutput(event);
+        } else {
+          runtime.logger.info(runtime.formatTailEvent(event));
+        }
+
+        emitted += 1;
+
+        if (limit !== undefined && emitted >= limit) {
+          finish();
+          return;
+        }
+
+        resetIdleTimer();
+      },
+      { agent }
+    );
+
+    signal.addEventListener("abort", handleAbort, { once: true });
+    resetIdleTimer();
+  });
 }
