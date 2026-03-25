@@ -147,10 +147,12 @@ export interface AppendResult {
   deduped: boolean;
 }
 
-const EncodedTailCursorSchema = z.string().regex(/^E:\d+$/);
+const EncodedTailCursorSchema = z.string().regex(/^\d+:\d+$/);
 
 /**
  * Tail resume cursor accepted by the Phoenix channel transport.
+ *
+ * Encoded cursors use the server's `<epoch>:<seq>` format.
  */
 export const TailCursorSchema = z.union([
   z.number().int().nonnegative(),
@@ -162,12 +164,22 @@ export const TailCursorSchema = z.union([
  */
 export type TailCursor = z.infer<typeof TailCursorSchema>;
 
+const TailEventCursorSchema = z.union([
+  TailCursorSchema,
+  z
+    .object({
+      epoch: z.number().int().positive(),
+      seq: z.number().int().nonnegative(),
+    })
+    .transform(({ epoch, seq }) => `${epoch}:${seq}`),
+]);
+
 /**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
-  cursor: TailCursorSchema.optional(),
+  cursor: TailEventCursorSchema.optional(),
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
@@ -562,8 +574,8 @@ export interface SessionStore<TEvent extends TailEvent = TailEvent> {
 /**
  * High-level `session.append()` input.
  *
- * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
- * Just provide `text` or `payload`.
+ * The SDK manages `producer_id` and `producer_seq` automatically.
+ * Provide `text` or `payload`, and optionally override `actor`.
  */
 export const SessionAppendInputSchema = z
   .object({

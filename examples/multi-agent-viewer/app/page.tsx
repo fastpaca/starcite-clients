@@ -284,11 +284,16 @@ function deriveFeed(events: readonly SessionEvent[]) {
 
   for (const ev of events) {
     if (FEED_TYPES.has(ev.type)) {
-      const agent = ev.actor.startsWith("agent:") ? ev.actor.slice(6) : ev.actor.startsWith("user:") ? "user" : (pl(ev).agent as string ?? "user");
+      const payload = pl(ev);
+      const agent = ev.type === "message.user"
+        ? "user"
+        : ev.type === "research.finding"
+          ? (payload.agent as string) ?? "coordinator"
+          : "coordinator";
       committed.push({
         agent, seq: ev.seq, type: ev.type,
-        name: agent === "user" ? "You" : (pl(ev).name as string) ?? agent,
-        text: (pl(ev).text as string) ?? "",
+        name: agent === "user" ? "You" : (payload.name as string) ?? titleCaseAgent(agent),
+        text: (payload.text as string) ?? "",
       });
     }
     if (ev.type === "agent.streaming.chunk") {
@@ -324,4 +329,14 @@ function discoverAgents(events: readonly SessionEvent[]): Map<string, AgentColor
 function pl(event: SessionEvent): Record<string, unknown> {
   const p = event.payload;
   return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
+}
+
+function titleCaseAgent(agent: string): string {
+  return agent
+    .split("-")
+    .filter(Boolean)
+    .map((segment) => {
+      return segment[0]?.toUpperCase() + segment.slice(1);
+    })
+    .join(" ");
 }

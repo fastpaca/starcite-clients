@@ -162,12 +162,41 @@ describe("Starcite", () => {
       expect.objectContaining({
         type: "content",
         payload: { text: "Found 8 relevant cases..." },
-        actor: "agent:researcher",
         source: "agent",
       })
     );
+    expect(body.actor).toBeUndefined();
     expect(body.producer_id).toEqual(expect.any(String));
     expect(body.producer_seq).toBe(1);
+  });
+
+  it("preserves an explicit actor override when appending", async () => {
+    const sessionToken = makeTailSessionToken("ses_actor_override", "writer");
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
+        status: 201,
+      })
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const session = await starcite.session({ token: sessionToken });
+
+    await session.append({
+      actor: "agent:researcher",
+      payload: { text: "custom actor" },
+      type: "custom",
+    });
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(requestInit.body as string);
+
+    expect(body.actor).toBe("agent:researcher");
+    expect(body.type).toBe("custom");
+    expect(body.payload).toEqual({ text: "custom actor" });
   });
 
   it("serializes concurrent appends for a session producer", async () => {

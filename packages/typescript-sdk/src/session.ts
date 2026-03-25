@@ -253,7 +253,7 @@ export class StarciteSession {
   /**
    * Appends an event to this session.
    *
-   * The SDK manages `actor`, `producer_id`, and `producer_seq` automatically.
+   * The SDK manages `producer_id` and `producer_seq` automatically.
    */
   append(
     input: SessionAppendInput,
@@ -267,7 +267,7 @@ export class StarciteSession {
       request: {
         type: parsed.type ?? "content",
         payload: parsed.payload ?? { text: parsed.text },
-        actor: parsed.actor ?? this.identity.toActor(),
+        actor: parsed.actor,
         producer_id: this.appendProducerId,
         producer_seq: this.nextManagedProducerSeq(),
         source: parsed.source ?? "agent",

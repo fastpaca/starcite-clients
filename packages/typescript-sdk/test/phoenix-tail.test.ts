@@ -350,7 +350,16 @@ function makeSessionToken(sessionId: string, principalId = "planner"): string {
   });
 }
 
-function makeEvent(seq: number, actor = "agent:planner", cursor?: string) {
+function makeEvent(
+  seq: number,
+  actor = "agent:planner",
+  cursor?:
+    | string
+    | {
+        epoch: number;
+        seq: number;
+      }
+) {
   return {
     actor,
     cursor,
@@ -474,7 +483,6 @@ describe("Phoenix Tail Transport", () => {
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
     expect(socket?.endPoint).toBe("ws://localhost:4000/v1/socket");
     expect(socket?.currentParams()).toEqual({
-      access_token: makeApiKey(),
       token: makeApiKey(),
     });
 
@@ -487,10 +495,10 @@ describe("Phoenix Tail Transport", () => {
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
     alphaChannel.emit("events", {
-      events: [makeEvent(1, "agent:planner", "E:1")],
+      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
     });
     betaChannel.emit("events", {
-      events: [makeEvent(7, "agent:planner", "E:7")],
+      events: [makeEvent(7, "agent:planner", { epoch: 1, seq: 7 })],
     });
     await flush();
 
@@ -503,14 +511,14 @@ describe("Phoenix Tail Transport", () => {
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
 
-    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "E:1" });
-    expect(betaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "E:7" });
+    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "1:1" });
+    expect(betaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "1:7" });
 
     alphaChannel.emit("events", {
-      events: [makeEvent(2, "agent:planner", "E:2")],
+      events: [makeEvent(2, "agent:planner", { epoch: 1, seq: 2 })],
     });
     betaChannel.emit("events", {
-      events: [makeEvent(8, "agent:planner", "E:8")],
+      events: [makeEvent(8, "agent:planner", { epoch: 1, seq: 8 })],
     });
     await flush();
 
@@ -541,8 +549,8 @@ describe("Phoenix Tail Transport", () => {
 
     channel.emit("events", {
       events: [
-        makeEvent(1, "agent:planner", "E:1"),
-        makeEvent(2, "agent:planner", "E:2"),
+        makeEvent(1, "agent:planner", "1:1"),
+        makeEvent(2, "agent:planner", "1:2"),
       ],
     });
     await flush();
@@ -551,6 +559,50 @@ describe("Phoenix Tail Transport", () => {
 
     stop();
     session.disconnect();
+  });
+
+  it("replays buffered events to late subscribers on the same shared session channel", async () => {
+    const client = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+    const token = makeSessionToken("ses_shared");
+    const first = client.session({ token });
+    const second = client.session({ token });
+
+    const firstSeen: number[] = [];
+    const secondSeen: number[] = [];
+
+    const stopFirst = first.on("event", (event) => {
+      firstSeen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_shared");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [
+        makeEvent(1, "agent:planner", "1:1"),
+        makeEvent(2, "agent:planner", "1:2"),
+      ],
+    });
+    await flush();
+
+    const stopSecond = second.on("event", (event) => {
+      secondSeen.push(event.seq);
+    });
+    await flush();
+
+    expect(phoenixMock.MockPhoenixChannel.instances).toHaveLength(1);
+    expect(firstSeen).toEqual([1, 2]);
+    expect(secondSeen).toEqual([1, 2]);
+
+    stopFirst();
+    stopSecond();
+    first.disconnect();
+    second.disconnect();
   });
 
   it("fails fast if a legacy websocketFactory is provided for Phoenix tailing", async () => {
@@ -588,16 +640,16 @@ describe("Phoenix Tail Transport", () => {
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
-      events: [makeEvent(1, "agent:planner", "E:1")],
+      events: [makeEvent(1, "agent:planner", "1:1")],
     });
     channel.emit("gap", {
-      last_cursor: "E:1",
+      last_cursor: "1:1",
       reason: "gap",
     });
     await flush();
 
-    expect(gaps).toEqual([{ last_cursor: "E:1", reason: "gap" }]);
-    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: "E:1" });
+    expect(gaps).toEqual([{ last_cursor: "1:1", reason: "gap" }]);
+    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: "1:1" });
 
     stop();
     session.disconnect();

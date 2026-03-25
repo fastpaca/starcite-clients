@@ -14,6 +14,7 @@ import {
 
 const CONNECTION_TIMEOUT_CLOSE_CODE = 4100;
 const CONNECTION_TIMEOUT_REASON = "connection timeout";
+const ENCODED_CURSOR_PATTERN = /^(\d+):(\d+)$/;
 
 const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
@@ -102,6 +103,7 @@ interface TailSession {
   channel: RejoinableChannel;
   consumers: Set<TailSocketConsumer>;
   eventBindingRef: number;
+  history: TailEvent[];
   gapBindingRef: number;
   lastCursor: TailCursor;
   ready: boolean;
@@ -144,6 +146,12 @@ export class TailSocketManager {
     const existingSession = connection.sessions.get(input.sessionId);
     if (existingSession) {
       existingSession.consumers.add(consumer);
+      const bufferedEvents = existingSession.history.filter((event) => {
+        return this.isEventAfterCursor(event, input.cursor);
+      });
+      if (bufferedEvents.length > 0) {
+        consumer.onEvents(bufferedEvents);
+      }
       if (!existingSession.ready) {
         this.armConnectionTimeout(existingSession, consumer);
       }
@@ -179,6 +187,7 @@ export class TailSocketManager {
       channel,
       consumers: new Set([consumer]),
       eventBindingRef: 0,
+      history: [],
       gapBindingRef: 0,
       lastCursor: input.cursor,
       ready: false,
@@ -376,7 +385,6 @@ export class TailSocketManager {
         }
 
         return {
-          access_token: connection.auth.token,
           token: connection.auth.token,
         };
       },
@@ -510,6 +518,41 @@ export class TailSocketManager {
     return connection;
   }
 
+  private isEventAfterCursor(event: TailEvent, cursor: TailCursor): boolean {
+    if (typeof cursor === "number") {
+      return event.seq > cursor;
+    }
+
+    const cursorMatch = ENCODED_CURSOR_PATTERN.exec(cursor);
+    if (!cursorMatch) {
+      return false;
+    }
+
+    const cursorEpoch = Number(cursorMatch[1]);
+    const cursorSeq = Number(cursorMatch[2]);
+    const eventCursor = event.cursor;
+
+    if (typeof eventCursor === "string") {
+      const eventMatch = ENCODED_CURSOR_PATTERN.exec(eventCursor);
+      if (!eventMatch) {
+        return event.seq > cursorSeq;
+      }
+
+      const eventEpoch = Number(eventMatch[1]);
+      const eventSeq = Number(eventMatch[2]);
+      return (
+        eventEpoch > cursorEpoch ||
+        (eventEpoch === cursorEpoch && eventSeq > cursorSeq)
+      );
+    }
+
+    if (typeof eventCursor === "number") {
+      return eventCursor > cursorSeq;
+    }
+
+    return event.seq > cursorSeq;
+  }
+
   private handleEvents(session: TailSession, payload: unknown): void {
     const result = TailEventsPayloadSchema.safeParse(payload);
     if (!result.success) {
@@ -520,6 +563,7 @@ export class TailSocketManager {
     this.clearConnectionTimeouts(session);
 
     for (const event of result.data.events) {
+      session.history.push(event);
       session.lastCursor = event.cursor ?? event.seq;
     }
 
