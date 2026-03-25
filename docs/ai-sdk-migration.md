@@ -178,6 +178,7 @@ Backend behavior requirements:
 - change only the transport/orchestration substrate
 - use `session.events()` as the canonical chat history
 - append assistant output back into Starcite instead of returning it as the UI transport
+- keep demo/server code direct: stream with AI SDK and append deltas directly to the session
 
 ## 6. Ownership And Routing
 
@@ -217,8 +218,10 @@ Do not implement any of these patterns:
 - backend returns `toUIMessageStreamResponse()` to drive the UI
 - assistant output is kept outside Starcite as a special HTTP stream
 - bootstrap/session-token route is used to perform backend orchestration
+- session token issuance is combined with listener registration or agent startup
 - public worker/runtime/framework abstractions are introduced on top of Starcite
 - every agent is attached to every session by default
+- simple AI SDK streaming is wrapped in extra batching/accumulation helpers in the demo path
 
 ## 9. Required Public Surface
 

@@ -69,7 +69,6 @@ export default function Page() {
 
   const agents = discoverAgents(events);
   const { committed, pending } = deriveFeed(events);
-  const hasAsked = committed.some((e) => e.type === "message.user");
 
   if (!sessionId) {
     return (
@@ -97,10 +96,10 @@ export default function Page() {
       <Feed committed={committed} pending={pending} agents={agents} />
 
       {pending.length > 0 ? (
-        <StatusBar count={pending.length} sessionId={sessionId} />
-      ) : !hasAsked ? (
+        <StatusBar count={pending.length} />
+      ) : (
         <InputBar onSend={sendMessage} />
-      ) : null}
+      )}
     </div>
   );
 }
@@ -239,18 +238,13 @@ function Spinner({ className }: { className?: string }) {
 
 // -- Status Bar --
 
-function StatusBar({ count, sessionId }: { count: number; sessionId: string }) {
+function StatusBar({ count }: { count: number }) {
   return (
     <div className="border-t border-border bg-muted/30 px-4 py-3">
       <div className="mx-auto flex max-w-3xl items-center justify-center gap-3">
         <span className="text-sm text-muted-foreground">
           {count === 1 ? "1 agent working..." : `${count} agents working concurrently...`}
         </span>
-        <button type="button"
-          onClick={() => fetch("/api/starcite/session", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId }) }).catch(() => {})}
-          className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
-          Stop
-        </button>
       </div>
     </div>
   );
@@ -275,53 +269,78 @@ function InputBar({ onSend }: { onSend: (text: string) => void }) {
 
 // -- Feed derivation (pure function of events) --
 
-const FEED_TYPES = new Set(["message.user", "research.plan", "research.finding", "synthesis"]);
-
 function deriveFeed(events: readonly SessionEvent[]) {
   const committed: FeedEntry[] = [];
   const streams = new Map<string, FeedEntry>();
-  const done = new Set<string>();
 
   for (const ev of events) {
-    if (FEED_TYPES.has(ev.type)) {
-      const payload = pl(ev);
-      const agent = ev.type === "message.user"
-        ? "user"
-        : ev.type === "research.finding"
-          ? (payload.agent as string) ?? "coordinator"
-          : "coordinator";
+    if (ev.type === "message.user") {
+      const agent = ev.actor.startsWith("agent:")
+        ? ev.actor.slice(6)
+        : ev.actor.startsWith("user:")
+          ? "user"
+          : ((pl(ev).agent as string) ?? "user");
       committed.push({
-        agent, seq: ev.seq, type: ev.type,
-        name: agent === "user" ? "You" : (payload.name as string) ?? titleCaseAgent(agent),
-        text: (payload.text as string) ?? "",
+        agent,
+        seq: ev.seq,
+        type: ev.type,
+        name: agent === "user" ? "You" : ((pl(ev).name as string) ?? agent),
+        text: (pl(ev).text as string) ?? "",
       });
+      continue;
     }
+
     if (ev.type === "agent.streaming.chunk") {
       const p = pl(ev);
-      streams.set(p.agent as string, {
-        agent: p.agent as string, name: (p.name as string) ?? (p.agent as string),
-        text: p.accumulated as string, seq: p.originSeq as number, type: ev.type,
+      const agent = typeof p.agent === "string" ? p.agent : "agent";
+      const current = streams.get(agent);
+      streams.set(agent, {
+        agent,
+        name: (p.name as string) ?? agent,
+        text: `${current?.text ?? ""}${typeof p.delta === "string" ? p.delta : ""}`,
+        seq: current?.seq ?? ev.seq,
+        type: ev.type,
       });
+      continue;
     }
+
     if (ev.type === "agent.done") {
-      done.add(`${pl(ev).agent}:${pl(ev).originSeq}`);
+      const p = pl(ev);
+      const agent = typeof p.agent === "string" ? p.agent : "";
+      if (!agent) {
+        continue;
+      }
+      const stream = streams.get(agent);
+      streams.delete(agent);
+      if (stream?.text) {
+        committed.push({
+          agent: stream.agent,
+          name: stream.name,
+          text: stream.text,
+          seq: ev.seq,
+          type: "agent.output",
+        });
+      }
     }
   }
 
-  const pending = [...streams.values()].filter((s) => !done.has(`${s.agent}:${s.seq}`));
-  return { committed, pending };
+  return { committed, pending: [...streams.values()] };
 }
 
 function discoverAgents(events: readonly SessionEvent[]): Map<string, AgentColor> {
   const map = new Map<string, AgentColor>();
   map.set("coordinator", COORDINATOR_COLOR);
+  let nextWorker = 0;
   for (const ev of events) {
-    if (ev.type !== "research.plan") continue;
-    const agents = pl(ev).agents as { id: string; name: string }[] | undefined;
-    if (!agents) continue;
-    for (const a of agents) {
-      if (!map.has(a.id)) map.set(a.id, WORKER_COLORS[(map.size - 1) % WORKER_COLORS.length]!);
+    if (ev.type !== "agent.streaming.chunk" && ev.type !== "agent.done") {
+      continue;
     }
+    const id = pl(ev).agent;
+    if (typeof id !== "string" || id === "coordinator" || map.has(id)) {
+      continue;
+    }
+    map.set(id, WORKER_COLORS[nextWorker % WORKER_COLORS.length]!);
+    nextWorker++;
   }
   return map;
 }
@@ -329,14 +348,4 @@ function discoverAgents(events: readonly SessionEvent[]): Map<string, AgentColor
 function pl(event: SessionEvent): Record<string, unknown> {
   const p = event.payload;
   return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
-}
-
-function titleCaseAgent(agent: string): string {
-  return agent
-    .split("-")
-    .filter(Boolean)
-    .map((segment) => {
-      return segment[0]?.toUpperCase() + segment.slice(1);
-    })
-    .join(" ");
 }
