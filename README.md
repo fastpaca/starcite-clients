@@ -47,8 +47,8 @@ session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
 session.log.events; // readonly SessionEvent[], ordered by seq with no gaps
-session.log.cursor; // number, highest applied seq
-session.log.tailCursor; // { epoch, seq } | undefined, last Phoenix resume cursor
+session.log.cursor; // { epoch, seq } | undefined, last Phoenix resume cursor
+session.log.lastSeq; // number, highest applied seq
 
 await session.append({ text: "hello" }); // Promise<AppendResult> { seq, deduped }
 

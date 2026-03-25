@@ -243,8 +243,8 @@ session.log; // SessionLog — canonical source of truth
 // ── Session log ─────────────────────────────────────────────────────────────
 
 session.log.events; // readonly SessionEvent[] — ordered by seq, no gaps
-session.log.cursor; // number — highest applied seq
-session.log.tailCursor; // { epoch, seq } | undefined — last Phoenix resume cursor
+session.log.cursor; // { epoch, seq } | undefined — last Phoenix resume cursor
+session.log.lastSeq; // number — highest applied seq
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -308,15 +308,14 @@ This is designed for robust reconnect + resume semantics in long-running multi-a
 
 ## Session Stores
 
-`new Starcite({ store })` accepts a `SessionStore` for numeric log cursor,
-Phoenix `tailCursor`, retained events, and the append outbox across session
-rebinds.
+`new Starcite({ store })` accepts a `SessionStore` for `lastSeq`, Phoenix
+resume `cursor`, retained events, and the append outbox across session rebinds.
 
 - No default store is configured. When omitted, fresh attaches replay from the
   start of the server tail.
 - Bring your own by implementing:
   - `load(sessionId)`
-  - `save(sessionId, { cursor, tailCursor, events })`
+  - `save(sessionId, { lastSeq, cursor, events })`
   - optional `clear(sessionId)`
 - `MemoryStore` and `LocalStorageSessionStore` persist the append queue through
   the same contract.

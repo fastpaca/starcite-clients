@@ -530,7 +530,7 @@ export class StarciteSession {
   ): AsyncIterable<SessionTailItem<TEvent>> {
     const { replay = true, schema, ...tailOptions } = options;
     const replayCutoffSeq = replay ? this.log.lastSeq : -1;
-    const startCursor = tailOptions.cursor ?? this.log.tailCursor;
+    const startCursor = tailOptions.cursor ?? this.log.cursor;
     const session = this;
 
     const parseEvent = (event: SessionEvent): TEvent =>
@@ -820,7 +820,7 @@ export class StarciteSession {
   ): Promise<void> {
     const stream = new TailStream({
       options: {
-        cursor: this.log.tailCursor,
+        cursor: this.log.cursor,
         follow,
         onGap: (gap) => {
           if (this.lifecycle.listenerCount("gap") > 0) {
@@ -926,11 +926,11 @@ export class StarciteSession {
     try {
       this.store.save(this.id, {
         cursor: this.log.cursor,
-        tailCursor: this.log.tailCursor,
+        lastSeq: this.log.lastSeq,
         events: [...this.log.events],
         append: this.serializeAppendStoreState(),
         metadata: {
-          schemaVersion: 3,
+          schemaVersion: 4,
           updatedAtMs: Date.now(),
         },
       });

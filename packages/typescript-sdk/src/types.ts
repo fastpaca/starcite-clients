@@ -331,7 +331,7 @@ export interface SessionSnapshot {
   /**
    * Exact tail resume cursor for the latest retained event, when available.
    */
-  tailCursor?: TailCursor;
+  cursor?: TailCursor;
   /**
    * Indicates whether the session is actively streaming tail updates.
    */
@@ -542,7 +542,7 @@ export interface SessionStoreMetadata {
   /**
    * Store payload schema version.
    */
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 4;
   /**
    * Unix epoch milliseconds when this snapshot was written.
    */
@@ -556,11 +556,11 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
   /**
    * Highest contiguous sequence applied for this session.
    */
-  cursor: number;
+  lastSeq: number;
   /**
    * Exact tail resume cursor for continuing Phoenix channel replay.
    */
-  tailCursor?: TailCursor;
+  cursor?: TailCursor;
   /**
    * Retained events snapshot used for immediate replay.
    */
@@ -576,7 +576,7 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
 }
 
 /**
- * Persistence interface for session cursor + retained events.
+ * Persistence interface for session resume state + retained events.
  */
 export interface SessionStore<TEvent extends TailEvent = TailEvent> {
   load(sessionId: string): SessionStoreState<TEvent> | undefined;
@@ -856,7 +856,7 @@ export interface StarciteOptions {
    */
   websocketFactory?: StarciteWebSocketFactory;
   /**
-   * Optional session store used for cursor + retained event persistence.
+   * Optional session store used for resume state + retained event persistence.
    *
    * When omitted, fresh attaches replay from the start of the server tail.
    */
