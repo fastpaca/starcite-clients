@@ -274,7 +274,7 @@ export interface SessionTailIteratorOptions<
 export type TailEventBatch = TailEvent[];
 
 /**
- * Server-emitted gap payload surfaced by the Phoenix tail transport.
+ * Server-emitted gap payload surfaced by the tail transport.
  */
 export const TailGapSchema = z.object({
   type: z.literal("gap"),
@@ -291,7 +291,7 @@ export const TailGapSchema = z.object({
 export type TailGap = z.infer<typeof TailGapSchema>;
 
 /**
- * Server-emitted auth expiry signal surfaced by the Phoenix tail transport.
+ * Server-emitted auth expiry signal surfaced by the tail transport.
  */
 export const TailTokenExpiredPayloadSchema = z.object({
   reason: z.literal("token_expired"),
@@ -558,7 +558,7 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
    */
   lastSeq: number;
   /**
-   * Exact tail resume cursor for continuing Phoenix channel replay.
+   * Exact tail resume cursor for continuing replay.
    */
   cursor?: TailCursor;
   /**
@@ -851,8 +851,8 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Deprecated. The Phoenix Channels tail transport uses the official Phoenix
-   * client and does not support a custom raw WebSocket factory.
+   * Deprecated. The shared channel tail transport does not support a custom raw
+   * WebSocket factory.
    */
   websocketFactory?: StarciteWebSocketFactory;
   /**
