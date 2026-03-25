@@ -61,7 +61,7 @@ export type TailSocketLifecycleEvent =
       closeReason?: string;
     };
 
-interface TailSocketConsumer {
+interface TailSubscription {
   connectionTimeoutMs: number;
   connectionTimeoutTimer: ReturnType<typeof setTimeout> | undefined;
   onConnectionTimeout: (payload: {
@@ -101,7 +101,7 @@ interface TailSession {
   awaitingAttempt: boolean;
   batchSize: number | undefined;
   channel: RejoinableChannel;
-  consumers: Set<TailSocketConsumer>;
+  subscriptions: Set<TailSubscription>;
   eventBindingRef: number;
   history: TailEvent[];
   gapBindingRef: number;
@@ -117,7 +117,7 @@ export class TailSocketManager {
   /**
    * Maintains one shared Phoenix socket per auth context and one joined
    * `tail:<sessionId>` channel per active session topic. Multiple local SDK
-   * consumers can attach to the same TailSession and receive the same events.
+   * subscribers can attach to the same TailSession and receive the same events.
    */
   subscribe(input: {
     batchSize?: number;
@@ -137,7 +137,7 @@ export class TailSocketManager {
     socketUrl: string;
   }): () => void {
     const connection = this.getConnection(input.socketUrl, input.socketAuth);
-    const consumer: TailSocketConsumer = {
+    const subscription: TailSubscription = {
       connectionTimeoutMs: input.connectionTimeoutMs,
       connectionTimeoutTimer: undefined,
       onConnectionTimeout: input.onConnectionTimeout,
@@ -150,21 +150,21 @@ export class TailSocketManager {
 
     const existingSession = connection.sessions.get(input.sessionId);
     if (existingSession) {
-      existingSession.consumers.add(consumer);
+      existingSession.subscriptions.add(subscription);
       // A second local subscriber must catch up from the existing channel's
       // buffered history instead of opening a second Phoenix channel.
       const bufferedEvents = existingSession.history.filter((event) => {
         return this.isEventAfterCursor(event, input.cursor);
       });
       if (bufferedEvents.length > 0) {
-        consumer.onEvents(bufferedEvents);
+        subscription.onEvents(bufferedEvents);
       }
       if (!existingSession.ready) {
-        this.armConnectionTimeout(existingSession, consumer);
+        this.armConnectionTimeout(existingSession, subscription);
       }
       this.ensureConnected(connection);
       return () => {
-        this.unsubscribe(connection, existingSession, consumer);
+        this.unsubscribe(connection, existingSession, subscription);
       };
     }
 
@@ -194,7 +194,7 @@ export class TailSocketManager {
       awaitingAttempt: true,
       batchSize: input.batchSize,
       channel,
-      consumers: new Set([consumer]),
+      subscriptions: new Set([subscription]),
       eventBindingRef: 0,
       history: [],
       gapBindingRef: 0,
@@ -261,37 +261,37 @@ export class TailSocketManager {
     this.ensureConnected(connection);
 
     return () => {
-      this.unsubscribe(connection, session, consumer);
+      this.unsubscribe(connection, session, subscription);
     };
   }
 
   private armConnectionTimeout(
     session: TailSession,
-    consumer: TailSocketConsumer
+    subscription: TailSubscription
   ): void {
-    this.clearConnectionTimeout(consumer);
+    this.clearConnectionTimeout(subscription);
 
-    if (consumer.connectionTimeoutMs <= 0 || session.ready) {
+    if (subscription.connectionTimeoutMs <= 0 || session.ready) {
       return;
     }
 
-    consumer.connectionTimeoutTimer = setTimeout(() => {
-      consumer.connectionTimeoutTimer = undefined;
+    subscription.connectionTimeoutTimer = setTimeout(() => {
+      subscription.connectionTimeoutTimer = undefined;
 
-      if (!session.consumers.has(consumer) || session.ready) {
+      if (!session.subscriptions.has(subscription) || session.ready) {
         return;
       }
 
-      consumer.onConnectionTimeout({
+      subscription.onConnectionTimeout({
         closeCode: CONNECTION_TIMEOUT_CLOSE_CODE,
         closeReason: CONNECTION_TIMEOUT_REASON,
       });
-    }, consumer.connectionTimeoutMs);
+    }, subscription.connectionTimeoutMs);
   }
 
   private armConnectionTimeouts(session: TailSession): void {
-    for (const consumer of session.consumers) {
-      this.armConnectionTimeout(session, consumer);
+    for (const subscription of session.subscriptions) {
+      this.armConnectionTimeout(session, subscription);
     }
   }
 
@@ -299,8 +299,8 @@ export class TailSocketManager {
     session: TailSession,
     event: TailSocketLifecycleEvent
   ): void {
-    for (const consumer of session.consumers) {
-      consumer.onLifecycle(event);
+    for (const subscription of session.subscriptions) {
+      subscription.onLifecycle(event);
     }
   }
 
@@ -316,18 +316,18 @@ export class TailSocketManager {
     }
   }
 
-  private clearConnectionTimeout(consumer: TailSocketConsumer): void {
-    if (!consumer.connectionTimeoutTimer) {
+  private clearConnectionTimeout(subscription: TailSubscription): void {
+    if (!subscription.connectionTimeoutTimer) {
       return;
     }
 
-    clearTimeout(consumer.connectionTimeoutTimer);
-    consumer.connectionTimeoutTimer = undefined;
+    clearTimeout(subscription.connectionTimeoutTimer);
+    subscription.connectionTimeoutTimer = undefined;
   }
 
   private clearConnectionTimeouts(session: TailSession): void {
-    for (const consumer of session.consumers) {
-      this.clearConnectionTimeout(consumer);
+    for (const subscription of session.subscriptions) {
+      this.clearConnectionTimeout(subscription);
     }
   }
 
@@ -347,8 +347,8 @@ export class TailSocketManager {
     let delayMs: number | undefined;
 
     for (const session of connection.sessions.values()) {
-      for (const consumer of session.consumers) {
-        const policy = consumer.reconnectPolicy;
+      for (const subscription of session.subscriptions) {
+        const policy = subscription.reconnectPolicy;
         const exponent = policy.mode === "fixed" ? 0 : Math.max(0, attempt - 1);
         const baseDelayMs = Math.min(
           policy.initialDelayMs * policy.multiplier ** exponent,
@@ -585,8 +585,8 @@ export class TailSocketManager {
       session.lastCursor = event.cursor ?? event.seq;
     }
 
-    for (const consumer of session.consumers) {
-      consumer.onEvents(result.data.events);
+    for (const subscription of session.subscriptions) {
+      subscription.onEvents(result.data.events);
     }
   }
 
@@ -596,8 +596,8 @@ export class TailSocketManager {
       return;
     }
 
-    for (const consumer of session.consumers) {
-      consumer.onGap(result.data);
+    for (const subscription of session.subscriptions) {
+      subscription.onGap(result.data);
     }
 
     session.ready = false;
@@ -612,7 +612,7 @@ export class TailSocketManager {
   ): void {
     if (
       !connection.sessions.has(session.sessionId) ||
-      session.consumers.size === 0
+      session.subscriptions.size === 0
     ) {
       return;
     }
@@ -642,8 +642,8 @@ export class TailSocketManager {
       return;
     }
 
-    for (const consumer of session.consumers) {
-      consumer.onTokenExpired(result.data);
+    for (const subscription of session.subscriptions) {
+      subscription.onTokenExpired(result.data);
     }
   }
 
@@ -694,7 +694,7 @@ export class TailSocketManager {
   }
 
   private startAttempt(session: TailSession): void {
-    if (!session.awaitingAttempt || session.consumers.size === 0) {
+    if (!session.awaitingAttempt || session.subscriptions.size === 0) {
       return;
     }
 
@@ -730,15 +730,15 @@ export class TailSocketManager {
   private unsubscribe(
     connection: ConnectionState,
     session: TailSession,
-    consumer: TailSocketConsumer
+    subscription: TailSubscription
   ): void {
-    this.clearConnectionTimeout(consumer);
-    session.consumers.delete(consumer);
-    if (session.consumers.size > 0) {
+    this.clearConnectionTimeout(subscription);
+    session.subscriptions.delete(subscription);
+    if (session.subscriptions.size > 0) {
       return;
     }
 
-    // The physical channel only goes away after the last local consumer for
+    // The physical channel only goes away after the last local subscriber for
     // that session detaches.
     session.channel.off("events", session.eventBindingRef);
     session.channel.off("gap", session.gapBindingRef);
