@@ -213,7 +213,7 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
-  store: new MemoryStore(), // cursor + event persistence
+  store: new MemoryStore(), // log seq cursor + tail resume cursor + event persistence
 });
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
@@ -244,6 +244,7 @@ session.log; // SessionLog — canonical source of truth
 
 session.log.events; // readonly SessionEvent[] — ordered by seq, no gaps
 session.log.cursor; // number — highest applied seq
+session.log.tailCursor; // { epoch, seq } | undefined — last Phoenix resume cursor
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -294,20 +295,28 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - `connectionTimeoutMs`, `inactivityTimeoutMs`
 - `maxBufferedBatches`
 - `signal`
-- `onLifecycleEvent`
+- `onLifecycleEvent`, `onGap`
+
+Tail cursor rules:
+
+- `cursor` is object-only: `{ epoch, seq }`
+- omit `cursor` to stream from the beginning
+- `batchSize` must be an integer `1..1000`
+- `gap` callbacks receive the explicit server payload with `from_cursor`, `next_cursor`, `committed_cursor`, and `earliest_available_cursor`
 
 This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
 
 ## Session Stores
 
-`new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
-and the append outbox across session rebinds.
+`new Starcite({ store })` accepts a `SessionStore` for numeric log cursor,
+Phoenix `tailCursor`, retained events, and the append outbox across session
+rebinds.
 
-- No default store is configured. When omitted, startup catch-up replays from
-  stream cursor `0`.
+- No default store is configured. When omitted, fresh attaches replay from the
+  start of the server tail.
 - Bring your own by implementing:
   - `load(sessionId)`
-  - `save(sessionId, { cursor, events })`
+  - `save(sessionId, { cursor, tailCursor, events })`
   - optional `clear(sessionId)`
 - `MemoryStore` and `LocalStorageSessionStore` persist the append queue through
   the same contract.
@@ -319,7 +328,7 @@ and the append outbox across session rebinds.
 - `StarciteApiError` for non-2xx responses
 - `StarciteConnectionError` for transport/JSON issues
 - `StarciteTailError` for streaming failures
-- `StarciteTokenExpiredError` when close code `4001` is observed
+- `StarciteTokenExpiredError` when the server emits `token_expired`
 - `StarciteRetryLimitError` when reconnect budget is exhausted
 - `StarciteBackpressureError` when consumer buffering limits are exceeded
 

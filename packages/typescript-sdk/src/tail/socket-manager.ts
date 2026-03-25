@@ -14,7 +14,6 @@ import {
 
 const CONNECTION_TIMEOUT_CLOSE_CODE = 4100;
 const CONNECTION_TIMEOUT_REASON = "connection timeout";
-const ENCODED_CURSOR_PATTERN = /^(\d+):(\d+)$/;
 
 const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
@@ -105,7 +104,7 @@ interface TailSession {
   eventBindingRef: number;
   history: TailEvent[];
   gapBindingRef: number;
-  lastCursor: TailCursor;
+  lastCursor: TailCursor | undefined;
   ready: boolean;
   sessionId: string;
   tokenExpiredBindingRef: number;
@@ -122,7 +121,7 @@ export class TailSocketManager {
   subscribe(input: {
     batchSize?: number;
     connectionTimeoutMs: number;
-    cursor: TailCursor;
+    cursor: TailCursor | undefined;
     onConnectionTimeout: (payload: {
       closeCode: number;
       closeReason: string;
@@ -176,10 +175,12 @@ export class TailSocketManager {
         // sends the session's latest resume cursor instead of the original one.
         const payload: {
           batch_size?: number;
-          cursor: TailCursor;
-        } = {
-          cursor: session.lastCursor,
-        };
+          cursor?: TailCursor;
+        } = {};
+
+        if (session.lastCursor) {
+          payload.cursor = session.lastCursor;
+        }
 
         if (session.batchSize !== undefined) {
           payload.batch_size = session.batchSize;
@@ -533,42 +534,26 @@ export class TailSocketManager {
     return connection;
   }
 
-  private isEventAfterCursor(event: TailEvent, cursor: TailCursor): boolean {
+  private isEventAfterCursor(
+    event: TailEvent,
+    cursor: TailCursor | undefined
+  ): boolean {
     // Local subscribers share one joined channel, so late subscribers replay
     // from buffered channel history by comparing each event against their
     // requested resume cursor.
-    if (typeof cursor === "number") {
-      return event.seq > cursor;
+    if (!cursor) {
+      return true;
     }
 
-    const cursorMatch = ENCODED_CURSOR_PATTERN.exec(cursor);
-    if (!cursorMatch) {
-      return false;
-    }
-
-    const cursorEpoch = Number(cursorMatch[1]);
-    const cursorSeq = Number(cursorMatch[2]);
     const eventCursor = event.cursor;
-
-    if (typeof eventCursor === "string") {
-      const eventMatch = ENCODED_CURSOR_PATTERN.exec(eventCursor);
-      if (!eventMatch) {
-        return event.seq > cursorSeq;
-      }
-
-      const eventEpoch = Number(eventMatch[1]);
-      const eventSeq = Number(eventMatch[2]);
-      return (
-        eventEpoch > cursorEpoch ||
-        (eventEpoch === cursorEpoch && eventSeq > cursorSeq)
-      );
+    if (!eventCursor) {
+      return event.seq > cursor.seq;
     }
 
-    if (typeof eventCursor === "number") {
-      return eventCursor > cursorSeq;
-    }
-
-    return event.seq > cursorSeq;
+    return (
+      eventCursor.epoch > cursor.epoch ||
+      (eventCursor.epoch === cursor.epoch && eventCursor.seq > cursor.seq)
+    );
   }
 
   private handleEvents(session: TailSession, payload: unknown): void {
@@ -582,7 +567,9 @@ export class TailSocketManager {
 
     for (const event of result.data.events) {
       session.history.push(event);
-      session.lastCursor = event.cursor ?? event.seq;
+      if (event.cursor) {
+        session.lastCursor = event.cursor;
+      }
     }
 
     for (const subscription of session.subscriptions) {

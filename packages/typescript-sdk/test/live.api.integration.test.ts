@@ -78,7 +78,6 @@ describeLive("Starcite live API integration", () => {
 
     const tailedSeqs: number[] = [];
     for await (const { event } of session.tail({
-      cursor: Math.max(appendResult.seq - 1, 0),
       follow: false,
       catchUpIdleMs: 800,
     })) {

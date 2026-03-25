@@ -147,39 +147,37 @@ export interface AppendResult {
   deduped: boolean;
 }
 
-const EncodedTailCursorSchema = z.string().regex(/^\d+:\d+$/);
-
 /**
- * Tail resume cursor accepted by the Phoenix channel transport.
- *
- * Encoded cursors use the server's `<epoch>:<seq>` format.
+ * Cursor object used by the tail stream.
  */
-export const TailCursorSchema = z.union([
-  z.number().int().nonnegative(),
-  EncodedTailCursorSchema,
-]);
+export const TailWireCursorSchema = z.object({
+  epoch: z.number().int().positive(),
+  seq: z.number().int().nonnegative(),
+});
+
+export type TailWireCursor = z.infer<typeof TailWireCursorSchema>;
 
 /**
- * Inferred TypeScript type for {@link TailCursorSchema}.
+ * Tail resume cursor accepted by the SDK.
+ */
+export const TailCursorSchema = TailWireCursorSchema;
+
+/**
+ * User-facing tail cursor input.
  */
 export type TailCursor = z.infer<typeof TailCursorSchema>;
 
-const TailEventCursorSchema = z.union([
-  TailCursorSchema,
-  z
-    .object({
-      epoch: z.number().int().positive(),
-      seq: z.number().int().nonnegative(),
-    })
-    .transform(({ epoch, seq }) => `${epoch}:${seq}`),
-]);
+/**
+ * Tail frame batch size accepted by the SDK.
+ */
+export const TailBatchSizeSchema = z.number().int().min(1).max(1000);
 
 /**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
-  cursor: TailEventCursorSchema.optional(),
+  cursor: TailWireCursorSchema.optional(),
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
@@ -278,7 +276,14 @@ export type TailEventBatch = TailEvent[];
 /**
  * Server-emitted gap payload surfaced by the Phoenix tail transport.
  */
-export const TailGapSchema = z.object({}).passthrough();
+export const TailGapSchema = z.object({
+  type: z.literal("gap"),
+  reason: z.enum(["cursor_expired", "epoch_stale", "rollback"]),
+  from_cursor: TailWireCursorSchema,
+  next_cursor: TailWireCursorSchema,
+  committed_cursor: TailWireCursorSchema,
+  earliest_available_cursor: TailWireCursorSchema,
+});
 
 /**
  * Inferred TypeScript type for {@link TailGapSchema}.
@@ -323,6 +328,10 @@ export interface SessionSnapshot {
    * Highest contiguous sequence applied to the log.
    */
   lastSeq: number;
+  /**
+   * Exact tail resume cursor for the latest retained event, when available.
+   */
+  tailCursor?: TailCursor;
   /**
    * Indicates whether the session is actively streaming tail updates.
    */
@@ -533,7 +542,7 @@ export interface SessionStoreMetadata {
   /**
    * Store payload schema version.
    */
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   /**
    * Unix epoch milliseconds when this snapshot was written.
    */
@@ -548,6 +557,10 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
    * Highest contiguous sequence applied for this session.
    */
   cursor: number;
+  /**
+   * Exact tail resume cursor for continuing Phoenix channel replay.
+   */
+  tailCursor?: TailCursor;
   /**
    * Retained events snapshot used for immediate replay.
    */
@@ -603,7 +616,9 @@ export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
  */
 export interface SessionTailOptions {
   /**
-   * Starting cursor (inclusive) in the event stream.
+   * Starting cursor in the event stream.
+   *
+   * Omit to stream from the start.
    */
   cursor?: TailCursor;
   /**
@@ -719,7 +734,7 @@ export type TailLifecycleEvent =
       type: "connect_attempt";
       sessionId: string;
       attempt: number;
-      cursor: TailCursor;
+      cursor?: TailCursor;
     }
   | {
       type: "reconnect_scheduled";
@@ -843,7 +858,7 @@ export interface StarciteOptions {
   /**
    * Optional session store used for cursor + retained event persistence.
    *
-   * When omitted, fresh attaches start from cursor `0` and replay from server tail.
+   * When omitted, fresh attaches replay from the start of the server tail.
    */
   store?: SessionStore;
   /**

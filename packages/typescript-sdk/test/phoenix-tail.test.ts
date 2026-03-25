@@ -353,12 +353,10 @@ function makeSessionToken(sessionId: string, principalId = "planner"): string {
 function makeEvent(
   seq: number,
   actor = "agent:planner",
-  cursor?:
-    | string
-    | {
-        epoch: number;
-        seq: number;
-      }
+  cursor?: {
+    epoch: number;
+    seq: number;
+  }
 ) {
   return {
     actor,
@@ -461,7 +459,6 @@ describe("Phoenix Tail Transport", () => {
     const alphaTail = (async () => {
       for await (const { event } of alpha.tail({
         agent: "planner",
-        cursor: 0,
         reconnectPolicy: { initialDelayMs: 1, mode: "fixed" },
         signal: alphaController.signal,
       })) {
@@ -471,7 +468,6 @@ describe("Phoenix Tail Transport", () => {
     const betaTail = (async () => {
       for await (const { event } of beta.tail({
         agent: "planner",
-        cursor: 0,
         reconnectPolicy: { initialDelayMs: 1, mode: "fixed" },
         signal: betaController.signal,
       })) {
@@ -488,8 +484,8 @@ describe("Phoenix Tail Transport", () => {
 
     const alphaChannel = await waitForChannel("tail:ses_alpha");
     const betaChannel = await waitForChannel("tail:ses_beta");
-    expect(alphaChannel.joinCalls[0]).toEqual({ cursor: 0 });
-    expect(betaChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(alphaChannel.joinCalls[0]).toEqual({});
+    expect(betaChannel.joinCalls[0]).toEqual({});
 
     socket?.emitOpen();
     alphaChannel.emitJoinOk({});
@@ -511,8 +507,12 @@ describe("Phoenix Tail Transport", () => {
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
 
-    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "1:1" });
-    expect(betaChannel.rejoinCalls.at(-1)).toEqual({ cursor: "1:7" });
+    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({
+      cursor: { epoch: 1, seq: 1 },
+    });
+    expect(betaChannel.rejoinCalls.at(-1)).toEqual({
+      cursor: { epoch: 1, seq: 7 },
+    });
 
     alphaChannel.emit("events", {
       events: [makeEvent(2, "agent:planner", { epoch: 1, seq: 2 })],
@@ -530,34 +530,41 @@ describe("Phoenix Tail Transport", () => {
     await Promise.all([alphaTail, betaTail]);
   });
 
-  it("starts replay from the provided cursor and keeps live delivery fan-out one event at a time", async () => {
+  it("starts replay from the provided object cursor and keeps live delivery fan-out one event at a time", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_cursor") });
 
-    const seen: number[] = [];
-    const stop = session.on("event", (event) => {
-      seen.push(event.seq);
-    });
+    const tail = Array.fromAsync(
+      session.tail({
+        cursor: { epoch: 1, seq: 0 },
+        follow: false,
+        catchUpIdleMs: 10,
+      })
+    );
 
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
     const channel = await waitForChannel("tail:ses_cursor");
+    expect(channel.joinCalls[0]).toEqual({
+      cursor: { epoch: 1, seq: 0 },
+    });
     socket?.emitOpen();
     channel.emitJoinOk({});
 
     channel.emit("events", {
       events: [
-        makeEvent(1, "agent:planner", "1:1"),
-        makeEvent(2, "agent:planner", "1:2"),
+        makeEvent(1, "agent:planner", { epoch: 1, seq: 1 }),
+        makeEvent(2, "agent:planner", { epoch: 1, seq: 2 }),
       ],
     });
     await flush();
 
-    expect(seen).toEqual([1, 2]);
+    const replay = await tail;
 
-    stop();
+    expect(replay.map(({ event }) => event.seq)).toEqual([1, 2]);
+
     session.disconnect();
   });
 
@@ -584,8 +591,8 @@ describe("Phoenix Tail Transport", () => {
     channel.emitJoinOk({});
     channel.emit("events", {
       events: [
-        makeEvent(1, "agent:planner", "1:1"),
-        makeEvent(2, "agent:planner", "1:2"),
+        makeEvent(1, "agent:planner", { epoch: 1, seq: 1 }),
+        makeEvent(2, "agent:planner", { epoch: 1, seq: 2 }),
       ],
     });
     await flush();
@@ -623,6 +630,22 @@ describe("Phoenix Tail Transport", () => {
     expect(phoenixMock.MockPhoenixSocket.instances).toHaveLength(0);
   });
 
+  it("rejects invalid batch sizes at the SDK boundary", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_bad_batch_size") });
+
+    await expect(
+      Array.fromAsync(
+        session.tail({
+          batchSize: 1001,
+        })
+      )
+    ).rejects.toThrow("batchSize must be an integer between 1 and 1000");
+    expect(phoenixMock.MockPhoenixSocket.instances).toHaveLength(0);
+  });
+
   it("surfaces gap events explicitly and rejoins the channel", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
@@ -640,16 +663,31 @@ describe("Phoenix Tail Transport", () => {
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
-      events: [makeEvent(1, "agent:planner", "1:1")],
+      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
     });
     channel.emit("gap", {
-      last_cursor: "1:1",
-      reason: "gap",
+      committed_cursor: { epoch: 2, seq: 4 },
+      earliest_available_cursor: { epoch: 2, seq: 4 },
+      from_cursor: { epoch: 1, seq: 1 },
+      next_cursor: { epoch: 2, seq: 4 },
+      reason: "rollback",
+      type: "gap",
     });
     await flush();
 
-    expect(gaps).toEqual([{ last_cursor: "1:1", reason: "gap" }]);
-    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: "1:1" });
+    expect(gaps).toEqual([
+      {
+        committed_cursor: { epoch: 2, seq: 4 },
+        earliest_available_cursor: { epoch: 2, seq: 4 },
+        from_cursor: { epoch: 1, seq: 1 },
+        next_cursor: { epoch: 2, seq: 4 },
+        reason: "rollback",
+        type: "gap",
+      },
+    ]);
+    expect(channel.rejoinCalls.at(-1)).toEqual({
+      cursor: { epoch: 1, seq: 1 },
+    });
 
     stop();
     session.disconnect();
@@ -664,7 +702,6 @@ describe("Phoenix Tail Transport", () => {
     const controller = new AbortController();
     const tail = Array.fromAsync(
       session.tail({
-        cursor: 0,
         signal: controller.signal,
       })
     );
@@ -739,7 +776,7 @@ describe("Phoenix Tail Transport", () => {
         return (
           event.type === "connect_attempt" &&
           event.attempt === 1 &&
-          event.cursor === 0 &&
+          event.cursor === undefined &&
           event.sessionId === "ses_join_error"
         );
       })
@@ -892,6 +929,22 @@ describe("Phoenix Tail Transport", () => {
 });
 
 interface TailGapLike {
-  last_cursor?: string;
-  reason?: string;
+  type?: "gap";
+  reason?: "cursor_expired" | "epoch_stale" | "rollback";
+  from_cursor?: {
+    epoch: number;
+    seq: number;
+  };
+  next_cursor?: {
+    epoch: number;
+    seq: number;
+  };
+  committed_cursor?: {
+    epoch: number;
+    seq: number;
+  };
+  earliest_available_cursor?: {
+    epoch: number;
+    seq: number;
+  };
 }

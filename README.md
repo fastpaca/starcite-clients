@@ -22,18 +22,15 @@ Detailed package docs:
 ## Public SDK Surface
 
 ```ts
-import { MemoryStore, Starcite, type StarciteWebSocket } from "@starcite/sdk";
+import { MemoryStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
   apiKey: process.env.STARCITE_API_KEY, // required for server-side session creation
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
   fetch: globalThis.fetch,
-  websocketFactory: (url) => new WebSocket(url),
-  store: new MemoryStore(), // cursor + event persistence (default: MemoryStore)
+  store: new MemoryStore(), // log seq cursor + tail resume cursor + event persistence
 });
-
-type WebSocketFactory = (url: string) => StarciteWebSocket;
 
 const alice = starcite.user({ id: "u_123" });
 const bot = starcite.agent({ id: "planner" });
@@ -51,6 +48,7 @@ session.token; // string
 session.identity; // StarciteIdentity
 session.log.events; // readonly SessionEvent[], ordered by seq with no gaps
 session.log.cursor; // number, highest applied seq
+session.log.tailCursor; // { epoch, seq } | undefined, last Phoenix resume cursor
 
 await session.append({ text: "hello" }); // Promise<AppendResult> { seq, deduped }
 
@@ -128,7 +126,7 @@ starcite config set api-key <YOUR_API_KEY>
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
-starcite tail ses_demo --cursor 0 --limit 1
+starcite tail ses_demo --limit 1
 ```
 
 ## Development Commands

@@ -6,6 +6,7 @@ import {
   SessionAppendStoreStateSchema,
   type SessionStore,
   type SessionStoreState,
+  TailCursorSchema,
   type TailEvent,
   TailEventSchema,
 } from "./types";
@@ -13,12 +14,13 @@ import {
 const DEFAULT_KEY_PREFIX = "starcite";
 
 const SessionStoreMetadataSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2)]),
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   updatedAtMs: z.number().int().nonnegative(),
 });
 
 const SessionStoreStateSchema = z.object({
   cursor: z.number().int().nonnegative(),
+  tailCursor: TailCursorSchema.optional(),
   events: z.array(TailEventSchema),
   append: SessionAppendStoreStateSchema.optional(),
   metadata: SessionStoreMetadataSchema.optional(),
@@ -75,6 +77,7 @@ function cloneState<TEvent extends TailEvent>(
 ): SessionStoreState<TEvent> {
   return {
     cursor: state.cursor,
+    tailCursor: state.tailCursor ? { ...state.tailCursor } : undefined,
     events: cloneEvents(state.events),
     append: cloneAppendState(state.append),
     metadata: state.metadata ? { ...state.metadata } : undefined,

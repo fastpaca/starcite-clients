@@ -15,6 +15,7 @@ import type {
   TailLifecycleEvent,
   TailTokenExpiredPayload,
 } from "../types";
+import { TailBatchSizeSchema, TailCursorSchema } from "../types";
 import type {
   TailSocketAuthContext,
   TailSocketManager,
@@ -33,6 +34,38 @@ function describeClose(closeCode?: number, closeReason?: string): string {
   return closeReason
     ? `code ${closeCode}: ${closeReason}`
     : `code ${closeCode}`;
+}
+
+function parseTailBatchSize(batchSize: number | undefined): number | undefined {
+  if (batchSize === undefined) {
+    return undefined;
+  }
+
+  const parsed = TailBatchSizeSchema.safeParse(batchSize);
+  if (!parsed.success) {
+    throw new StarciteError(
+      "Session tail batchSize must be an integer between 1 and 1000"
+    );
+  }
+
+  return parsed.data;
+}
+
+function parseTailCursor(
+  cursor: TailCursor | undefined
+): TailCursor | undefined {
+  if (cursor === undefined) {
+    return undefined;
+  }
+
+  const parsed = TailCursorSchema.safeParse(cursor);
+  if (!parsed.success) {
+    throw new StarciteError(
+      "Session tail cursor must be an object with numeric epoch and seq fields"
+    );
+  }
+
+  return parsed.data;
 }
 
 /**
@@ -61,7 +94,7 @@ export class TailStream {
   private readonly shouldReconnect: boolean;
   private readonly signal: AbortSignal | undefined;
 
-  private cursor: TailCursor;
+  private cursor: TailCursor | undefined;
 
   constructor(input: {
     customWebSocketFactoryProvided: boolean;
@@ -84,10 +117,10 @@ export class TailStream {
     this.socketUrl = input.socketUrl;
 
     this.agent = opts.agent;
-    this.batchSize = opts.batchSize;
+    this.batchSize = parseTailBatchSize(opts.batchSize);
     this.catchUpIdleMs = opts.catchUpIdleMs ?? 1000;
     this.connectionTimeoutMs = opts.connectionTimeoutMs ?? 12_000;
-    this.cursor = opts.cursor ?? 0;
+    this.cursor = parseTailCursor(opts.cursor);
     this.follow = opts.follow ?? true;
     this.inactivityTimeoutMs = opts.inactivityTimeoutMs;
     this.maxBufferedBatches = opts.maxBufferedBatches ?? 1024;
@@ -386,7 +419,9 @@ export class TailStream {
 
           const matchingEvents: TailEvent[] = [];
           for (const event of events) {
-            this.cursor = event.cursor ?? event.seq;
+            if (event.cursor) {
+              this.cursor = event.cursor;
+            }
             if (this.agent && agentFromActor(event.actor) !== this.agent) {
               continue;
             }
@@ -401,12 +436,20 @@ export class TailStream {
         onLifecycle: (event) => {
           switch (event.type) {
             case "connect_attempt":
-              emitLifecycle({
-                attempt: event.attempt,
-                cursor: this.cursor,
-                sessionId: this.sessionId,
-                type: "connect_attempt",
-              });
+              emitLifecycle(
+                this.cursor
+                  ? {
+                      attempt: event.attempt,
+                      cursor: this.cursor,
+                      sessionId: this.sessionId,
+                      type: "connect_attempt",
+                    }
+                  : {
+                      attempt: event.attempt,
+                      sessionId: this.sessionId,
+                      type: "connect_attempt",
+                    }
+              );
               resetInactivityTimer();
               scheduleCatchUpClose();
               return;

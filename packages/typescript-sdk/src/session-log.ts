@@ -4,6 +4,7 @@ import type {
   SessionLogOptions,
   SessionSnapshot,
   SessionStoreState,
+  TailCursor,
   TailEvent,
 } from "./types";
 
@@ -39,6 +40,7 @@ export class SessionLog {
   private readonly canonicalBySeq = new Map<number, string>();
   private maxEvents: number | undefined;
   private appliedSeq = 0;
+  private appliedTailCursor: TailCursor | undefined;
 
   constructor(options: SessionLogOptions = {}) {
     this.setMaxEvents(options.maxEvents);
@@ -99,6 +101,8 @@ export class SessionLog {
       previousSeq = event.seq;
     }
 
+    const latestEvent = nextHistory.at(-1);
+
     this.history.length = 0;
     this.history.push(...nextHistory);
     this.canonicalBySeq.clear();
@@ -106,6 +110,13 @@ export class SessionLog {
       this.canonicalBySeq.set(seq, canonical);
     }
     this.appliedSeq = state.cursor;
+    if (state.tailCursor) {
+      this.appliedTailCursor = { ...state.tailCursor };
+    } else if (latestEvent?.cursor) {
+      this.appliedTailCursor = { ...latestEvent.cursor };
+    } else {
+      this.appliedTailCursor = undefined;
+    }
     this.enforceRetention();
   }
 
@@ -161,6 +172,9 @@ export class SessionLog {
     this.history.push(event);
     this.canonicalBySeq.set(event.seq, JSON.stringify(event));
     this.appliedSeq = event.seq;
+    if (event.cursor) {
+      this.appliedTailCursor = { ...event.cursor };
+    }
     this.enforceRetention();
     return true;
   }
@@ -169,6 +183,9 @@ export class SessionLog {
     return {
       events: this.history.slice(),
       lastSeq: this.appliedSeq,
+      tailCursor: this.appliedTailCursor
+        ? { ...this.appliedTailCursor }
+        : undefined,
       syncing,
     };
   }
@@ -179,6 +196,10 @@ export class SessionLog {
 
   get cursor(): number {
     return this.appliedSeq;
+  }
+
+  get tailCursor(): TailCursor | undefined {
+    return this.appliedTailCursor ? { ...this.appliedTailCursor } : undefined;
   }
 
   get lastSeq(): number {

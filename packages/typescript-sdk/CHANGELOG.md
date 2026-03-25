@@ -23,9 +23,13 @@
 - `tail()` now auto-recovers from abnormal disconnects and resumes from the last observed sequence
 - BREAKING: tail transport now uses Phoenix Channels over `/v1/socket` with one shared socket and per-session `tail:<session_id>` channels instead of the legacy raw `/v1/sessions/:id/tail` WebSocket transport
 - BREAKING: `StarciteOptions.websocketFactory` is no longer supported for tailing; callers that depended on custom raw WebSocket construction or one-WebSocket-per-session behavior must migrate
+- BREAKING: `session.tail({ cursor })` now accepts only object cursors in the server wire shape `{ epoch, seq }`; omit `cursor` to stream from the beginning
+- BREAKING: session stores now persist `tailCursor` separately from numeric log `cursor` so Phoenix resume state preserves epoch-aware replay
 - Tail streams now accept both single-event and batched WebSocket frame shapes
 - Internal tail transport loop is split into a single-connection runner plus reconnect orchestrator for clearer failure-state reasoning
 - Chat protocol helpers were removed from `@starcite/sdk` and moved to `@starcite/react/chat-protocol`
 - BREAKING: removed `session.consume(...)` and cursor-store APIs (`SessionCursorStore`, `InMemoryCursorStore`, `WebStorageCursorStore`, `LocalStorageCursorStore`)
 - BREAKING: removed `session.tailBatches(...)`; `session.tail(options)` is now the single explicit streaming API and returns an async iterator
 - BREAKING: `Starcite` no longer defaults to an implicit in-memory store when `store` is omitted
+- Tail gap payloads are now validated against the explicit server shape instead of being treated as passthrough objects
+- Tail `batchSize` is now validated at the SDK boundary as an integer `1..1000`
