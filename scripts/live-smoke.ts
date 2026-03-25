@@ -1,8 +1,11 @@
-import { Starcite, StarciteApiError } from "../packages/typescript-sdk/src/index.ts";
+import {
+  Starcite,
+  StarciteApiError,
+} from "../packages/typescript-sdk/src/index.ts";
 
 const DEFAULT_BASE_URL = "https://api.starcite.io";
 const DEFAULT_TAIL_TIMEOUT_MS = 15_000;
-const DEFAULT_SETTLE_MS = 1_000;
+const DEFAULT_SETTLE_MS = 1000;
 
 interface LiveSmokeResult {
   baseUrl: string;
