@@ -4,7 +4,8 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import type { StarciteWebSocket } from "./types";
+import type { TailSocketManager } from "./tail/socket-manager";
+import type { StarciteWebSocket, StarciteWebSocketFactory } from "./types";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -17,10 +18,11 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
 export interface TransportConfig {
   readonly baseUrl: string;
   readonly websocketBaseUrl: string;
-  readonly authorization: string | null;
+  readonly websocketFactory: StarciteWebSocketFactory;
+  readonly tailSocketManager: TailSocketManager;
+  authorization: string | null;
   readonly fetchFn: typeof fetch;
   readonly headers: Headers;
-  readonly websocketFactory: (url: string) => StarciteWebSocket;
 }
 
 function parseHttpUrl(value: string, context: string): URL {

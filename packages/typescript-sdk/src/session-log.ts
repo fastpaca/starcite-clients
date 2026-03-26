@@ -4,6 +4,7 @@ import type {
   SessionLogOptions,
   SessionSnapshot,
   SessionStoreState,
+  TailCursor,
   TailEvent,
 } from "./types";
 
@@ -39,6 +40,7 @@ export class SessionLog {
   private readonly canonicalBySeq = new Map<number, string>();
   private maxEvents: number | undefined;
   private appliedSeq = 0;
+  private appliedCursor: TailCursor | undefined;
 
   constructor(options: SessionLogOptions = {}) {
     this.setMaxEvents(options.maxEvents);
@@ -62,46 +64,19 @@ export class SessionLog {
     const applied: TailEvent[] = [];
 
     for (const event of batch) {
-      if (this.applyEvent(event)) {
+      if (this.apply(event)) {
         applied.push(event);
+        this.emitter.emit("event", event);
       }
     }
 
     return applied;
   }
 
-  applyEvent(event: TailEvent): boolean {
-    const applied = this.apply(event);
-    if (applied) {
-      this.emitter.emit("event", event);
-    }
-    return applied;
-  }
-
-  replaceEvent(event: TailEvent): void {
-    if (!this.canonicalBySeq.has(event.seq)) {
-      throw new SessionLogConflictError(
-        `Session log has no applied event for seq ${event.seq}`
-      );
-    }
-
-    const index = this.history.findIndex(
-      (candidate) => candidate.seq === event.seq
-    );
-    if (index < 0) {
-      throw new SessionLogConflictError(
-        `Session log has no retained event for seq ${event.seq}`
-      );
-    }
-
-    this.history[index] = event;
-    this.canonicalBySeq.set(event.seq, JSON.stringify(event));
-  }
-
   hydrate(state: SessionStoreState): void {
-    if (!Number.isInteger(state.cursor) || state.cursor < 0) {
+    if (!Number.isInteger(state.lastSeq) || state.lastSeq < 0) {
       throw new StarciteError(
-        "Session store cursor must be a non-negative integer"
+        "Session store lastSeq must be a non-negative integer"
       );
     }
 
@@ -109,9 +84,9 @@ export class SessionLog {
     const nextCanonicalBySeq = new Map<number, string>();
     let previousSeq: number | undefined;
     for (const event of state.events) {
-      if (event.seq > state.cursor) {
+      if (event.seq > state.lastSeq) {
         throw new StarciteError(
-          `Session store contains event seq ${event.seq} above cursor ${state.cursor}`
+          `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
         );
       }
 
@@ -126,13 +101,22 @@ export class SessionLog {
       previousSeq = event.seq;
     }
 
+    const latestEvent = nextHistory.at(-1);
+
     this.history.length = 0;
     this.history.push(...nextHistory);
     this.canonicalBySeq.clear();
     for (const [seq, canonical] of nextCanonicalBySeq.entries()) {
       this.canonicalBySeq.set(seq, canonical);
     }
-    this.appliedSeq = state.cursor;
+    this.appliedSeq = state.lastSeq;
+    if (state.cursor) {
+      this.appliedCursor = { ...state.cursor };
+    } else if (latestEvent?.cursor) {
+      this.appliedCursor = { ...latestEvent.cursor };
+    } else {
+      this.appliedCursor = undefined;
+    }
     this.enforceRetention();
   }
 
@@ -188,6 +172,9 @@ export class SessionLog {
     this.history.push(event);
     this.canonicalBySeq.set(event.seq, JSON.stringify(event));
     this.appliedSeq = event.seq;
+    if (event.cursor) {
+      this.appliedCursor = { ...event.cursor };
+    }
     this.enforceRetention();
     return true;
   }
@@ -196,6 +183,7 @@ export class SessionLog {
     return {
       events: this.history.slice(),
       lastSeq: this.appliedSeq,
+      cursor: this.appliedCursor ? { ...this.appliedCursor } : undefined,
       syncing,
     };
   }
@@ -204,12 +192,16 @@ export class SessionLog {
     return this.history.slice();
   }
 
-  get cursor(): number {
-    return this.appliedSeq;
+  get cursor(): TailCursor | undefined {
+    return this.appliedCursor ? { ...this.appliedCursor } : undefined;
   }
 
   get lastSeq(): number {
     return this.appliedSeq;
+  }
+
+  advanceCursor(cursor: TailCursor): void {
+    this.appliedCursor = { ...cursor };
   }
 
   private enforceRetention(): void {

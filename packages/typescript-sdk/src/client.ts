@@ -4,7 +4,7 @@ import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { LifecycleRuntime } from "./lifecycle-runtime";
 import { StarciteSession } from "./session";
-import { SessionMirrorRuntime } from "./session-mirror";
+import { TailSocketManager } from "./tail/socket-manager";
 import type { TransportConfig } from "./transport";
 import {
   defaultWebSocketFactory,
@@ -80,10 +80,6 @@ function mergeAppendOptions(
   };
 }
 
-function sessionRegistryKey(sessionId: string): string {
-  return sessionId;
-}
-
 interface StarciteLifecycleEvents {
   "session.created": (event: SessionCreatedLifecycleEvent) => void;
   error: (error: Error) => void;
@@ -102,9 +98,10 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredTenantId?: string;
+  private readonly socketAuthToken: string | undefined;
+  private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
-  private readonly sessionMirrors = new Map<string, SessionMirrorRuntime>();
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
   private lifecycleRuntime: LifecycleRuntime | undefined;
   private lifecycleRefs = 0;
@@ -131,17 +128,24 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
 
+    const socketAuthToken = apiKey;
     const websocketFactory =
       options.websocketFactory ?? defaultWebSocketFactory;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
+    this.socketAuthToken = socketAuthToken;
+    this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
       baseUrl,
       websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
+      websocketFactory,
       authorization: authorization ?? null,
+      tailSocketManager: new TailSocketManager({
+        socketUrl: this.socketUrl,
+        token: socketAuthToken,
+      }),
       fetchFn,
       headers,
-      websocketFactory,
     };
   }
 
@@ -366,24 +370,13 @@ export class Starcite {
       scopes: ["session:read", "session:append"],
     });
 
-    const transport = this.buildSessionTransport(tokenResponse.token);
-    const mirror = this.getOrCreateSessionMirror({
-      sessionId,
-      token: tokenResponse.token,
-      transport,
-      logOptions: input.logOptions,
-    });
-    const targetSeq = record?.last_seq;
-    if (targetSeq === undefined || targetSeq > mirror.state().lastSeq) {
-      await mirror.ensureHydratedForRead(targetSeq);
-    }
-
     return new StarciteSession({
       id: sessionId,
       token: tokenResponse.token,
       identity: input.identity,
-      transport,
-      mirror,
+      transport: this.buildSessionTransport(tokenResponse.token, {
+        token: this.socketAuthToken ?? tokenResponse.token,
+      }),
       store: this.store,
       record,
       logOptions: input.logOptions,
@@ -408,61 +401,34 @@ export class Starcite {
       );
     }
 
-    const transport = this.buildSessionTransport(token);
-    const mirror = this.getOrCreateSessionMirror({
-      sessionId,
-      token,
-      transport,
-      logOptions,
-    });
-
     return new StarciteSession({
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport,
-      mirror,
+      transport: this.buildSessionTransport(token, { token }),
       store: this.store,
       logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
-  private buildSessionTransport(token: string): TransportConfig {
+  private buildSessionTransport(
+    token: string,
+    socketAuth: { token: string | undefined }
+  ): TransportConfig {
+    const tailSocketManager =
+      socketAuth.token === this.socketAuthToken
+        ? this.transport.tailSocketManager
+        : new TailSocketManager({
+            socketUrl: this.socketUrl,
+            token: socketAuth.token,
+          });
+
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
+      tailSocketManager,
     };
-  }
-
-  private getOrCreateSessionMirror(input: {
-    sessionId: string;
-    token: string;
-    transport: TransportConfig;
-    logOptions: SessionLogOptions | undefined;
-  }): SessionMirrorRuntime {
-    const key = sessionRegistryKey(input.sessionId);
-    const existing = this.sessionMirrors.get(key);
-    if (existing) {
-      existing.updateTransport(input.token, input.transport);
-      if (input.logOptions) {
-        existing.setLogOptions(input.logOptions);
-      }
-      return existing;
-    }
-
-    const mirror = new SessionMirrorRuntime({
-      id: input.sessionId,
-      sessionToken: input.token,
-      transport: input.transport,
-      store: this.store,
-      logOptions: input.logOptions,
-      onEvict: () => {
-        this.sessionMirrors.delete(key);
-      },
-    });
-    this.sessionMirrors.set(key, mirror);
-    return mirror;
   }
 
   private createSession(input: {
