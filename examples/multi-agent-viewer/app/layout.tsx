@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "@/lib/agent";
 import "./globals.css";
 
 export const metadata = {
