@@ -420,6 +420,84 @@ describe("Phoenix Tail Transport", () => {
     vi.useRealTimers();
   });
 
+  it("subscribes to lifecycle over Phoenix and emits session.created", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const seen: string[] = [];
+    const stop = client.on("session.created", (event) => {
+      seen.push(event.session_id);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    expect(socket?.endPoint).toBe("ws://localhost:4000/v1/socket");
+    expect(socket?.currentParams()).toEqual({
+      token: makeApiKey(),
+    });
+
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.created",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+        title: "Lifecycle Demo",
+        metadata: {},
+        created_at: "2026-03-27T12:00:00Z",
+      },
+    });
+    await flush();
+
+    expect(seen).toEqual(["ses_lifecycle"]);
+
+    stop();
+    await flush();
+    expect(channel.leaveCalls).toBe(1);
+    expect(socket?.disconnectCalls).toHaveLength(1);
+  });
+
+  it("ignores unsupported lifecycle event kinds without surfacing an error", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const seen: string[] = [];
+    const errors: Error[] = [];
+    const stopCreated = client.on("session.created", (event) => {
+      seen.push(event.session_id);
+    });
+    const stopError = client.on("error", (error) => {
+      errors.push(error);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.archived",
+        session_id: "ses_archived",
+      },
+    });
+    await flush();
+
+    expect(seen).toEqual([]);
+    expect(errors).toEqual([]);
+
+    stopCreated();
+    stopError();
+  });
+
   it("uses one Phoenix socket for multiple subscribed sessions and rejoins each topic from its own cursor", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

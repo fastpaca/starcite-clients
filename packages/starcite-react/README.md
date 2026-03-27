@@ -9,8 +9,7 @@ keeping a familiar surface:
 - `sendMessage`
 - `status`
 
-For AI-assisted onboarding, start with `docs/ai-onboarding.md`.
-For the architecture spec, see `docs/ai-sdk-migration.md`.
+For the migration spec, see `docs/ai-sdk-migration.md`.
 
 ## Install
 

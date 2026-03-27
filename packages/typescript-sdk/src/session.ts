@@ -614,7 +614,7 @@ export class StarciteSession {
       return;
     }
 
-    const lease = this.transport.tailSocketManager.acquire();
+    const lease = this.transport.socketManager.acquire();
     const channel = lease.socket.channel(`tail:${this.id}`, () => {
       const payload: {
         cursor?: TailCursor;

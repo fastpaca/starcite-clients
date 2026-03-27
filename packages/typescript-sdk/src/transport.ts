@@ -4,8 +4,7 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import type { TailSocketManager } from "./tail/socket-manager";
-import type { StarciteWebSocket, StarciteWebSocketFactory } from "./types";
+import type { SocketManager } from "./socket-manager";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -17,12 +16,9 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
  */
 export interface TransportConfig {
   readonly baseUrl: string;
-  readonly websocketBaseUrl: string;
-  readonly websocketFactory: StarciteWebSocketFactory;
-  readonly tailSocketManager: TailSocketManager;
+  readonly socketManager: SocketManager;
   authorization: string | null;
   readonly fetchFn: typeof fetch;
-  readonly headers: Headers;
 }
 
 function parseHttpUrl(value: string, context: string): URL {
@@ -54,19 +50,6 @@ export function toWebSocketBaseUrl(apiBaseUrl: string): string {
 }
 
 /**
- * Default websocket connector used when no custom factory is provided.
- */
-export function defaultWebSocketFactory(url: string): StarciteWebSocket {
-  if (typeof WebSocket === "undefined") {
-    throw new StarciteError(
-      "WebSocket is not available in this runtime. Provide websocketFactory in StarciteOptions."
-    );
-  }
-
-  return new WebSocket(url);
-}
-
-/**
  * Makes an HTTP request against the transport's base URL.
  */
 export function request<T>(
@@ -88,7 +71,7 @@ export async function requestWithBaseUrl<T>(
   init: RequestInit,
   schema: z.ZodType<T>
 ): Promise<T> {
-  const headers = new Headers(transport.headers);
+  const headers = new Headers();
 
   if (transport.authorization) {
     headers.set("authorization", transport.authorization);

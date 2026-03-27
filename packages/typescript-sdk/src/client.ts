@@ -4,10 +4,9 @@ import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { LifecycleRuntime } from "./lifecycle-runtime";
 import { StarciteSession } from "./session";
-import { TailSocketManager } from "./tail/socket-manager";
+import { SocketManager } from "./socket-manager";
 import type { TransportConfig } from "./transport";
 import {
-  defaultWebSocketFactory,
   request,
   requestWithBaseUrl,
   toApiBaseUrl,
@@ -36,6 +35,8 @@ const DEFAULT_BASE_URL =
   globalThis.process?.env?.STARCITE_BASE_URL ?? "http://localhost:4000";
 const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
 const TRAILING_SLASHES_REGEX = /\/+$/;
+const LIFECYCLE_AUTH_ERROR_MESSAGE =
+  "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.";
 
 /**
  * Resolves auth issuer base URL in this order:
@@ -114,7 +115,6 @@ export class Starcite {
     const fetchFn: typeof fetch = userFetch
       ? (input, init) => userFetch(input, init)
       : (input, init) => fetch(input, init);
-    const headers = new Headers(options.headers);
     const apiKey = options.apiKey;
     let authorization: string | undefined;
     let issuerAuthority: string | undefined;
@@ -129,23 +129,18 @@ export class Starcite {
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
 
     const socketAuthToken = apiKey;
-    const websocketFactory =
-      options.websocketFactory ?? defaultWebSocketFactory;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
     this.socketAuthToken = socketAuthToken;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
       baseUrl,
-      websocketBaseUrl: toWebSocketBaseUrl(baseUrl),
-      websocketFactory,
       authorization: authorization ?? null,
-      tailSocketManager: new TailSocketManager({
+      socketManager: new SocketManager({
         socketUrl: this.socketUrl,
         token: socketAuthToken,
       }),
       fetchFn,
-      headers,
     };
   }
 
@@ -166,10 +161,8 @@ export class Starcite {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): () => void {
-    if (!this.transport.authorization) {
-      throw new StarciteError(
-        "starcite.on() requires apiKey so the SDK can authenticate the lifecycle socket."
-      );
+    if (!this.socketAuthToken) {
+      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
     }
 
     this.ensureLifecycleRuntime();
@@ -416,10 +409,10 @@ export class Starcite {
     token: string,
     socketAuth: { token: string | undefined }
   ): TransportConfig {
-    const tailSocketManager =
+    const socketManager =
       socketAuth.token === this.socketAuthToken
-        ? this.transport.tailSocketManager
-        : new TailSocketManager({
+        ? this.transport.socketManager
+        : new SocketManager({
             socketUrl: this.socketUrl,
             token: socketAuth.token,
           });
@@ -427,7 +420,7 @@ export class Starcite {
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
-      tailSocketManager,
+      socketManager,
     };
   }
 
@@ -491,17 +484,12 @@ export class Starcite {
       return;
     }
 
-    const authorization = this.transport.authorization;
-    if (!authorization?.startsWith("Bearer ")) {
-      throw new StarciteError(
-        "starcite.on() requires a bearer apiKey so the SDK can authenticate the lifecycle socket."
-      );
+    if (!this.socketAuthToken) {
+      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
     }
 
-    const token = authorization.slice("Bearer ".length);
     this.lifecycleRuntime = new LifecycleRuntime({
-      transport: this.transport,
-      token,
+      socketManager: this.transport.socketManager,
     });
 
     this.lifecycleRuntime.on("session.created", (event) => {

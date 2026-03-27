@@ -601,43 +601,6 @@ export const SessionListOptionsSchema = z.object({
 export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
 
 /**
- * Minimal WebSocket contract required by the lifecycle runtime.
- */
-export interface StarciteWebSocketMessageEvent {
-  data: unknown;
-}
-
-export interface StarciteWebSocketCloseEvent {
-  code?: number;
-  reason?: string;
-}
-
-export interface StarciteWebSocketEventMap {
-  open: unknown;
-  message: StarciteWebSocketMessageEvent;
-  error: unknown;
-  close: StarciteWebSocketCloseEvent;
-}
-
-export interface StarciteWebSocket {
-  addEventListener<TType extends keyof StarciteWebSocketEventMap>(
-    type: TType,
-    listener: (event: StarciteWebSocketEventMap[TType]) => void
-  ): void;
-  removeEventListener<TType extends keyof StarciteWebSocketEventMap>(
-    type: TType,
-    listener: (event: StarciteWebSocketEventMap[TType]) => void
-  ): void;
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-}
-
-/**
- * Factory used to create the WebSocket connection for tenant lifecycle events.
- */
-export type StarciteWebSocketFactory = (url: string) => StarciteWebSocket;
-
-/**
  * Options forwarded to individual HTTP requests.
  */
 export interface RequestOptions {
@@ -660,12 +623,7 @@ export interface StarciteOptions {
    */
   fetch?: typeof fetch;
   /**
-   * Headers applied to every HTTP request.
-   */
-  headers?: HeadersInit;
-  /**
-   * Service key / JWT token. When set, the SDK automatically sends
-   * `Authorization: Bearer <token>` for HTTP requests.
+   * Service key / JWT token used for authenticated backend requests.
    */
   apiKey?: string;
   /**
@@ -673,10 +631,6 @@ export interface StarciteOptions {
    * this from API key JWT `iss` (issuer authority) or `STARCITE_AUTH_URL`.
    */
   authUrl?: string;
-  /**
-   * Custom WebSocket factory for non-browser runtimes.
-   */
-  websocketFactory?: StarciteWebSocketFactory;
   /**
    * Optional session store used for resume state + retained event persistence.
    *
@@ -692,6 +646,12 @@ export interface StarciteOptions {
 /**
  * Live tenant-scoped lifecycle event emitted by `starcite.on(...)`.
  */
+export const LifecycleEventEnvelopeSchema = z
+  .object({
+    kind: z.string().min(1),
+  })
+  .passthrough();
+
 export const SessionCreatedLifecycleEventSchema = z.object({
   kind: z.literal("session.created"),
   session_id: z.string().min(1),

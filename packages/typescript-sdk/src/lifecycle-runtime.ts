@@ -1,47 +1,59 @@
 import EventEmitter from "eventemitter3";
+import type { Channel } from "phoenix";
 import { StarciteError } from "./errors";
-import type { TransportConfig } from "./transport";
-import type { SessionCreatedLifecycleEvent, StarciteWebSocket } from "./types";
-import { SessionCreatedLifecycleEventSchema } from "./types";
-
-const PHOENIX_VSN = "2.0.0";
-const PHOENIX_TOPIC = "phoenix";
-const LIFECYCLE_TOPIC = "lifecycle";
-const HEARTBEAT_INTERVAL_MS = 30_000;
-const RECONNECT_INITIAL_DELAY_MS = 250;
-const RECONNECT_MAX_DELAY_MS = 5000;
+import type { SocketManager } from "./socket-manager";
+import {
+  LifecycleEventEnvelopeSchema,
+  type SessionCreatedLifecycleEvent,
+  SessionCreatedLifecycleEventSchema,
+  TailTokenExpiredPayloadSchema,
+} from "./types";
 
 interface LifecycleRuntimeEvents {
   "session.created": (event: SessionCreatedLifecycleEvent) => void;
   error: (error: Error) => void;
 }
 
-type PhoenixFrame = [string | null, string | null, string, string, unknown];
+interface RejoinableChannel extends Channel {
+  rejoin: (timeout?: number) => void;
+}
 
-/**
- * Minimal Phoenix channel client for Starcite lifecycle events.
- *
- * This keeps the public API simple (`starcite.on(...)`) while hiding the
- * Phoenix join / heartbeat / reconnect mechanics needed to subscribe to the
- * backend-only `lifecycle` topic on `/v1/socket`.
- */
+const LIFECYCLE_TOPIC = "lifecycle";
+
+function readJoinFailureReason(payload: unknown): string {
+  if (payload instanceof Error) {
+    return payload.message;
+  }
+
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (typeof payload === "object" && payload !== null) {
+    if ("reason" in payload && typeof payload.reason === "string") {
+      return payload.reason;
+    }
+
+    if ("message" in payload && typeof payload.message === "string") {
+      return payload.message;
+    }
+  }
+
+  return "join failed";
+}
+
 export class LifecycleRuntime {
-  private readonly transport: TransportConfig;
-  private readonly token: string;
+  private readonly socketManager: SocketManager;
   private readonly emitter = new EventEmitter<LifecycleRuntimeEvents>();
 
-  private socket: StarciteWebSocket | undefined;
-  private joinRef: string | undefined;
-  private ref = 0;
-  private reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
-  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  private explicitClose = false;
+  private channel: RejoinableChannel | undefined;
+  private releaseSocket: (() => void) | undefined;
+  private lifecycleBindingRef = 0;
+  private tokenExpiredBindingRef = 0;
   private terminalFailure = false;
 
-  constructor(options: { transport: TransportConfig; token: string }) {
-    this.transport = options.transport;
-    this.token = options.token;
+  constructor(options: { socketManager: SocketManager }) {
+    this.socketManager = options.socketManager;
   }
 
   on(
@@ -64,8 +76,7 @@ export class LifecycleRuntime {
       this.emitter.on(eventName, listener as (error: Error) => void);
     }
 
-    this.explicitClose = false;
-    this.ensureConnected();
+    this.ensureChannelAttached();
     return () => {
       if (eventName === "session.created") {
         this.off(
@@ -104,12 +115,7 @@ export class LifecycleRuntime {
   }
 
   close(): void {
-    this.explicitClose = true;
-    this.clearReconnectTimer();
-    this.clearHeartbeatTimer();
-    this.socket?.close(1000, "closed");
-    this.socket = undefined;
-    this.joinRef = undefined;
+    this.detachChannel();
   }
 
   private listenerCount(): number {
@@ -119,256 +125,101 @@ export class LifecycleRuntime {
     );
   }
 
-  private ensureConnected(): void {
-    if (
-      this.socket ||
-      this.terminalFailure ||
-      this.reconnectTimer !== undefined ||
-      this.listenerCount() === 0
-    ) {
+  private ensureChannelAttached(): void {
+    if (this.channel || this.terminalFailure || this.listenerCount() === 0) {
       return;
     }
 
-    const socket = this.transport.websocketFactory(this.buildSocketUrl());
-    this.socket = socket;
-
-    socket.addEventListener("open", this.handleOpen);
-    socket.addEventListener("message", this.handleMessage);
-    socket.addEventListener("error", this.handleError);
-    socket.addEventListener("close", this.handleClose);
-  }
-
-  private readonly handleOpen = (): void => {
-    this.joinRef = this.nextRef();
-    this.sendFrame([
-      this.joinRef,
-      this.joinRef,
+    const lease = this.socketManager.acquire();
+    const channel = lease.socket.channel(
       LIFECYCLE_TOPIC,
-      "phx_join",
-      {},
-    ]);
-    this.startHeartbeat();
-  };
+      {}
+    ) as RejoinableChannel;
 
-  private readonly handleMessage = (event: { data: unknown }): void => {
-    const frame = this.parseFrame(event.data);
-    if (!frame) {
-      return;
-    }
+    this.releaseSocket = lease.release;
+    this.channel = channel;
 
-    const [, ref, topic, channelEvent, payload] = frame;
-    if (topic !== LIFECYCLE_TOPIC && topic !== PHOENIX_TOPIC) {
-      return;
-    }
-
-    if (
-      topic === LIFECYCLE_TOPIC &&
-      channelEvent === "phx_reply" &&
-      ref === this.joinRef
-    ) {
-      this.handleJoinReply(payload);
-      return;
-    }
-
-    if (topic === LIFECYCLE_TOPIC && channelEvent === "lifecycle") {
+    this.lifecycleBindingRef = channel.on("lifecycle", (payload) => {
       this.handleLifecyclePayload(payload);
-      return;
-    }
+    });
 
-    if (topic === LIFECYCLE_TOPIC && channelEvent === "token_expired") {
-      this.emitError(new StarciteError("Lifecycle subscription token expired"));
+    this.tokenExpiredBindingRef = channel.on("token_expired", (payload) => {
+      const result = TailTokenExpiredPayloadSchema.safeParse(payload);
+      if (!result.success) {
+        this.emitError(
+          new StarciteError(
+            `Invalid token_expired payload: ${result.error.issues[0]?.message ?? "parse failed"}`
+          )
+        );
+        return;
+      }
+
       this.terminalFailure = true;
-      this.close();
-      return;
-    }
+      this.detachChannel();
+      this.emitError(new StarciteError("Lifecycle subscription token expired"));
+    });
 
-    if (
-      channelEvent === "phx_close" ||
-      channelEvent === "phx_error" ||
-      (topic === PHOENIX_TOPIC && channelEvent === "phx_error")
-    ) {
-      this.socket?.close(1011, channelEvent);
-    }
-  };
-
-  private handleJoinReply(payload: unknown): void {
-    const parsed = payload as {
-      status?: unknown;
-      response?: { reason?: unknown };
-    };
-
-    if (parsed.status === "ok") {
-      this.reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
-      return;
-    }
-
-    const reason =
-      typeof parsed.response?.reason === "string"
-        ? parsed.response.reason
-        : "join_failed";
-    this.terminalFailure = true;
-    this.emitError(
-      new StarciteError(`Lifecycle subscription failed: ${reason}`)
-    );
-    this.close();
+    channel
+      .join()
+      .receive("error", (payload) => {
+        this.emitError(
+          new StarciteError(
+            `Lifecycle subscription failed: ${readJoinFailureReason(payload)}`
+          )
+        );
+      })
+      .receive("timeout", () => {
+        this.emitError(
+          new StarciteError("Lifecycle subscription failed: join timeout")
+        );
+      });
   }
 
   private handleLifecyclePayload(payload: unknown): void {
     const envelope = payload as { event?: unknown };
-    const parsed = SessionCreatedLifecycleEventSchema.safeParse(envelope.event);
-    if (!parsed.success) {
+    const lifecycleEvent = LifecycleEventEnvelopeSchema.safeParse(
+      envelope.event
+    );
+    if (!lifecycleEvent.success) {
       this.emitError(
         new StarciteError(
-          `Invalid lifecycle payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
+          `Invalid lifecycle payload: ${lifecycleEvent.error.issues[0]?.message ?? "parse failed"}`
         )
       );
       return;
     }
 
-    if (parsed.data.kind === "session.created") {
-      this.emitter.emit("session.created", parsed.data);
-    }
-  }
-
-  private readonly handleError = (): void => {
-    // Phoenix transports typically follow with a close event; reconnect is driven there.
-  };
-
-  private readonly handleClose = (event: {
-    code?: number;
-    reason?: string;
-  }): void => {
-    this.clearHeartbeatTimer();
-    this.socket = undefined;
-    this.joinRef = undefined;
-
-    if (
-      this.explicitClose ||
-      this.terminalFailure ||
-      this.listenerCount() === 0
-    ) {
+    if (lifecycleEvent.data.kind !== "session.created") {
       return;
     }
 
-    this.emitError(
-      new StarciteError(
-        `Lifecycle socket closed${event.code ? ` (code ${event.code}${event.reason ? `, reason '${event.reason}'` : ""})` : ""}`
-      )
+    const sessionCreated = SessionCreatedLifecycleEventSchema.safeParse(
+      lifecycleEvent.data
     );
-    this.scheduleReconnect();
-  };
-
-  private scheduleReconnect(): void {
-    this.clearReconnectTimer();
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = undefined;
-      this.ensureConnected();
-    }, this.reconnectDelayMs);
-    this.reconnectDelayMs = Math.min(
-      this.reconnectDelayMs * 2,
-      RECONNECT_MAX_DELAY_MS
-    );
-  }
-
-  private buildSocketUrl(): string {
-    const url = new URL(`${this.transport.websocketBaseUrl}/socket/websocket`);
-    url.searchParams.set("token", this.token);
-    url.searchParams.set("vsn", PHOENIX_VSN);
-    return url.toString();
-  }
-
-  private sendFrame(frame: PhoenixFrame): void {
-    if (!this.socket) {
-      return;
-    }
-
-    try {
-      this.socket.send(JSON.stringify(frame));
-    } catch (error) {
-      this.emitError(
-        error instanceof Error
-          ? error
-          : new StarciteError(`Lifecycle send failed: ${String(error)}`)
-      );
-      this.socket.close(1011, "send failed");
-    }
-  }
-
-  private startHeartbeat(): void {
-    this.clearHeartbeatTimer();
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.socket) {
-        return;
-      }
-
-      this.sendFrame([null, this.nextRef(), PHOENIX_TOPIC, "heartbeat", {}]);
-    }, HEARTBEAT_INTERVAL_MS);
-  }
-
-  private clearHeartbeatTimer(): void {
-    if (!this.heartbeatTimer) {
-      return;
-    }
-
-    clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = undefined;
-  }
-
-  private clearReconnectTimer(): void {
-    if (!this.reconnectTimer) {
-      return;
-    }
-
-    clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
-  }
-
-  private nextRef(): string {
-    this.ref += 1;
-    return `${this.ref}`;
-  }
-
-  private parseFrame(data: unknown): PhoenixFrame | undefined {
-    if (typeof data !== "string") {
-      this.emitError(
-        new StarciteError("Lifecycle socket received a non-text frame")
-      );
-      return undefined;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(data);
-    } catch (error) {
+    if (!sessionCreated.success) {
       this.emitError(
         new StarciteError(
-          `Lifecycle socket received invalid JSON: ${error instanceof Error ? error.message : String(error)}`
+          `Invalid session.created payload: ${sessionCreated.error.issues[0]?.message ?? "parse failed"}`
         )
       );
-      return undefined;
+      return;
     }
 
-    if (!Array.isArray(parsed) || parsed.length !== 5) {
-      this.emitError(
-        new StarciteError("Lifecycle socket received an invalid Phoenix frame")
-      );
-      return undefined;
+    this.emitter.emit("session.created", sessionCreated.data);
+  }
+
+  private detachChannel(): void {
+    if (this.channel) {
+      this.channel.off("lifecycle", this.lifecycleBindingRef);
+      this.channel.off("token_expired", this.tokenExpiredBindingRef);
+      this.channel.leave();
+      this.channel = undefined;
     }
 
-    const [joinRef, ref, topic, event, payload] = parsed;
-    if (
-      (joinRef !== null && typeof joinRef !== "string") ||
-      (ref !== null && typeof ref !== "string") ||
-      typeof topic !== "string" ||
-      typeof event !== "string"
-    ) {
-      this.emitError(
-        new StarciteError("Lifecycle socket received a malformed Phoenix frame")
-      );
-      return undefined;
-    }
-
-    return [joinRef, ref, topic, event, payload];
+    this.lifecycleBindingRef = 0;
+    this.tokenExpiredBindingRef = 0;
+    this.releaseSocket?.();
+    this.releaseSocket = undefined;
   }
 
   private emitError(error: Error): void {

@@ -1,6 +1,6 @@
 import { Socket } from "phoenix";
 
-export class TailSocketManager {
+export class SocketManager {
   private leaseCount = 0;
   private readonly socketUrl: string;
   private readonly token: string | undefined;
@@ -11,10 +11,7 @@ export class TailSocketManager {
     this.token = input.token;
   }
 
-  acquire(): {
-    release: () => void;
-    socket: Socket;
-  } {
+  acquire(): { release: () => void; socket: Socket } {
     this.leaseCount += 1;
 
     const socket = this.ensureSocket();
@@ -43,15 +40,7 @@ export class TailSocketManager {
     }
 
     this.socket = new Socket(this.socketUrl, {
-      params: () => {
-        if (!this.token) {
-          return {};
-        }
-
-        return {
-          token: this.token,
-        };
-      },
+      params: () => (this.token ? { token: this.token } : {}),
     });
 
     return this.socket;

@@ -6,11 +6,6 @@ onto Starcite.
 It is a specification for how the migrated system should work. It is not a
 tutorial and not a standalone prompt.
 
-Read this together with:
-
-- [AI Onboarding](./ai-onboarding.md)
-- task docs under [`docs/tasks`](./tasks)
-
 ## 1. Identity Model
 
 Starcite has two relevant identity roles in this migration:
@@ -42,6 +37,8 @@ Rules:
 Frontend chat state is session-scoped. The browser needs a session token, not
 an API key.
 
+The backend must mint a session token for the frontend.
+
 The bootstrap route must:
 
 1. create or reuse a session for the user
@@ -60,7 +57,27 @@ Why:
 - the browser should not hold tenant-wide backend credentials
 - the browser should interact with Starcite directly for durable chat state
 
-## 3. Protocol Model
+## 3. Session Renewal
+
+Session tokens are frontend credentials and may expire.
+
+The frontend must be able to reacquire a fresh `{ token, sessionId }` pair for
+an existing session.
+
+Required model:
+
+1. keep the current `sessionId`
+2. call the bootstrap route again with that `sessionId`
+3. receive a fresh session token for the same session
+4. recreate `starcite.session({ token })` on the frontend
+
+Implications:
+
+- token renewal is a normal backend responsibility
+- the browser should never try to refresh with the API key
+- session renewal should reuse the same session when possible
+
+## 4. Protocol Model
 
 Starcite is not request/response chat transport.
 
@@ -87,7 +104,7 @@ These responsibilities must stay distinct:
 - `session.on(...)` is per-session event handling
 - `session.events()` is the canonical session read model
 
-## 4. Frontend Migration
+## 5. Frontend Migration
 
 Frontend must:
 
@@ -112,9 +129,10 @@ Frontend behavior requirements:
 - `sendMessage(...)` must only durably append the user message
 - frontend must render from Starcite session state
 - frontend must not manually trigger backend execution after append
-- frontend must not treat local/browser transcript state as canonical
+- frontend may keep local UI state for layout, input, or interaction, but the
+  session timeline is the canonical chat history
 
-## 5. Backend Migration
+## 6. Backend Migration
 
 Backend must use one long-lived `Starcite` client:
 
@@ -185,7 +203,7 @@ Backend behavior requirements:
 - append assistant output back into Starcite instead of returning it as the UI transport
 - keep demo/server code direct: stream with AI SDK and append deltas directly to the session
 
-## 6. Ownership And Routing
+## 7. Ownership And Routing
 
 Lifecycle discovery is not ownership.
 
@@ -201,7 +219,7 @@ For a single-agent demo, ownership can be simplified to “all sessions”.
 
 For a real app, inspect the existing routing/assignment logic first.
 
-## 7. Current Constraints
+## 8. Current Constraints
 
 Current lifecycle behavior:
 
@@ -214,7 +232,7 @@ Implications:
 - bootstrap routes should not be used to perform backend orchestration
 - lifecycle replay/cursor support is the future fix for pre-existing session discovery
 
-## 8. Anti-Patterns
+## 9. Anti-Patterns
 
 Do not implement any of these patterns:
 
@@ -228,7 +246,31 @@ Do not implement any of these patterns:
 - every agent is attached to every session by default
 - simple AI SDK streaming is wrapped in extra batching/accumulation helpers in the demo path
 
-## 9. Required Public Surface
+## 10. Multi-Agent Sessions
+
+Multi-agent apps should still use the same shared-session model.
+
+Required model:
+
+- each backend agent binds the same `sessionId`
+- each backend agent uses its own agent identity
+- all agent output is appended into the same session timeline
+- the frontend renders that shared session instead of opening separate streams
+
+Preserve the app's existing:
+
+- orchestration logic
+- tool calls
+- agent roles
+- model choices
+
+Do not:
+
+- build separate browser transport channels per agent
+- parse natural-language coordinator output as orchestration state
+- hide shared-session behavior behind extra runtime abstractions in the demo path
+
+## 11. Required Public Surface
 
 The migration should use these public APIs:
 
@@ -239,7 +281,7 @@ The migration should use these public APIs:
 - `session.append(...)`
 - `useStarciteChat({ session, id? })`
 
-## 10. References
+## 12. References
 
 Starcite server code:
 
@@ -257,3 +299,4 @@ Reference implementation in this repo:
 
 - `examples/nextjs-chat-ui/app/api/starcite/session/route.ts`
 - `examples/nextjs-chat-ui/app/page.tsx`
+- `examples/multi-agent-viewer/lib/agent.ts`
