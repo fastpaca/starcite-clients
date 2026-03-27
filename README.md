@@ -18,6 +18,7 @@ Detailed package docs:
 - SDK guide: `packages/typescript-sdk/README.md`
 - React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
+- AI onboarding entrypoint: `docs/ai-onboarding.md`
 - AI SDK migration guide: `docs/ai-sdk-migration.md`
 
 ## Public SDK Surface

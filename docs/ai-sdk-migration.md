@@ -6,6 +6,11 @@ onto Starcite.
 It is a specification for how the migrated system should work. It is not a
 tutorial and not a standalone prompt.
 
+Read this together with:
+
+- [AI Onboarding](./ai-onboarding.md)
+- task docs under [`docs/tasks`](./tasks)
+
 ## 1. Identity Model
 
 Starcite has two relevant identity roles in this migration:
