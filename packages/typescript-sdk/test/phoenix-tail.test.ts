@@ -647,6 +647,57 @@ describe("Phoenix Tail Transport", () => {
     session.disconnect();
   });
 
+  it("classifies server corrections for retained events as live updates", async () => {
+    const store = new MemoryStore();
+    store.save("ses_updates", {
+      cursor: { epoch: 3, seq: 6 },
+      events: [
+        makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
+        makeEvent(6, "agent:planner", { epoch: 3, seq: 6 }),
+      ],
+      lastSeq: 6,
+    });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+      store,
+    }).session({ token: makeSessionToken("ses_updates") });
+
+    const seen: Array<{ phase: string; seq: number; text: string }> = [];
+    const stopEvents = session.on("event", (event, context) => {
+      seen.push({
+        phase: context.phase,
+        seq: event.seq,
+        text: `${event.payload["text"] ?? ""}`,
+      });
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_updates");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [
+        {
+          ...makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
+          payload: { text: "corrected-event-5" },
+        },
+      ],
+    });
+    await flush();
+
+    expect(seen).toEqual([
+      { phase: "replay", seq: 5, text: "event-5" },
+      { phase: "replay", seq: 6, text: "event-6" },
+      { phase: "live", seq: 5, text: "corrected-event-5" },
+    ]);
+
+    stopEvents();
+    session.disconnect();
+  });
+
   it("filters event listeners by agent without creating extra channels", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
@@ -739,6 +790,54 @@ describe("Phoenix Tail Transport", () => {
     });
 
     stopGap();
+    stopEvents();
+    session.disconnect();
+  });
+
+  it("treats server-reported gaps as recoverable when no gap listener is attached", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_gap_recoverable") });
+
+    const errors: Error[] = [];
+    const seen: number[] = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
+    });
+    const stopEvents = session.on("event", (event) => {
+      seen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_gap_recoverable");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
+    });
+    channel.emit("gap", {
+      committed_cursor: { epoch: 2, seq: 4 },
+      earliest_available_cursor: { epoch: 2, seq: 4 },
+      from_cursor: { epoch: 1, seq: 1 },
+      next_cursor: { epoch: 2, seq: 4 },
+      reason: "rollback",
+      type: "gap",
+    });
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(4, "agent:planner", { epoch: 2, seq: 4 })],
+    });
+    await flush();
+
+    expect(errors).toEqual([]);
+    expect(seen).toEqual([1, 4]);
+    expect(channel.rejoinCalls.at(-1)).toEqual({
+      cursor: { epoch: 2, seq: 4 },
+    });
+
+    stopError();
     stopEvents();
     session.disconnect();
   });

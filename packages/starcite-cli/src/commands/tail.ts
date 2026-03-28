@@ -1,8 +1,5 @@
 import {
-  SessionLogConflictError,
-  SessionLogGapError,
   type StarciteSession,
-  StarciteTailGapError,
 } from "@starcite/sdk";
 import {
   type CliRuntime,
@@ -61,43 +58,21 @@ export async function runTailCommand(
   process.once("SIGINT", onSigint);
 
   try {
-    let retriedAfterStoreReset = false;
+    const session = await resolved.client.session({
+      identity: resolved.client.agent({ id: DEFAULT_CREATE_AGENT_ID }),
+      id: sessionId,
+    });
 
-    while (true) {
-      const session = await resolved.client.session({
-        identity: resolved.client.agent({ id: DEFAULT_CREATE_AGENT_ID }),
-        id: sessionId,
-      });
-
-      try {
-        await emitTailEvents({
-          session,
-          agent: parsed["--agent"],
-          cursorSeq: cursor,
-          follow: parsed["--no-follow"] !== true,
-          limit,
-          json: resolved.json,
-          runtime,
-          signal: abortController.signal,
-        });
-        return;
-      } catch (error) {
-        const isStaleStoreConflict =
-          error instanceof SessionLogConflictError ||
-          error instanceof SessionLogGapError ||
-          error instanceof StarciteTailGapError;
-
-        if (!(isStaleStoreConflict && !retriedAfterStoreReset)) {
-          throw error;
-        }
-
-        retriedAfterStoreReset = true;
-        resolved.store.clearSession(resolved.baseUrl, sessionId);
-        runtime.logger.error(
-          `Warning: cleared stale local session cache for '${sessionId}' and retried tail.`
-        );
-      }
-    }
+    await emitTailEvents({
+      session,
+      agent: parsed["--agent"],
+      cursorSeq: cursor,
+      follow: parsed["--no-follow"] !== true,
+      limit,
+      json: resolved.json,
+      runtime,
+      signal: abortController.signal,
+    });
   } finally {
     process.removeListener("SIGINT", onSigint);
   }
@@ -122,13 +97,6 @@ async function emitTailEvents({
   runtime: CliRuntime;
   signal: AbortSignal;
 }): Promise<void> {
-  if (cursorSeq !== undefined) {
-    session.log.hydrate({
-      events: [],
-      lastSeq: 0,
-    });
-  }
-
   if (limit !== undefined && limit <= 0) {
     return;
   }
@@ -140,7 +108,6 @@ async function emitTailEvents({
 
     const cleanup = () => {
       stopEvents();
-      stopGap();
       stopError();
       signal.removeEventListener("abort", handleAbort);
       if (idleTimer) {
@@ -188,14 +155,6 @@ async function emitTailEvents({
 
     const stopError = session.on("error", (error) => {
       fail(error);
-    });
-    const stopGap = session.on("gap", (_gap) => {
-      fail(
-        new StarciteTailGapError(
-          `Tail gap reported for session '${session.id}'`,
-          { sessionId: session.id }
-        )
-      );
     });
     const stopEvents = session.on(
       "event",

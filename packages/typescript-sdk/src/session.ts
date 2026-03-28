@@ -6,11 +6,13 @@ import {
   StarciteConnectionError,
   StarciteError,
   StarciteTailError,
-  StarciteTailGapError,
   StarciteTokenExpiredError,
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
-import { SessionLog } from "./session-log";
+import {
+  SessionLog,
+  type SessionLogSubscriptionContext,
+} from "./session-log";
 import type { TransportConfig } from "./transport";
 import { request } from "./transport";
 import type {
@@ -349,18 +351,19 @@ export class StarciteSession {
       if (!this.eventSubscriptions.has(eventListener)) {
         const eventOptions = options as SessionOnEventOptions | undefined;
         const replay = eventOptions?.replay ?? true;
-        const replayCutoffSeq = replay ? this.log.lastSeq : -1;
 
-        const dispatch = (event: SessionEvent): void => {
+        const dispatch = (
+          event: SessionEvent,
+          logContext: SessionLogSubscriptionContext
+        ): void => {
           const parsedEvent = this.parseOnEvent(event, eventOptions);
           if (!parsedEvent) {
             return;
           }
 
-          const classifiedContext = this.resolveEventContext(
-            event.seq,
-            replayCutoffSeq
-          );
+          const classifiedContext: SessionEventContext = logContext.replayed
+            ? { phase: "replay", replayed: true }
+            : { phase: "live", replayed: false };
 
           try {
             this.observeListenerResult(
@@ -572,16 +575,6 @@ export class StarciteSession {
     }
   }
 
-  private resolveEventContext(
-    eventSeq: number,
-    replayCutoffSeq: number
-  ): SessionEventContext {
-    const replayed = eventSeq <= replayCutoffSeq;
-    return replayed
-      ? { phase: "replay", replayed: true }
-      : { phase: "live", replayed: false };
-  }
-
   private observeListenerResult(result: void | Promise<void>): void {
     Promise.resolve(result).catch((error) => {
       this.emitStreamError(error);
@@ -663,13 +656,6 @@ export class StarciteSession {
 
       if (this.lifecycle.listenerCount("gap") > 0) {
         this.lifecycle.emit("gap", result.data);
-      } else {
-        this.emitStreamError(
-          new StarciteTailGapError(
-            `Tail gap reported for session '${this.id}'`,
-            { sessionId: this.id }
-          )
-        );
       }
 
       channel.rejoin();

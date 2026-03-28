@@ -303,11 +303,11 @@ export interface SessionSnapshot {
    */
   events: TailEvent[];
   /**
-   * Highest contiguous sequence applied to the log.
+   * Highest committed sequence observed for this session.
    */
   lastSeq: number;
   /**
-   * Exact tail resume cursor for the latest retained event, when available.
+   * Exact tail resume cursor for continuing reconciliation, when available.
    */
   cursor?: TailCursor;
   /**
@@ -532,7 +532,7 @@ export interface SessionStoreMetadata {
  */
 export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
   /**
-   * Highest contiguous sequence applied for this session.
+   * Highest committed sequence observed for this session.
    */
   lastSeq: number;
   /**
@@ -540,7 +540,7 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
    */
   cursor?: TailCursor;
   /**
-   * Retained events snapshot used for immediate replay.
+   * Retained committed events snapshot used for immediate replay.
    */
   events: TEvent[];
   /**

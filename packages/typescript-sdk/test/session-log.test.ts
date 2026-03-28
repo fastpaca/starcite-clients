@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { StarciteError } from "../src/errors";
-import {
-  SessionLog,
-  SessionLogConflictError,
-  SessionLogGapError,
-} from "../src/session-log";
+import { SessionLog } from "../src/session-log";
 import type { TailCursor, TailEvent } from "../src/types";
 
 function makeEvent(
@@ -42,12 +38,26 @@ describe("SessionLog", () => {
     expect(log.state(false).events.map((event) => event.seq)).toEqual([1, 2]);
   });
 
-  it("throws SessionLogGapError when sequence numbers skip", () => {
+  it("anchors the log on the first observed event even when the sequence starts later", () => {
     const log = new SessionLog();
+    const applied = log.applyBatch([makeEvent(2, "frame-2", { epoch: 1, seq: 2 })]);
 
-    expect(() => {
-      log.applyBatch([makeEvent(2)]);
-    }).toThrow(SessionLogGapError);
+    expect(applied.map((event) => event.seq)).toEqual([2]);
+    expect(log.state(false)).toMatchObject({
+      cursor: { epoch: 1, seq: 2 },
+      lastSeq: 2,
+      syncing: false,
+    });
+  });
+
+  it("accepts later observed events without requiring contiguous history", () => {
+    const log = new SessionLog();
+    log.applyBatch([makeEvent(2)]);
+    const applied = log.applyBatch([makeEvent(4)]);
+
+    expect(applied.map((event) => event.seq)).toEqual([4]);
+    expect(log.state(false).events.map((event) => event.seq)).toEqual([2, 4]);
+    expect(log.lastSeq).toBe(4);
   });
 
   it("deduplicates identical repeated events", () => {
@@ -72,14 +82,31 @@ describe("SessionLog", () => {
     ]);
   });
 
-  it("throws SessionLogConflictError for conflicting duplicates", () => {
+  it("overwrites previously retained events when the server sends updated truth", () => {
     const log = new SessionLog();
 
     log.applyBatch([makeEvent(1, "first")]);
+    const applied = log.applyBatch([makeEvent(1, "different payload")]);
 
-    expect(() => {
-      log.applyBatch([makeEvent(1, "different payload")]);
-    }).toThrow(SessionLogConflictError);
+    expect(applied.map((event) => event.seq)).toEqual([1]);
+    expect(log.state(false).events).toEqual([makeEvent(1, "different payload")]);
+  });
+
+  it("hydrates sparse persisted state without requiring contiguous retained events", () => {
+    const log = new SessionLog();
+
+    log.hydrate({
+      cursor: { epoch: 3, seq: 6 },
+      events: [makeEvent(6, "frame-6", { epoch: 3, seq: 6 })],
+      lastSeq: 6,
+    });
+
+    expect(log.state(false)).toMatchObject({
+      cursor: { epoch: 3, seq: 6 },
+      lastSeq: 6,
+      syncing: false,
+    });
+    expect(log.state(false).events.map((event) => event.seq)).toEqual([6]);
   });
 
   it("replays retained history to new subscribers", () => {

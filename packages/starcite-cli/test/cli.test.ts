@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type SessionEvent,
-  SessionLogConflictError,
   StarciteIdentity,
 } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1221,35 +1220,15 @@ describe("starcite CLI", () => {
     expect(info).toEqual(["[drafter] Drafting clause 4.2..."]);
   });
 
-  it("tail clears stale local session cache and retries once", async () => {
+  it("tail surfaces session errors without mutating local session cache", async () => {
     const { logger, info, error } = makeLogger();
     let capturedStore: StarciteCliStore | undefined;
-    let sessionCalls = 0;
 
     const staleSession: FakeSession = {
       ...fakeSession,
       append: vi.fn(),
       on: createOnMock({
-        error: new SessionLogConflictError(
-          "Session log conflict for seq 1: received different payload for an already-applied event"
-        ),
-      }),
-    };
-
-    const recoveredSession: FakeSession = {
-      ...fakeSession,
-      append: vi.fn(),
-      on: createOnMock({
-        events: [
-          {
-            seq: 1,
-            type: "content",
-            payload: { text: "recovered event" },
-            actor: "agent:drafter",
-            producer_id: "producer:drafter",
-            producer_seq: 1,
-          },
-        ],
+        error: new Error("synthetic session failure"),
       }),
     };
 
@@ -1280,53 +1259,49 @@ describe("starcite CLI", () => {
           agent,
           user,
           listSessions,
-          session: vi.fn(
-            () =>
-              (sessionCalls++ === 0 ? staleSession : recoveredSession) as never
-          ),
+          session: vi.fn(() => staleSession as never),
         } as never;
       },
     });
 
     writeCredentials(configDir, serviceToken);
 
-    await program.parseAsync(
-      ["--config-dir", configDir, "tail", "ses_123", "--limit", "1"],
-      {
-        from: "user",
-      }
-    );
+    await expect(
+      program.parseAsync(
+        ["--config-dir", configDir, "tail", "ses_123", "--limit", "1"],
+        {
+          from: "user",
+        }
+      )
+    ).rejects.toThrow("synthetic session failure");
 
-    expect(info).toEqual(["[drafter] recovered event"]);
-    expect(error).toEqual([
-      "Warning: cleared stale local session cache for 'ses_123' and retried tail.",
-    ]);
+    expect(info).toEqual([]);
+    expect(error).toEqual([]);
     expect(
       capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
-    ).toBeUndefined();
+    ).toEqual({
+      cursor: { epoch: 1, seq: 1 },
+      lastSeq: 1,
+      events: [
+        {
+          seq: 1,
+          type: "content",
+          payload: { text: "stale event" },
+          actor: "agent:drafter",
+          producer_id: "producer:drafter",
+          producer_seq: 1,
+        },
+      ],
+      metadata: expect.objectContaining({
+        schemaVersion: 4,
+      }),
+    });
   });
 
-  it("tail clears stale local session cache and retries once after a tail gap", async () => {
+  it("tail ignores gap notifications from the session and continues streaming events", async () => {
     const { logger, info, error } = makeLogger();
-    let capturedStore: StarciteCliStore | undefined;
-    let sessionCalls = 0;
 
-    const staleSession: FakeSession = {
-      ...fakeSession,
-      append: vi.fn(),
-      on: createOnMock({
-        gap: {
-          type: "gap",
-          reason: "epoch_stale",
-          from_cursor: { epoch: 1, seq: 1 },
-          next_cursor: { epoch: 2, seq: 2 },
-          committed_cursor: { epoch: 2, seq: 2 },
-          earliest_available_cursor: { epoch: 2, seq: 2 },
-        },
-      }),
-    };
-
-    const recoveredSession: FakeSession = {
+    const gappedSession: FakeSession = {
       ...fakeSession,
       append: vi.fn(),
       on: createOnMock({
@@ -1340,42 +1315,25 @@ describe("starcite CLI", () => {
             producer_seq: 2,
           },
         ],
+        gap: {
+          type: "gap",
+          reason: "epoch_stale",
+          from_cursor: { epoch: 1, seq: 1 },
+          next_cursor: { epoch: 2, seq: 2 },
+          committed_cursor: { epoch: 2, seq: 2 },
+          earliest_available_cursor: { epoch: 2, seq: 2 },
+        },
       }),
     };
 
     const program = buildProgram({
       logger,
-      createClient: (_baseUrl, _apiKey, store) => {
-        capturedStore = store;
-        store.sessionStore("http://localhost:45187").save("ses_123", {
-          cursor: { epoch: 1, seq: 1 },
-          lastSeq: 1,
-          events: [
-            {
-              seq: 1,
-              type: "content",
-              payload: { text: "stale event" },
-              actor: "agent:drafter",
-              producer_id: "producer:drafter",
-              producer_seq: 1,
-            },
-          ],
-          metadata: {
-            schemaVersion: 4,
-            updatedAtMs: Date.now(),
-          },
-        });
-
-        return {
-          agent,
-          user,
-          listSessions,
-          session: vi.fn(
-            () =>
-              (sessionCalls++ === 0 ? staleSession : recoveredSession) as never
-          ),
-        } as never;
-      },
+      createClient: () => ({
+        agent,
+        user,
+        listSessions,
+        session: vi.fn(() => gappedSession as never),
+      }),
     });
 
     writeCredentials(configDir, serviceToken);
@@ -1388,12 +1346,7 @@ describe("starcite CLI", () => {
     );
 
     expect(info).toEqual(["[drafter] recovered after gap"]);
-    expect(error).toEqual([
-      "Warning: cleared stale local session cache for 'ses_123' and retried tail.",
-    ]);
-    expect(
-      capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
-    ).toBeUndefined();
+    expect(error).toEqual([]);
   });
 
   it("tail --cursor uses a sequence number and filters replay by seq", async () => {
@@ -1445,10 +1398,7 @@ describe("starcite CLI", () => {
       }
     );
 
-    expect(fakeSession.log.hydrate).toHaveBeenCalledWith({
-      events: [],
-      lastSeq: 0,
-    });
+    expect(fakeSession.log.hydrate).not.toHaveBeenCalled();
     expect(info).toEqual(["[drafter] second event"]);
   });
 

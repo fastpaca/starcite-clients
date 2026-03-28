@@ -9,7 +9,14 @@ import type {
 } from "./types";
 
 interface SessionLogEvents {
-  event: (event: TailEvent) => void;
+  event: (
+    event: TailEvent,
+    context: SessionLogSubscriptionContext
+  ) => void;
+}
+
+export interface SessionLogSubscriptionContext {
+  replayed: boolean;
 }
 
 export class SessionLogGapError extends StarciteError {
@@ -30,9 +37,9 @@ export class SessionLogConflictError extends StarciteError {
  * Canonical in-memory log for one session.
  *
  * Invariants:
- * - Applies events in strict contiguous `seq` order.
+ * - Maintains a best-effort committed mirror keyed by `seq`.
  * - Treats repeated identical events as idempotent no-ops.
- * - Rejects conflicting duplicates and sequence gaps.
+ * - Accepts out-of-order or corrected server events and overwrites local state.
  */
 export class SessionLog {
   private readonly history: TailEvent[] = [];
@@ -66,7 +73,7 @@ export class SessionLog {
     for (const event of batch) {
       if (this.apply(event)) {
         applied.push(event);
-        this.emitter.emit("event", event);
+        this.emitter.emit("event", event, { replayed: false });
       }
     }
 
@@ -80,9 +87,8 @@ export class SessionLog {
       );
     }
 
-    const nextHistory: TailEvent[] = [];
+    const nextBySeq = new Map<number, TailEvent>();
     const nextCanonicalBySeq = new Map<number, string>();
-    let previousSeq: number | undefined;
     for (const event of state.events) {
       if (event.seq > state.lastSeq) {
         throw new StarciteError(
@@ -90,17 +96,13 @@ export class SessionLog {
         );
       }
 
-      if (previousSeq !== undefined && event.seq !== previousSeq + 1) {
-        throw new StarciteError(
-          `Session store events must be contiguous; saw seq ${event.seq} after ${previousSeq}`
-        );
-      }
-
-      nextHistory.push(event);
+      nextBySeq.set(event.seq, event);
       nextCanonicalBySeq.set(event.seq, JSON.stringify(event));
-      previousSeq = event.seq;
     }
 
+    const nextHistory = [...nextBySeq.values()].sort((left, right) => {
+      return left.seq - right.seq;
+    });
     const latestEvent = nextHistory.at(-1);
 
     this.history.length = 0;
@@ -121,13 +123,16 @@ export class SessionLog {
   }
 
   subscribe(
-    listener: (event: TailEvent) => void,
+    listener: (
+      event: TailEvent,
+      context: SessionLogSubscriptionContext
+    ) => void,
     options: { replay?: boolean } = {}
   ): () => void {
     const shouldReplay = options.replay ?? true;
     if (shouldReplay) {
       for (const event of this.history) {
-        listener(event);
+        listener(event, { replayed: true });
       }
     }
 
@@ -138,41 +143,36 @@ export class SessionLog {
   }
 
   private apply(event: TailEvent): boolean {
+    const previousLastSeq = this.appliedSeq;
+    const incomingCanonical = JSON.stringify(event);
     const existingCanonical = this.canonicalBySeq.get(event.seq);
 
-    if (event.seq <= this.appliedSeq) {
-      const incomingCanonical = JSON.stringify(event);
-      if (!existingCanonical) {
-        const oldestRetainedSeq = this.history[0]?.seq;
-        if (oldestRetainedSeq === undefined || event.seq < oldestRetainedSeq) {
-          return false;
-        }
-
-        throw new SessionLogConflictError(
-          `Session log has no canonical payload for retained seq ${event.seq}`
-        );
-      }
-
-      if (incomingCanonical !== existingCanonical) {
-        throw new SessionLogConflictError(
-          `Session log conflict for seq ${event.seq}: received different payload for an already-applied event`
-        );
-      }
-
+    if (existingCanonical === incomingCanonical) {
       return false;
     }
 
-    const expectedSeq = this.appliedSeq + 1;
-    if (event.seq !== expectedSeq) {
-      throw new SessionLogGapError(
-        `Session log gap detected: expected seq ${expectedSeq} but received ${event.seq}`
-      );
+    const existingIndex = this.history.findIndex((entry) => {
+      return entry.seq === event.seq;
+    });
+    if (existingIndex >= 0) {
+      this.history[existingIndex] = event;
+    } else {
+      const insertIndex = this.history.findIndex((entry) => {
+        return entry.seq > event.seq;
+      });
+      if (insertIndex === -1) {
+        this.history.push(event);
+      } else {
+        this.history.splice(insertIndex, 0, event);
+      }
     }
 
-    this.history.push(event);
-    this.canonicalBySeq.set(event.seq, JSON.stringify(event));
-    this.appliedSeq = event.seq;
-    if (event.cursor) {
+    this.canonicalBySeq.set(event.seq, incomingCanonical);
+    this.appliedSeq = Math.max(this.appliedSeq, event.seq);
+    if (
+      event.cursor &&
+      (this.appliedCursor === undefined || event.seq >= previousLastSeq)
+    ) {
       this.appliedCursor = { ...event.cursor };
     }
     this.enforceRetention();
