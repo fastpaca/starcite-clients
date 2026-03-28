@@ -101,19 +101,3 @@ export class StarciteTokenExpiredError extends StarciteTailError {
     this.name = "StarciteTokenExpiredError";
   }
 }
-
-/**
- * Thrown when the tail transport reports an explicit replay/live gap.
- */
-export class StarciteTailGapError extends StarciteTailError {
-  constructor(
-    message: string,
-    options: {
-      sessionId: string;
-      attempts?: number;
-    }
-  ) {
-    super(message, { ...options, stage: "gap" });
-    this.name = "StarciteTailGapError";
-  }
-}

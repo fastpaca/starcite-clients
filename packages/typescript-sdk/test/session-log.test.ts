@@ -24,14 +24,14 @@ describe("SessionLog", () => {
     const log = new SessionLog();
 
     const applied = log.applyBatch([
-      makeEvent(1, "frame-1", { epoch: 1, seq: 1 }),
-      makeEvent(2, "frame-2", { epoch: 1, seq: 2 }),
+      makeEvent(1, "frame-1", 1),
+      makeEvent(2, "frame-2", 2),
     ]);
 
     expect(applied.map((event) => event.seq)).toEqual([1, 2]);
     expect(log.lastSeq).toBe(2);
     expect(log.state(false)).toMatchObject({
-      cursor: { epoch: 1, seq: 2 },
+      cursor: 2,
       lastSeq: 2,
       syncing: false,
     });
@@ -40,11 +40,11 @@ describe("SessionLog", () => {
 
   it("anchors the log on the first observed event even when the sequence starts later", () => {
     const log = new SessionLog();
-    const applied = log.applyBatch([makeEvent(2, "frame-2", { epoch: 1, seq: 2 })]);
+    const applied = log.applyBatch([makeEvent(2, "frame-2", 2)]);
 
     expect(applied.map((event) => event.seq)).toEqual([2]);
     expect(log.state(false)).toMatchObject({
-      cursor: { epoch: 1, seq: 2 },
+      cursor: 2,
       lastSeq: 2,
       syncing: false,
     });
@@ -89,20 +89,22 @@ describe("SessionLog", () => {
     const applied = log.applyBatch([makeEvent(1, "different payload")]);
 
     expect(applied.map((event) => event.seq)).toEqual([1]);
-    expect(log.state(false).events).toEqual([makeEvent(1, "different payload")]);
+    expect(log.state(false).events).toEqual([
+      makeEvent(1, "different payload"),
+    ]);
   });
 
   it("hydrates sparse persisted state without requiring contiguous retained events", () => {
     const log = new SessionLog();
 
     log.hydrate({
-      cursor: { epoch: 3, seq: 6 },
-      events: [makeEvent(6, "frame-6", { epoch: 3, seq: 6 })],
+      cursor: 6,
+      events: [makeEvent(6, "frame-6", 6)],
       lastSeq: 6,
     });
 
     expect(log.state(false)).toMatchObject({
-      cursor: { epoch: 3, seq: 6 },
+      cursor: 6,
       lastSeq: 6,
       syncing: false,
     });

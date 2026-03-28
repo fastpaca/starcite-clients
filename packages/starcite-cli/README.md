@@ -193,4 +193,4 @@ Useful flags:
 - `--limit <count>`: stop after N emitted events
 - `--no-follow`: stop after replay instead of following live events
 
-By default, `tail` starts from sequence `0` and requests batched replay frames from the API for faster catch-up. The CLI does not require or expose the transport epoch.
+By default, `tail` starts from sequence `0` and requests batched replay frames from the API for faster catch-up. The public replay contract is seq-only.

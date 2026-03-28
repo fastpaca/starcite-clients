@@ -1,6 +1,4 @@
-import {
-  type StarciteSession,
-} from "@starcite/sdk";
+import type { StarciteSession } from "@starcite/sdk";
 import {
   type CliRuntime,
   CliUsageError,
@@ -63,16 +61,20 @@ export async function runTailCommand(
       id: sessionId,
     });
 
-    await emitTailEvents({
-      session,
-      agent: parsed["--agent"],
-      cursorSeq: cursor,
-      follow: parsed["--no-follow"] !== true,
-      limit,
-      json: resolved.json,
-      runtime,
-      signal: abortController.signal,
-    });
+    try {
+      await emitTailEvents({
+        session,
+        agent: parsed["--agent"],
+        cursorSeq: cursor,
+        follow: parsed["--no-follow"] !== true,
+        limit,
+        json: resolved.json,
+        runtime,
+        signal: abortController.signal,
+      });
+    } finally {
+      session.disconnect();
+    }
   } finally {
     process.removeListener("SIGINT", onSigint);
   }

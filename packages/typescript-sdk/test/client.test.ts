@@ -258,6 +258,99 @@ describe("Starcite", () => {
     expect(body.payload).toEqual({ text: "custom actor" });
   });
 
+  it("uses distinct session-scoped socket managers for identity-backed sessions", async () => {
+    const apiKey = makeApiKey();
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_same",
+            title: "Draft",
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-11T00:00:00Z",
+            updated_at: "2026-02-11T00:00:00Z",
+          }),
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_same", "agent-one"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_same",
+            title: "Draft",
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-11T00:00:00Z",
+            updated_at: "2026-02-11T00:00:00Z",
+          }),
+          { status: 409 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: makeTailSessionToken("ses_same", "agent-two"),
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      apiKey,
+    });
+
+    const firstSession = await starcite.session({
+      identity: starcite.agent({ id: "agent-one" }),
+      id: "ses_same",
+    });
+    const secondSession = await starcite.session({
+      identity: starcite.agent({ id: "agent-two" }),
+      id: "ses_same",
+    });
+
+    const firstTransport = (
+      firstSession as unknown as {
+        transport: { authorization: string; socketManager: unknown };
+      }
+    ).transport;
+    const secondTransport = (
+      secondSession as unknown as {
+        transport: { authorization: string; socketManager: unknown };
+      }
+    ).transport;
+    const clientSocketManager = (
+      starcite as unknown as {
+        transport: { socketManager: unknown };
+      }
+    ).transport.socketManager;
+
+    expect(firstTransport.authorization).toBe(
+      `Bearer ${makeTailSessionToken("ses_same", "agent-one")}`
+    );
+    expect(secondTransport.authorization).toBe(
+      `Bearer ${makeTailSessionToken("ses_same", "agent-two")}`
+    );
+    expect(firstTransport.socketManager).not.toBe(clientSocketManager);
+    expect(secondTransport.socketManager).not.toBe(clientSocketManager);
+    expect(firstTransport.socketManager).not.toBe(
+      secondTransport.socketManager
+    );
+  });
+
   it("serializes concurrent appends for a session producer", async () => {
     const sessionToken = makeTailSessionToken("ses_serial", "writer");
     let releaseFirstAppend: (() => void) | undefined;
@@ -771,6 +864,88 @@ describe("Starcite", () => {
     expect(restoredSession.appendState()).toEqual(
       expect.objectContaining({
         status: "idle",
+        lastAcknowledgedProducerSeq: 1,
+        pending: [],
+      })
+    );
+  });
+
+  it("reconciles restored pending appends against retained committed events before auto-flush", async () => {
+    const sessionToken = makeTailSessionToken(
+      "ses_reconciled_outbox",
+      "writer"
+    );
+    const store = new MemoryStore();
+    const producerId = crypto.randomUUID();
+
+    store.save("ses_reconciled_outbox", {
+      cursor: 1,
+      lastSeq: 1,
+      events: [
+        {
+          seq: 1,
+          cursor: 1,
+          type: "content",
+          payload: { text: "persist me" },
+          actor: "agent:writer",
+          producer_id: producerId,
+          producer_seq: 1,
+          idempotency_key: "persisted-append",
+        },
+      ],
+      append: {
+        producerId,
+        lastAcknowledgedProducerSeq: 0,
+        pending: [
+          {
+            id: "pending-1",
+            request: {
+              type: "content",
+              payload: { text: "persist me" },
+              producer_id: producerId,
+              producer_seq: 1,
+              source: "agent",
+              idempotency_key: "persisted-append",
+            },
+            enqueuedAtMs: Date.now(),
+            retryAttempt: 0,
+          },
+        ],
+        status: "idle",
+      },
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      store,
+    });
+    const restoredSession = await starcite.session({
+      token: sessionToken,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(restoredSession.appendState()).toEqual(
+      expect.objectContaining({
+        status: "idle",
+        lastAcknowledgedProducerSeq: 1,
+        pending: [],
+      })
+    );
+    expect(restoredSession.state()).toEqual(
+      expect.objectContaining({
+        append: expect.objectContaining({
+          status: "idle",
+          lastAcknowledgedProducerSeq: 1,
+          pending: [],
+        }),
+      })
+    );
+    expect(store.load("ses_reconciled_outbox")?.append).toEqual(
+      expect.objectContaining({
         lastAcknowledgedProducerSeq: 1,
         pending: [],
       })

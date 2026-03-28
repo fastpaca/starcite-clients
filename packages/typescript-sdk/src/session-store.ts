@@ -77,7 +77,7 @@ function cloneState<TEvent extends TailEvent>(
 ): SessionStoreState<TEvent> {
   return {
     lastSeq: state.lastSeq,
-    cursor: state.cursor ? { ...state.cursor } : undefined,
+    cursor: state.cursor,
     events: cloneEvents(state.events),
     append: cloneAppendState(state.append),
     metadata: state.metadata ? { ...state.metadata } : undefined,

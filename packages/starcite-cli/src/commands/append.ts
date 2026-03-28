@@ -89,26 +89,30 @@ export async function runAppendCommand(
     identity: resolveAppendIdentity(identity, resolved.client),
     id: sessionId,
   });
-  const response = await session.append({
-    type: parsed["--type"] ?? "content",
-    payload: payload ?? { text },
-    source: parsed["--source"],
-    metadata: parsed["--metadata"]
-      ? parseJsonObject(parsed["--metadata"], "--metadata")
-      : undefined,
-    refs: parsed["--refs"]
-      ? parseJsonObject(parsed["--refs"], "--refs")
-      : undefined,
-    idempotencyKey: parsed["--idempotency-key"],
-    expectedSeq: parsed["--expected-seq"]
-      ? parseNonNegativeInteger(parsed["--expected-seq"], "--expected-seq")
-      : undefined,
-  });
+  try {
+    const response = await session.append({
+      type: parsed["--type"] ?? "content",
+      payload: payload ?? { text },
+      source: parsed["--source"],
+      metadata: parsed["--metadata"]
+        ? parseJsonObject(parsed["--metadata"], "--metadata")
+        : undefined,
+      refs: parsed["--refs"]
+        ? parseJsonObject(parsed["--refs"], "--refs")
+        : undefined,
+      idempotencyKey: parsed["--idempotency-key"],
+      expectedSeq: parsed["--expected-seq"]
+        ? parseNonNegativeInteger(parsed["--expected-seq"], "--expected-seq")
+        : undefined,
+    });
 
-  if (resolved.json) {
-    runtime.writeJsonOutput(response, true);
-    return;
+    if (resolved.json) {
+      runtime.writeJsonOutput(response, true);
+      return;
+    }
+
+    runtime.logger.info(`seq=${response.seq} deduped=${response.deduped}`);
+  } finally {
+    session.disconnect();
   }
-
-  runtime.logger.info(`seq=${response.seq} deduped=${response.deduped}`);
 }

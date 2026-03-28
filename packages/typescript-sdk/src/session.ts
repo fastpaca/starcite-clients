@@ -9,10 +9,7 @@ import {
   StarciteTokenExpiredError,
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
-import {
-  SessionLog,
-  type SessionLogSubscriptionContext,
-} from "./session-log";
+import { SessionLog, type SessionLogSubscriptionContext } from "./session-log";
 import type { TransportConfig } from "./transport";
 import { request } from "./transport";
 import type {
@@ -275,7 +272,14 @@ export class StarciteSession {
     const storedState = this.loadPersistedState();
     if (this.restorePersistedLogState(storedState)) {
       this.restorePersistedAppendState(storedState);
+      const pendingCountBeforeReconciliation = this.appendQueue.length;
+      this.reconcileAppendQueueWithCommittedEvents(this.log.events);
+      if (this.appendQueue.length !== pendingCountBeforeReconciliation) {
+        this.persistLogState();
+      }
     }
+
+    this.ensureChannelAttached();
 
     if (
       this.appendOptions.autoFlush &&
@@ -284,8 +288,6 @@ export class StarciteSession {
     ) {
       this.ensureAppendQueueProcessing();
     }
-
-    this.ensureChannelAttached();
   }
 
   /**
@@ -541,7 +543,10 @@ export class StarciteSession {
    * Returns a stable view of the current canonical in-memory log state.
    */
   state(): SessionSnapshot {
-    return this.log.state(this.tailChannel !== undefined);
+    return {
+      ...this.log.state(this.tailChannel !== undefined),
+      append: this.snapshotAppendQueueState(),
+    };
   }
 
   /**
@@ -618,9 +623,7 @@ export class StarciteSession {
             cursor?: TailCursor;
           } = {};
 
-          if (this.log.cursor) {
-            payload.cursor = this.log.cursor;
-          }
+          payload.cursor = this.log.cursor ?? 0;
 
           return payload;
         },
@@ -638,6 +641,7 @@ export class StarciteSession {
       try {
         const appliedEvents = this.log.applyBatch(result.data.events);
         if (appliedEvents.length > 0) {
+          this.reconcileAppendQueueWithCommittedEvents(appliedEvents);
           this.persistLogState();
         }
       } catch (error) {
@@ -1107,6 +1111,116 @@ export class StarciteSession {
       deduped: response.deduped,
       queue: this.snapshotAppendQueueState(),
     });
+  }
+
+  private reconcileAppendQueueWithCommittedEvents(
+    events: readonly SessionEvent[]
+  ): void {
+    if (this.appendQueue.length === 0) {
+      return;
+    }
+
+    const reconciled: Array<{
+      event: SessionEvent;
+      item: RuntimeAppendQueueItem;
+    }> = [];
+    let removedInFlightItem = false;
+
+    for (const event of events) {
+      const matchedIndex = this.appendQueue.findIndex((item) => {
+        return this.matchesCommittedEvent(item.request, event);
+      });
+      if (matchedIndex < 0) {
+        continue;
+      }
+
+      const [matchedItem] = this.appendQueue.splice(matchedIndex, 1);
+      if (!matchedItem) {
+        continue;
+      }
+
+      if (matchedItem.id === this.appendInFlightItemId) {
+        removedInFlightItem = true;
+      }
+
+      if (matchedItem.request.producer_id === this.appendProducerId) {
+        this.appendLastAcknowledgedProducerSeq = Math.max(
+          this.appendLastAcknowledgedProducerSeq,
+          matchedItem.request.producer_seq
+        );
+      }
+
+      reconciled.push({
+        event,
+        item: matchedItem,
+      });
+    }
+
+    if (reconciled.length === 0) {
+      return;
+    }
+
+    if (removedInFlightItem) {
+      this.appendQueueVersion += 1;
+      this.appendQueueRunController?.abort();
+    }
+
+    if (this.appendQueue.length === 0) {
+      this.appendQueueStatus = "idle";
+    } else if (this.appendQueueStatus !== "paused") {
+      this.appendQueueStatus = "idle";
+    }
+
+    if (removedInFlightItem || this.appendQueue.length === 0) {
+      this.appendInFlightItemId = undefined;
+      this.appendRetryAttempt = 0;
+      this.appendNextRetryAtMs = undefined;
+      this.appendLastFailure = undefined;
+    }
+
+    const queueSnapshot = this.snapshotAppendQueueState();
+    for (const { event, item } of reconciled) {
+      item.deferred?.resolve({
+        deduped: false,
+        last_seq: this.log.lastSeq,
+        seq: event.seq,
+      });
+      this.emitAppendLifecycle({
+        type: "acknowledged",
+        sessionId: this.id,
+        itemId: item.id,
+        seq: event.seq,
+        deduped: false,
+        queue: queueSnapshot,
+      });
+    }
+
+    if (
+      !(removedInFlightItem || this.appendQueueTask) &&
+      this.appendQueue.length > 0 &&
+      this.appendQueueStatus !== "paused" &&
+      this.appendOptions.autoFlush
+    ) {
+      this.ensureAppendQueueProcessing();
+    }
+  }
+
+  private matchesCommittedEvent(
+    request: AppendEventRequest,
+    event: SessionEvent
+  ): boolean {
+    if (
+      request.idempotency_key &&
+      event.idempotency_key &&
+      request.idempotency_key === event.idempotency_key
+    ) {
+      return true;
+    }
+
+    return (
+      request.producer_id === event.producer_id &&
+      request.producer_seq === event.producer_seq
+    );
   }
 
   private handleTerminalAppendFailure(

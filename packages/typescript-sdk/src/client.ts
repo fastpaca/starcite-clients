@@ -368,7 +368,7 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token, {
-        token: this.socketAuthToken ?? tokenResponse.token,
+        token: tokenResponse.token,
       }),
       store: this.store,
       record,

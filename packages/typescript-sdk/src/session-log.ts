@@ -9,28 +9,11 @@ import type {
 } from "./types";
 
 interface SessionLogEvents {
-  event: (
-    event: TailEvent,
-    context: SessionLogSubscriptionContext
-  ) => void;
+  event: (event: TailEvent, context: SessionLogSubscriptionContext) => void;
 }
 
 export interface SessionLogSubscriptionContext {
   replayed: boolean;
-}
-
-export class SessionLogGapError extends StarciteError {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionLogGapError";
-  }
-}
-
-export class SessionLogConflictError extends StarciteError {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionLogConflictError";
-  }
 }
 
 /**
@@ -113,9 +96,9 @@ export class SessionLog {
     }
     this.appliedSeq = state.lastSeq;
     if (state.cursor) {
-      this.appliedCursor = { ...state.cursor };
+      this.appliedCursor = state.cursor;
     } else if (latestEvent?.cursor) {
-      this.appliedCursor = { ...latestEvent.cursor };
+      this.appliedCursor = latestEvent.cursor;
     } else {
       this.appliedCursor = undefined;
     }
@@ -151,6 +134,15 @@ export class SessionLog {
       return false;
     }
 
+    const oldestRetainedSeq = this.history[0]?.seq;
+    if (
+      existingCanonical === undefined &&
+      oldestRetainedSeq !== undefined &&
+      event.seq < oldestRetainedSeq
+    ) {
+      return false;
+    }
+
     const existingIndex = this.history.findIndex((entry) => {
       return entry.seq === event.seq;
     });
@@ -173,7 +165,7 @@ export class SessionLog {
       event.cursor &&
       (this.appliedCursor === undefined || event.seq >= previousLastSeq)
     ) {
-      this.appliedCursor = { ...event.cursor };
+      this.appliedCursor = event.cursor;
     }
     this.enforceRetention();
     return true;
@@ -183,7 +175,7 @@ export class SessionLog {
     return {
       events: this.history.slice(),
       lastSeq: this.appliedSeq,
-      cursor: this.appliedCursor ? { ...this.appliedCursor } : undefined,
+      cursor: this.appliedCursor,
       syncing,
     };
   }
@@ -193,7 +185,7 @@ export class SessionLog {
   }
 
   get cursor(): TailCursor | undefined {
-    return this.appliedCursor ? { ...this.appliedCursor } : undefined;
+    return this.appliedCursor;
   }
 
   get lastSeq(): number {
@@ -201,7 +193,7 @@ export class SessionLog {
   }
 
   advanceCursor(cursor: TailCursor): void {
-    this.appliedCursor = { ...cursor };
+    this.appliedCursor = cursor;
   }
 
   private enforceRetention(): void {

@@ -248,12 +248,12 @@ const session = starcite.session({ token: "<jwt>" });
 session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
-session.log; // SessionLog — canonical source of truth
+session.log; // SessionLog — best-effort committed mirror of backend state
 
 // ── Session log ─────────────────────────────────────────────────────────────
 
-session.log.events; // readonly SessionEvent[] — ordered by seq, no gaps
-session.log.cursor; // number — highest applied seq
+session.log.events; // readonly SessionEvent[] — ordered committed events retained for replay
+session.log.cursor; // TailCursor | undefined — opaque resume cursor from the backend
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -266,6 +266,9 @@ await session.append({ payload: { ok: true }, type: "custom", source: "user" });
 session.appendState();
 // -> { status, pending, producerId, lastAcknowledgedProducerSeq, ... }
 
+session.state();
+// -> { events, lastSeq, cursor, syncing, append }
+
 session.on("append", (event) => {
   console.log(event.type);
   // queued | attempt_started | retry_scheduled | acknowledged | paused | cleared | resumed | reset
@@ -276,14 +279,21 @@ session.resetAppendQueue(); // drop queued appends and rotate managed producer i
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
-// Late subscribers get synchronous replay of log.events, then live events.
-const unsub = session.on("event", (event) => {
+// Late subscribers get synchronous replay of retained committed state, then live updates.
+const unsub = session.on("event", (event, context) => {
   console.log(event.seq);
+  console.log(context.phase); // "replay" | "live"
 });
 
 // Fatal errors only (for example token expiry). Transient drops auto-reconnect.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
+});
+
+// Optional: observe backend-reported recovery boundaries.
+session.on("gap", (gap) => {
+  console.log(gap.reason);
+  // The SDK already advances the cursor and rejoins internally.
 });
 
 unsub();

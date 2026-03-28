@@ -2,10 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  type SessionEvent,
-  StarciteIdentity,
-} from "@starcite/sdk";
+import { type SessionEvent, StarciteIdentity } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
 import { StarciteCliStore } from "../src/store";
@@ -1237,7 +1234,7 @@ describe("starcite CLI", () => {
       createClient: (_baseUrl, _apiKey, store) => {
         capturedStore = store;
         store.sessionStore("http://localhost:45187").save("ses_123", {
-          cursor: { epoch: 1, seq: 1 },
+          cursor: 1,
           lastSeq: 1,
           events: [
             {
@@ -1280,7 +1277,7 @@ describe("starcite CLI", () => {
     expect(
       capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
     ).toEqual({
-      cursor: { epoch: 1, seq: 1 },
+      cursor: 1,
       lastSeq: 1,
       events: [
         {
@@ -1317,23 +1314,24 @@ describe("starcite CLI", () => {
         ],
         gap: {
           type: "gap",
-          reason: "epoch_stale",
-          from_cursor: { epoch: 1, seq: 1 },
-          next_cursor: { epoch: 2, seq: 2 },
-          committed_cursor: { epoch: 2, seq: 2 },
-          earliest_available_cursor: { epoch: 2, seq: 2 },
+          reason: "resume_invalidated",
+          from_cursor: 1,
+          next_cursor: 2,
+          committed_cursor: 2,
+          earliest_available_cursor: 2,
         },
       }),
     };
 
     const program = buildProgram({
       logger,
-      createClient: () => ({
-        agent,
-        user,
-        listSessions,
-        session: vi.fn(() => gappedSession as never),
-      }),
+      createClient: () =>
+        ({
+          agent,
+          user,
+          listSessions,
+          session: vi.fn(() => gappedSession as never),
+        }) as never,
     });
 
     writeCredentials(configDir, serviceToken);

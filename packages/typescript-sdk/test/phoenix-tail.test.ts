@@ -336,14 +336,7 @@ function makeSessionToken(sessionId: string, principalId = "planner"): string {
   });
 }
 
-function makeEvent(
-  seq: number,
-  actor = "agent:planner",
-  cursor?: {
-    epoch: number;
-    seq: number;
-  }
-) {
+function makeEvent(seq: number, actor = "agent:planner", cursor?: number) {
   return {
     actor,
     cursor,
@@ -369,10 +362,10 @@ function makeSessionRecord(sessionId: string) {
   );
 }
 
-function makeTokenResponse(sessionId: string) {
+function makeTokenResponse(sessionId: string, principalId = "planner") {
   return new Response(
     JSON.stringify({
-      token: makeSessionToken(sessionId),
+      token: makeSessionToken(sessionId, principalId),
       expires_in: 3600,
     }),
     { status: 200 }
@@ -408,6 +401,27 @@ async function waitForChannel(
   }
 
   throw new Error(`Timed out waiting for channel ${topic}`);
+}
+
+async function waitForChannels(
+  topic: string,
+  expectedCount: number
+): Promise<InstanceType<typeof phoenixMock.MockPhoenixChannel>[]> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const channels = phoenixMock.MockPhoenixChannel.instances.filter(
+      (candidate) => {
+        return candidate.topic === topic;
+      }
+    );
+    if (channels.length >= expectedCount) {
+      return channels.slice(0, expectedCount);
+    }
+    await flush();
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedCount} channel(s) for topic ${topic}`
+  );
 }
 
 describe("Phoenix Tail Transport", () => {
@@ -498,10 +512,10 @@ describe("Phoenix Tail Transport", () => {
     stopError();
   });
 
-  it("uses one Phoenix socket for multiple subscribed sessions and rejoins each topic from its own cursor", async () => {
+  it("uses session-scoped Phoenix sockets for identity-backed sessions and rejoins each topic from its own cursor", async () => {
     const store = new MemoryStore();
     store.save("ses_beta", {
-      cursor: { epoch: 1, seq: 6 },
+      cursor: 6,
       events: [],
       lastSeq: 6,
     });
@@ -540,51 +554,53 @@ describe("Phoenix Tail Transport", () => {
       { agent: "planner" }
     );
 
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
-    expect(socket?.endPoint).toBe("ws://localhost:4000/v1/socket");
-    expect(socket?.currentParams()).toEqual({
-      token: makeApiKey(),
+    await waitForSocketCount(2);
+    const alphaSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const betaSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    expect(alphaSocket?.endPoint).toBe("ws://localhost:4000/v1/socket");
+    expect(betaSocket?.endPoint).toBe("ws://localhost:4000/v1/socket");
+    expect(alphaSocket?.currentParams()).toEqual({
+      token: makeSessionToken("ses_alpha"),
+    });
+    expect(betaSocket?.currentParams()).toEqual({
+      token: makeSessionToken("ses_beta"),
     });
 
     const alphaChannel = await waitForChannel("tail:ses_alpha");
     const betaChannel = await waitForChannel("tail:ses_beta");
-    expect(alphaChannel.joinCalls[0]).toEqual({});
-    expect(betaChannel.joinCalls[0]).toEqual({
-      cursor: { epoch: 1, seq: 6 },
-    });
+    expect(alphaChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(betaChannel.joinCalls[0]).toEqual({ cursor: 6 });
 
-    socket?.emitOpen();
+    alphaSocket?.emitOpen();
+    betaSocket?.emitOpen();
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
     alphaChannel.emit("events", {
-      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
+      events: [makeEvent(1, "agent:planner", 1)],
     });
     betaChannel.emit("events", {
-      events: [makeEvent(7, "agent:planner", { epoch: 1, seq: 7 })],
+      events: [makeEvent(7, "agent:planner", 7)],
     });
     await flush();
 
     expect(alphaSeen).toEqual([1]);
     expect(betaSeen).toEqual([7]);
 
-    socket?.emitClose({ code: 1006, reason: "network reset" });
-    socket?.emitOpen();
+    alphaSocket?.emitClose({ code: 1006, reason: "network reset" });
+    betaSocket?.emitClose({ code: 1006, reason: "network reset" });
+    alphaSocket?.emitOpen();
+    betaSocket?.emitOpen();
     alphaChannel.emitJoinOk({});
     betaChannel.emitJoinOk({});
 
-    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({
-      cursor: { epoch: 1, seq: 1 },
-    });
-    expect(betaChannel.rejoinCalls.at(-1)).toEqual({
-      cursor: { epoch: 1, seq: 7 },
-    });
+    expect(alphaChannel.rejoinCalls.at(-1)).toEqual({ cursor: 1 });
+    expect(betaChannel.rejoinCalls.at(-1)).toEqual({ cursor: 7 });
 
     alphaChannel.emit("events", {
-      events: [makeEvent(2, "agent:planner", { epoch: 1, seq: 2 })],
+      events: [makeEvent(2, "agent:planner", 2)],
     });
     betaChannel.emit("events", {
-      events: [makeEvent(8, "agent:planner", { epoch: 1, seq: 8 })],
+      events: [makeEvent(8, "agent:planner", 8)],
     });
     await flush();
 
@@ -597,10 +613,101 @@ describe("Phoenix Tail Transport", () => {
     beta.disconnect();
   });
 
+  it("keeps same-session identity subscribers isolated so one listener still receives follow-up events after another disconnects", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(makeSessionRecord("ses_shared"))
+      .mockResolvedValueOnce(makeTokenResponse("ses_shared", "planner"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(makeTokenResponse("ses_shared", "reviewer"));
+
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const planner = await client.session({
+      identity: client.agent({ id: "planner" }),
+      id: "ses_shared",
+    });
+    const reviewer = await client.session({
+      identity: client.agent({ id: "reviewer" }),
+      id: "ses_shared",
+    });
+
+    const plannerSeen: number[] = [];
+    const reviewerSeen: number[] = [];
+    const stopPlanner = planner.on("event", (event) => {
+      plannerSeen.push(event.seq);
+    });
+    const stopReviewer = reviewer.on("event", (event) => {
+      reviewerSeen.push(event.seq);
+    });
+
+    await waitForSocketCount(2);
+    const plannerSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const reviewerSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    expect(plannerSocket?.currentParams()).toEqual({
+      token: makeSessionToken("ses_shared", "planner"),
+    });
+    expect(reviewerSocket?.currentParams()).toEqual({
+      token: makeSessionToken("ses_shared", "reviewer"),
+    });
+
+    const [plannerChannel, reviewerChannel] = await waitForChannels(
+      "tail:ses_shared",
+      2
+    );
+    expect(plannerChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(reviewerChannel.joinCalls[0]).toEqual({ cursor: 0 });
+
+    plannerSocket?.emitOpen();
+    reviewerSocket?.emitOpen();
+    plannerChannel.emitJoinOk({});
+    reviewerChannel.emitJoinOk({});
+
+    const firstUserEvent = makeEvent(1, "user:alice", 1);
+    plannerChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    reviewerChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    await flush();
+
+    expect(plannerSeen).toEqual([1]);
+    expect(reviewerSeen).toEqual([1]);
+
+    reviewer.disconnect();
+    await flush();
+    expect(reviewerChannel.leaveCalls).toBe(1);
+    expect(reviewerSocket?.disconnectCalls).toHaveLength(1);
+    expect(plannerSocket?.disconnectCalls).toHaveLength(0);
+
+    plannerChannel.emit("events", {
+      events: [makeEvent(2, "user:alice", 2)],
+    });
+    await flush();
+
+    expect(plannerSeen).toEqual([1, 2]);
+
+    stopPlanner();
+    stopReviewer();
+    planner.disconnect();
+  });
+
   it("joins from the stored cursor and replays retained events to late listeners", async () => {
     const store = new MemoryStore();
     store.save("ses_replay", {
-      cursor: { epoch: 3, seq: 4 },
+      cursor: 4,
       events: [],
       lastSeq: 4,
     });
@@ -620,16 +727,14 @@ describe("Phoenix Tail Transport", () => {
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
     const channel = await waitForChannel("tail:ses_replay");
-    expect(channel.joinCalls[0]).toEqual({
-      cursor: { epoch: 3, seq: 4 },
-    });
+    expect(channel.joinCalls[0]).toEqual({ cursor: 4 });
 
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
       events: [
-        makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
-        makeEvent(6, "agent:planner", { epoch: 3, seq: 6 }),
+        makeEvent(5, "agent:planner", 5),
+        makeEvent(6, "agent:planner", 6),
       ],
     });
     await flush();
@@ -650,10 +755,10 @@ describe("Phoenix Tail Transport", () => {
   it("classifies server corrections for retained events as live updates", async () => {
     const store = new MemoryStore();
     store.save("ses_updates", {
-      cursor: { epoch: 3, seq: 6 },
+      cursor: 6,
       events: [
-        makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
-        makeEvent(6, "agent:planner", { epoch: 3, seq: 6 }),
+        makeEvent(5, "agent:planner", 5),
+        makeEvent(6, "agent:planner", 6),
       ],
       lastSeq: 6,
     });
@@ -669,7 +774,7 @@ describe("Phoenix Tail Transport", () => {
       seen.push({
         phase: context.phase,
         seq: event.seq,
-        text: `${event.payload["text"] ?? ""}`,
+        text: `${event.payload.text ?? ""}`,
       });
     });
 
@@ -681,7 +786,7 @@ describe("Phoenix Tail Transport", () => {
     channel.emit("events", {
       events: [
         {
-          ...makeEvent(5, "agent:planner", { epoch: 3, seq: 5 }),
+          ...makeEvent(5, "agent:planner", 5),
           payload: { text: "corrected-event-5" },
         },
       ],
@@ -730,9 +835,9 @@ describe("Phoenix Tail Transport", () => {
     channel.emitJoinOk({});
     channel.emit("events", {
       events: [
-        makeEvent(1, "agent:planner", { epoch: 1, seq: 1 }),
-        makeEvent(2, "agent:drafter", { epoch: 1, seq: 2 }),
-        makeEvent(3, "agent:planner", { epoch: 1, seq: 3 }),
+        makeEvent(1, "agent:planner", 1),
+        makeEvent(2, "agent:drafter", 2),
+        makeEvent(3, "agent:planner", 3),
       ],
     });
     await flush();
@@ -763,31 +868,29 @@ describe("Phoenix Tail Transport", () => {
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
-      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
+      events: [makeEvent(1, "agent:planner", 1)],
     });
     channel.emit("gap", {
-      committed_cursor: { epoch: 2, seq: 4 },
-      earliest_available_cursor: { epoch: 2, seq: 4 },
-      from_cursor: { epoch: 1, seq: 1 },
-      next_cursor: { epoch: 2, seq: 4 },
-      reason: "rollback",
+      committed_cursor: 4,
+      earliest_available_cursor: 4,
+      from_cursor: 1,
+      next_cursor: 4,
+      reason: "resume_invalidated",
       type: "gap",
     });
     await flush();
 
     expect(gaps).toEqual([
       {
-        committed_cursor: { epoch: 2, seq: 4 },
-        earliest_available_cursor: { epoch: 2, seq: 4 },
-        from_cursor: { epoch: 1, seq: 1 },
-        next_cursor: { epoch: 2, seq: 4 },
-        reason: "rollback",
+        committed_cursor: 4,
+        earliest_available_cursor: 4,
+        from_cursor: 1,
+        next_cursor: 4,
+        reason: "resume_invalidated",
         type: "gap",
       },
     ]);
-    expect(channel.rejoinCalls.at(-1)).toEqual({
-      cursor: { epoch: 2, seq: 4 },
-    });
+    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: 4 });
 
     stopGap();
     stopEvents();
@@ -815,30 +918,93 @@ describe("Phoenix Tail Transport", () => {
     socket?.emitOpen();
     channel.emitJoinOk({});
     channel.emit("events", {
-      events: [makeEvent(1, "agent:planner", { epoch: 1, seq: 1 })],
+      events: [makeEvent(1, "agent:planner", 1)],
     });
     channel.emit("gap", {
-      committed_cursor: { epoch: 2, seq: 4 },
-      earliest_available_cursor: { epoch: 2, seq: 4 },
-      from_cursor: { epoch: 1, seq: 1 },
-      next_cursor: { epoch: 2, seq: 4 },
-      reason: "rollback",
+      committed_cursor: 4,
+      earliest_available_cursor: 4,
+      from_cursor: 1,
+      next_cursor: 4,
+      reason: "resume_invalidated",
       type: "gap",
     });
     channel.emitJoinOk({});
     channel.emit("events", {
-      events: [makeEvent(4, "agent:planner", { epoch: 2, seq: 4 })],
+      events: [makeEvent(4, "agent:planner", 4)],
     });
     await flush();
 
     expect(errors).toEqual([]);
     expect(seen).toEqual([1, 4]);
-    expect(channel.rejoinCalls.at(-1)).toEqual({
-      cursor: { epoch: 2, seq: 4 },
-    });
+    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: 4 });
 
     stopError();
     stopEvents();
+    session.disconnect();
+  });
+
+  it("reconciles an in-flight append when the committed tail event arrives first", async () => {
+    let releaseAppendResponse: (() => void) | undefined;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => {
+      return new Promise<Response>((resolve) => {
+        releaseAppendResponse = () => {
+          resolve(
+            new Response(
+              JSON.stringify({ seq: 1, last_seq: 1, deduped: false }),
+              { status: 201 }
+            )
+          );
+        };
+      });
+    });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeSessionToken("ses_append_reconcile") });
+
+    const appendPromise = session.append({ text: "hello from queue" });
+    await Promise.resolve();
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_append_reconcile");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const requestBody = JSON.parse(requestInit.body as string) as {
+      idempotency_key?: string;
+      producer_id: string;
+      producer_seq: number;
+    };
+
+    channel.emit("events", {
+      events: [
+        {
+          ...makeEvent(1, "agent:planner", 1),
+          idempotency_key: requestBody.idempotency_key ?? null,
+          payload: { text: "hello from queue" },
+          producer_id: requestBody.producer_id,
+          producer_seq: requestBody.producer_seq,
+        },
+      ],
+    });
+    await flush();
+
+    await expect(appendPromise).resolves.toEqual({
+      deduped: false,
+      seq: 1,
+    });
+    expect(session.appendState()).toEqual(
+      expect.objectContaining({
+        pending: [],
+        status: "idle",
+      })
+    );
+
+    releaseAppendResponse?.();
+    await flush();
     session.disconnect();
   });
 
@@ -895,7 +1061,7 @@ describe("Phoenix Tail Transport", () => {
     stopEvents();
   });
 
-  it("cleans up channels per session and disconnects the shared socket when the last handle disconnects", async () => {
+  it("cleans up channels per session and disconnects session-scoped sockets when each handle disconnects", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(makeSessionRecord("ses_one"))
@@ -912,19 +1078,21 @@ describe("Phoenix Tail Transport", () => {
     const one = await client.session({ identity, id: "ses_one" });
     const two = await client.session({ identity, id: "ses_two" });
 
-    await waitForSocketCount(1);
-    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    await waitForSocketCount(2);
+    const oneSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const twoSocket = phoenixMock.MockPhoenixSocket.instances[1];
     const oneChannel = await waitForChannel("tail:ses_one");
     const twoChannel = await waitForChannel("tail:ses_two");
 
     one.disconnect();
     await flush();
     expect(oneChannel.leaveCalls).toBe(1);
-    expect(socket?.disconnectCalls).toHaveLength(0);
+    expect(oneSocket?.disconnectCalls).toHaveLength(1);
+    expect(twoSocket?.disconnectCalls).toHaveLength(0);
 
     two.disconnect();
     await flush();
     expect(twoChannel.leaveCalls).toBe(1);
-    expect(socket?.disconnectCalls).toHaveLength(1);
+    expect(twoSocket?.disconnectCalls).toHaveLength(1);
   });
 });

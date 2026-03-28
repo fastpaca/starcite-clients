@@ -148,12 +148,9 @@ export interface AppendResult {
 }
 
 /**
- * Cursor object used by the tail stream.
+ * Seq-only cursor used by the public tail stream.
  */
-export const TailWireCursorSchema = z.object({
-  epoch: z.number().int().positive(),
-  seq: z.number().int().nonnegative(),
-});
+export const TailWireCursorSchema = z.number().int().nonnegative();
 
 export type TailWireCursor = z.infer<typeof TailWireCursorSchema>;
 
@@ -256,7 +253,7 @@ export interface SessionOnEventOptions<
  */
 export const TailGapSchema = z.object({
   type: z.literal("gap"),
-  reason: z.enum(["cursor_expired", "epoch_stale", "rollback"]),
+  reason: z.enum(["cursor_expired", "resume_invalidated"]),
   from_cursor: TailWireCursorSchema,
   next_cursor: TailWireCursorSchema,
   committed_cursor: TailWireCursorSchema,
@@ -314,6 +311,10 @@ export interface SessionSnapshot {
    * Indicates whether the session is actively streaming tail updates.
    */
   syncing: boolean;
+  /**
+   * Current local append outbox state for this session.
+   */
+  append?: SessionAppendQueueState;
 }
 
 export type SessionAppendQueueStatus =

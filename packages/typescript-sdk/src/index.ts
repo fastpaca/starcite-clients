@@ -6,13 +6,11 @@ export {
   StarciteConnectionError,
   StarciteError,
   StarciteTailError,
-  StarciteTailGapError,
   StarciteTokenExpiredError,
 } from "./errors";
 export type { PrincipalType } from "./identity";
 export { StarciteIdentity } from "./identity";
 export { StarciteSession } from "./session";
-export { SessionLogConflictError, SessionLogGapError } from "./session-log";
 export type {
   SessionStoreOptions,
   StarciteWebStorage,
