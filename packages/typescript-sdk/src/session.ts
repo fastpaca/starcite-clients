@@ -236,11 +236,12 @@ export class StarciteSession {
     SessionEventListener,
     () => void
   >();
+  private keepTailAttached = true;
   private tailChannel: RejoinableChannel | undefined;
   private tailEventBindingRef = 0;
   private tailGapBindingRef = 0;
   private tailTokenExpiredBindingRef = 0;
-  private releaseTailSocket: (() => void) | undefined;
+  private closeTailChannel: (() => void) | undefined;
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -281,6 +282,8 @@ export class StarciteSession {
     ) {
       this.ensureAppendQueueProcessing();
     }
+
+    this.ensureChannelAttached();
   }
 
   /**
@@ -372,7 +375,6 @@ export class StarciteSession {
         this.eventSubscriptions.set(eventListener, unsubscribe);
       }
 
-      this.ensureChannelAttached();
       return () => {
         this.off("event", eventListener);
       };
@@ -389,7 +391,6 @@ export class StarciteSession {
     if (eventName === "gap") {
       const gapListener = listener as SessionGapListener;
       this.lifecycle.on("gap", gapListener);
-      this.ensureChannelAttached();
       return () => {
         this.off("gap", gapListener);
       };
@@ -458,6 +459,7 @@ export class StarciteSession {
    * Stops tailing and removes listeners registered via `on()`.
    */
   disconnect(): void {
+    this.keepTailAttached = false;
     for (const unsubscribe of this.eventSubscriptions.values()) {
       unsubscribe();
     }
@@ -604,6 +606,7 @@ export class StarciteSession {
 
   private shouldKeepChannelAttached(): boolean {
     return (
+      this.keepTailAttached ||
       this.eventSubscriptions.size > 0 ||
       this.lifecycle.listenerCount("gap") > 0
     );
@@ -614,20 +617,23 @@ export class StarciteSession {
       return;
     }
 
-    const lease = this.transport.socketManager.acquire();
-    const channel = lease.socket.channel(`tail:${this.id}`, () => {
-      const payload: {
-        cursor?: TailCursor;
-      } = {};
+    const managedChannel =
+      this.transport.socketManager.openChannel<RejoinableChannel>({
+        topic: `tail:${this.id}`,
+        params: () => {
+          const payload: {
+            cursor?: TailCursor;
+          } = {};
 
-      if (this.log.cursor) {
-        payload.cursor = this.log.cursor;
-      }
+          if (this.log.cursor) {
+            payload.cursor = this.log.cursor;
+          }
 
-      return payload;
-    }) as RejoinableChannel;
-
-    this.releaseTailSocket = lease.release;
+          return payload;
+        },
+      });
+    const channel = managedChannel.channel;
+    this.closeTailChannel = managedChannel.close;
     this.tailChannel = channel;
 
     this.tailEventBindingRef = channel.on("events", (payload) => {
@@ -676,40 +682,37 @@ export class StarciteSession {
       }
 
       this.detachTailChannel();
-      this.emitStreamError(
-        new StarciteTokenExpiredError(
-          `Tail token expired for session '${this.id}'. Re-issue a session token and reconnect from the last processed cursor.`,
-          {
-            closeReason: result.data.reason,
-            sessionId: this.id,
-          }
-        )
+      const error = new StarciteTokenExpiredError(
+        `Tail token expired for session '${this.id}'. Re-issue a session token and reconnect from the last processed cursor.`,
+        {
+          closeReason: result.data.reason,
+          sessionId: this.id,
+        }
       );
+      this.emitStreamError(error);
     });
 
     channel
       .join()
       .receive("error", (payload) => {
-        this.emitStreamError(
-          new StarciteTailError(
-            `Tail connection failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
-            {
-              sessionId: this.id,
-              stage: "connect",
-            }
-          )
+        const error = new StarciteTailError(
+          `Tail connection failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
+          {
+            sessionId: this.id,
+            stage: "connect",
+          }
         );
+        this.emitStreamError(error);
       })
       .receive("timeout", () => {
-        this.emitStreamError(
-          new StarciteTailError(
-            `Tail connection failed for session '${this.id}': join timeout`,
-            {
-              sessionId: this.id,
-              stage: "connect",
-            }
-          )
+        const error = new StarciteTailError(
+          `Tail connection failed for session '${this.id}': join timeout`,
+          {
+            sessionId: this.id,
+            stage: "connect",
+          }
         );
+        this.emitStreamError(error);
       });
   }
 
@@ -726,15 +729,14 @@ export class StarciteSession {
       this.tailChannel.off("events", this.tailEventBindingRef);
       this.tailChannel.off("gap", this.tailGapBindingRef);
       this.tailChannel.off("token_expired", this.tailTokenExpiredBindingRef);
-      this.tailChannel.leave();
       this.tailChannel = undefined;
     }
 
     this.tailEventBindingRef = 0;
     this.tailGapBindingRef = 0;
     this.tailTokenExpiredBindingRef = 0;
-    this.releaseTailSocket?.();
-    this.releaseTailSocket = undefined;
+    this.closeTailChannel?.();
+    this.closeTailChannel = undefined;
   }
 
   private loadPersistedState(): SessionStoreState | undefined {

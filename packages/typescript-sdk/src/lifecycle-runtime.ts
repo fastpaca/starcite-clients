@@ -47,7 +47,7 @@ export class LifecycleRuntime {
   private readonly emitter = new EventEmitter<LifecycleRuntimeEvents>();
 
   private channel: RejoinableChannel | undefined;
-  private releaseSocket: (() => void) | undefined;
+  private closeChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
   private tokenExpiredBindingRef = 0;
   private terminalFailure = false;
@@ -130,13 +130,13 @@ export class LifecycleRuntime {
       return;
     }
 
-    const lease = this.socketManager.acquire();
-    const channel = lease.socket.channel(
-      LIFECYCLE_TOPIC,
-      {}
-    ) as RejoinableChannel;
+    const managedChannel = this.socketManager.openChannel<RejoinableChannel>({
+      topic: LIFECYCLE_TOPIC,
+      params: {},
+    });
+    const channel = managedChannel.channel;
 
-    this.releaseSocket = lease.release;
+    this.closeChannel = managedChannel.close;
     this.channel = channel;
 
     this.lifecycleBindingRef = channel.on("lifecycle", (payload) => {
@@ -212,14 +212,13 @@ export class LifecycleRuntime {
     if (this.channel) {
       this.channel.off("lifecycle", this.lifecycleBindingRef);
       this.channel.off("token_expired", this.tokenExpiredBindingRef);
-      this.channel.leave();
       this.channel = undefined;
     }
 
     this.lifecycleBindingRef = 0;
     this.tokenExpiredBindingRef = 0;
-    this.releaseSocket?.();
-    this.releaseSocket = undefined;
+    this.closeChannel?.();
+    this.closeChannel = undefined;
   }
 
   private emitError(error: Error): void {

@@ -1,7 +1,15 @@
+import type { Channel } from "phoenix";
 import { Socket } from "phoenix";
 
+type ChannelParams = Record<string, unknown> | (() => Record<string, unknown>);
+
+export interface ManagedChannel<TChannel extends Channel = Channel> {
+  channel: TChannel;
+  close: () => void;
+}
+
 export class SocketManager {
-  private leaseCount = 0;
+  private activeChannelCount = 0;
   private readonly socketUrl: string;
   private readonly token: string | undefined;
   private socket: Socket | undefined;
@@ -11,26 +19,31 @@ export class SocketManager {
     this.token = input.token;
   }
 
-  acquire(): { release: () => void; socket: Socket } {
-    this.leaseCount += 1;
-
+  openChannel<TChannel extends Channel = Channel>(input: {
+    params?: ChannelParams;
+    topic: string;
+  }): ManagedChannel<TChannel> {
     const socket = this.ensureSocket();
     if (!socket.isConnected()) {
       socket.connect();
     }
 
-    let released = false;
+    const channel = socket.channel(input.topic, input.params) as TChannel;
+    this.activeChannelCount += 1;
+
+    let closed = false;
 
     return {
-      release: () => {
-        if (released) {
+      channel,
+      close: () => {
+        if (closed) {
           return;
         }
 
-        released = true;
-        this.release();
+        closed = true;
+        channel.leave();
+        this.releaseChannel();
       },
-      socket,
     };
   }
 
@@ -46,9 +59,9 @@ export class SocketManager {
     return this.socket;
   }
 
-  private release(): void {
-    this.leaseCount = Math.max(0, this.leaseCount - 1);
-    if (this.leaseCount > 0) {
+  private releaseChannel(): void {
+    this.activeChannelCount = Math.max(0, this.activeChannelCount - 1);
+    if (this.activeChannelCount > 0) {
       return;
     }
 

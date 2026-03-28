@@ -499,6 +499,13 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("uses one Phoenix socket for multiple subscribed sessions and rejoins each topic from its own cursor", async () => {
+    const store = new MemoryStore();
+    store.save("ses_beta", {
+      cursor: { epoch: 1, seq: 6 },
+      events: [],
+      lastSeq: 6,
+    });
+
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(makeSessionRecord("ses_alpha"))
@@ -510,15 +517,11 @@ describe("Phoenix Tail Transport", () => {
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
+      store,
     });
     const identity = client.agent({ id: "planner" });
     const alpha = await client.session({ identity, id: "ses_alpha" });
     const beta = await client.session({ identity, id: "ses_beta" });
-    beta.log.hydrate({
-      cursor: { epoch: 1, seq: 6 },
-      events: [],
-      lastSeq: 6,
-    });
 
     const alphaSeen: number[] = [];
     const betaSeen: number[] = [];
@@ -596,17 +599,17 @@ describe("Phoenix Tail Transport", () => {
 
   it("joins from the stored cursor and replays retained events to late listeners", async () => {
     const store = new MemoryStore();
+    store.save("ses_replay", {
+      cursor: { epoch: 3, seq: 4 },
+      events: [],
+      lastSeq: 4,
+    });
+
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
       store,
     }).session({ token: makeSessionToken("ses_replay") });
-
-    session.log.hydrate({
-      cursor: { epoch: 3, seq: 4 },
-      events: [],
-      lastSeq: 4,
-    });
 
     const firstSeen: number[] = [];
     const secondSeen: number[] = [];
@@ -793,7 +796,7 @@ describe("Phoenix Tail Transport", () => {
     stopEvents();
   });
 
-  it("cleans up channels per session and disconnects the shared socket when the last subscription leaves", async () => {
+  it("cleans up channels per session and disconnects the shared socket when the last handle disconnects", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(makeSessionRecord("ses_one"))
@@ -810,20 +813,17 @@ describe("Phoenix Tail Transport", () => {
     const one = await client.session({ identity, id: "ses_one" });
     const two = await client.session({ identity, id: "ses_two" });
 
-    const stopOne = one.on("event", () => undefined);
-    const stopTwo = two.on("event", () => undefined);
-
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
     const oneChannel = await waitForChannel("tail:ses_one");
     const twoChannel = await waitForChannel("tail:ses_two");
 
-    stopOne();
+    one.disconnect();
     await flush();
     expect(oneChannel.leaveCalls).toBe(1);
     expect(socket?.disconnectCalls).toHaveLength(0);
 
-    stopTwo();
+    two.disconnect();
     await flush();
     expect(twoChannel.leaveCalls).toBe(1);
     expect(socket?.disconnectCalls).toHaveLength(1);

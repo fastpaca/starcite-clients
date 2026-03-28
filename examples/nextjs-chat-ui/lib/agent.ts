@@ -19,8 +19,8 @@ starcite.on("session.created", (event) => {
       title: "Next.js demo chat",
     });
 
-    session.on("event", async (sessionEvent, context) => {
-      if (context.replayed || sessionEvent.type !== chatUserMessageEventType) {
+    session.on("event", async (sessionEvent) => {
+      if (sessionEvent.type !== chatUserMessageEventType) {
         return;
       }
 

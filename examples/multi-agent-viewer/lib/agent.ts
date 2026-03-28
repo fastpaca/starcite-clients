@@ -34,10 +34,8 @@ starcite.on("session.created", (event) => {
 
     let running = false;
 
-    session.on(
-      "event",
-      async (nextEvent, context) => {
-        if (context.replayed || nextEvent.type !== "message.user" || running) {
+    session.on("event", async (nextEvent) => {
+        if (nextEvent.type !== "message.user" || running) {
           return;
         }
 
@@ -52,9 +50,7 @@ starcite.on("session.created", (event) => {
         } finally {
           running = false;
         }
-      },
-      { replay: false }
-    );
+      });
   })();
 });
 
