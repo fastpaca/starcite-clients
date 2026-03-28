@@ -27,6 +27,7 @@ interface FakeSession {
 function createOnMock(input: {
   error?: Error;
   events?: SessionEvent[];
+  gap?: Record<string, unknown>;
 }): ReturnType<typeof vi.fn> {
   return vi.fn((eventName, listener, options) => {
     if (eventName === "event") {
@@ -45,6 +46,12 @@ function createOnMock(input: {
 
           listener(event, { phase: "live", replayed: false });
         }
+      });
+    }
+
+    if (eventName === "gap" && input.gap) {
+      queueMicrotask(() => {
+        listener(input.gap);
       });
     }
 
@@ -1297,6 +1304,181 @@ describe("starcite CLI", () => {
     expect(
       capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
     ).toBeUndefined();
+  });
+
+  it("tail clears stale local session cache and retries once after a tail gap", async () => {
+    const { logger, info, error } = makeLogger();
+    let capturedStore: StarciteCliStore | undefined;
+    let sessionCalls = 0;
+
+    const staleSession: FakeSession = {
+      ...fakeSession,
+      append: vi.fn(),
+      on: createOnMock({
+        gap: {
+          type: "gap",
+          reason: "epoch_stale",
+          from_cursor: { epoch: 1, seq: 1 },
+          next_cursor: { epoch: 2, seq: 2 },
+          committed_cursor: { epoch: 2, seq: 2 },
+          earliest_available_cursor: { epoch: 2, seq: 2 },
+        },
+      }),
+    };
+
+    const recoveredSession: FakeSession = {
+      ...fakeSession,
+      append: vi.fn(),
+      on: createOnMock({
+        events: [
+          {
+            seq: 2,
+            type: "content",
+            payload: { text: "recovered after gap" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 2,
+          },
+        ],
+      }),
+    };
+
+    const program = buildProgram({
+      logger,
+      createClient: (_baseUrl, _apiKey, store) => {
+        capturedStore = store;
+        store.sessionStore("http://localhost:45187").save("ses_123", {
+          cursor: { epoch: 1, seq: 1 },
+          lastSeq: 1,
+          events: [
+            {
+              seq: 1,
+              type: "content",
+              payload: { text: "stale event" },
+              actor: "agent:drafter",
+              producer_id: "producer:drafter",
+              producer_seq: 1,
+            },
+          ],
+          metadata: {
+            schemaVersion: 4,
+            updatedAtMs: Date.now(),
+          },
+        });
+
+        return {
+          agent,
+          user,
+          listSessions,
+          session: vi.fn(
+            () =>
+              (sessionCalls++ === 0 ? staleSession : recoveredSession) as never
+          ),
+        } as never;
+      },
+    });
+
+    writeCredentials(configDir, serviceToken);
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "tail", "ses_123", "--limit", "1"],
+      {
+        from: "user",
+      }
+    );
+
+    expect(info).toEqual(["[drafter] recovered after gap"]);
+    expect(error).toEqual([
+      "Warning: cleared stale local session cache for 'ses_123' and retried tail.",
+    ]);
+    expect(
+      capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
+    ).toBeUndefined();
+  });
+
+  it("tail --cursor uses a sequence number and filters replay by seq", async () => {
+    const { logger, info } = makeLogger();
+
+    fakeSession.on.mockImplementation(
+      createOnMock({
+        events: [
+          {
+            seq: 1,
+            type: "content",
+            payload: { text: "first event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 1,
+          },
+          {
+            seq: 2,
+            type: "content",
+            payload: { text: "second event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 2,
+          },
+        ],
+      })
+    );
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        serviceToken,
+        "tail",
+        "ses_123",
+        "--cursor",
+        "2",
+        "--limit",
+        "1",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(fakeSession.log.hydrate).toHaveBeenCalledWith({
+      events: [],
+      lastSeq: 0,
+    });
+    expect(info).toEqual(["[drafter] second event"]);
+  });
+
+  it("tail --cursor rejects epoch-prefixed values", async () => {
+    const { logger } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          "--config-dir",
+          configDir,
+          "--token",
+          serviceToken,
+          "tail",
+          "ses_123",
+          "--cursor",
+          "1:0",
+        ],
+        {
+          from: "user",
+        }
+      )
+    ).rejects.toThrow(
+      "--cursor must be a non-negative integer sequence number"
+    );
   });
 
   it("tail --limit applies a hard cap even when multiple events arrive in one callback stream", async () => {

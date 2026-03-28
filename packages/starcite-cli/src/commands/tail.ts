@@ -3,7 +3,6 @@ import {
   SessionLogGapError,
   type StarciteSession,
   StarciteTailGapError,
-  type TailCursor,
 } from "@starcite/sdk";
 import {
   type CliRuntime,
@@ -16,26 +15,15 @@ import {
 const DEFAULT_CREATE_AGENT_ID = "starcite-cli";
 const NO_FOLLOW_IDLE_MS = 1000;
 
-function parseTailCursorArg(input: string, flagName: string): TailCursor {
-  const [epoch, seq, extra] = input.split(":");
-  const parsedEpoch = Number(epoch);
-  const parsedSeq = Number(seq);
-  if (
-    extra !== undefined ||
-    epoch === undefined ||
-    seq === undefined ||
-    !Number.isInteger(parsedEpoch) ||
-    parsedEpoch <= 0 ||
-    !Number.isInteger(parsedSeq) ||
-    parsedSeq < 0
-  ) {
-    throw new CliUsageError(`${flagName} must be in <epoch>:<seq> format`);
+function parseTailCursorArg(input: string, flagName: string): number {
+  const parsedSeq = Number(input);
+  if (!Number.isInteger(parsedSeq) || parsedSeq < 0) {
+    throw new CliUsageError(
+      `${flagName} must be a non-negative integer sequence number`
+    );
   }
 
-  return {
-    epoch: parsedEpoch,
-    seq: parsedSeq,
-  };
+  return parsedSeq;
 }
 
 export async function runTailCommand(
@@ -85,7 +73,7 @@ export async function runTailCommand(
         await emitTailEvents({
           session,
           agent: parsed["--agent"],
-          cursor,
+          cursorSeq: cursor,
           follow: parsed["--no-follow"] !== true,
           limit,
           json: resolved.json,
@@ -96,7 +84,8 @@ export async function runTailCommand(
       } catch (error) {
         const isStaleStoreConflict =
           error instanceof SessionLogConflictError ||
-          error instanceof SessionLogGapError;
+          error instanceof SessionLogGapError ||
+          error instanceof StarciteTailGapError;
 
         if (!(isStaleStoreConflict && !retriedAfterStoreReset)) {
           throw error;
@@ -117,7 +106,7 @@ export async function runTailCommand(
 async function emitTailEvents({
   session,
   agent,
-  cursor,
+  cursorSeq,
   follow,
   limit,
   json,
@@ -126,18 +115,17 @@ async function emitTailEvents({
 }: {
   session: StarciteSession;
   agent?: string;
-  cursor: TailCursor | undefined;
+  cursorSeq: number | undefined;
   follow: boolean;
   limit: number | undefined;
   json: boolean;
   runtime: CliRuntime;
   signal: AbortSignal;
 }): Promise<void> {
-  if (cursor) {
+  if (cursorSeq !== undefined) {
     session.log.hydrate({
-      cursor,
       events: [],
-      lastSeq: cursor.seq,
+      lastSeq: 0,
     });
   }
 
@@ -212,6 +200,12 @@ async function emitTailEvents({
     const stopEvents = session.on(
       "event",
       (event) => {
+        resetIdleTimer();
+
+        if (cursorSeq !== undefined && event.seq < cursorSeq) {
+          return;
+        }
+
         if (limit !== undefined && emitted >= limit) {
           finish();
           return;
@@ -227,10 +221,7 @@ async function emitTailEvents({
 
         if (limit !== undefined && emitted >= limit) {
           finish();
-          return;
         }
-
-        resetIdleTimer();
       },
       { agent }
     );
