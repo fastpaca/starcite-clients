@@ -169,7 +169,7 @@ By default the CLI uses `~/.starcite`:
 
 - `config.json` or `config.toml`: optional defaults (`baseUrl`, `apiKey`)
 - `credentials.json`: saved API key plus cached session tokens
-- `state.json`: session-scoped store state (retained events, cursors, and producer state)
+- `state.json`: session-scoped store state (retained events, internal resume state, and producer state)
 
 Use `--config-dir <path>` to override the directory for testing or isolated runs.
 
@@ -188,9 +188,9 @@ Press `Ctrl+C` to stop.
 
 Useful flags:
 
-- `--cursor <cursor>`: replay cursor (inclusive)
+- `--cursor <seq>`: start replay at this sequence number
 - `--agent <agent>`: filter to one `agent:<name>`
 - `--limit <count>`: stop after N emitted events
 - `--no-follow`: stop after replay instead of following live events
 
-By default, `tail` starts from cursor `0` and requests batched replay frames from the API for faster catch-up.
+By default, `tail` starts from sequence `0` and requests batched replay frames from the API for faster catch-up. The CLI does not require or expose the transport epoch.
