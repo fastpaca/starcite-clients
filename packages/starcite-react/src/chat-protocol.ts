@@ -62,7 +62,7 @@ export function createUserMessageEnvelope<
 }
 
 export function createAssistantChunkEnvelope<
-  TChunk extends Record<string, unknown>,
+  TChunk extends UIMessageChunk | Record<string, unknown>,
 >(chunk: TChunk): { kind: typeof chatAssistantChunkEventType; chunk: TChunk } {
   return { kind: chatAssistantChunkEventType, chunk };
 }
@@ -81,7 +81,7 @@ export function appendUserMessageEvent(
 
 export function appendAssistantChunkEvent(
   session: SessionAppender,
-  chunk: Record<string, unknown>,
+  chunk: UIMessageChunk | Record<string, unknown>,
   options: { source?: string } = {}
 ): Promise<AppendResult> {
   return session.append({

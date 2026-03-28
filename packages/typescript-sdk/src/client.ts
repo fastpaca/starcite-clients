@@ -1,12 +1,10 @@
-import {
-  decodeSessionToken,
-  inferIdentityFromApiKey,
-  inferIssuerAuthorityFromApiKey,
-} from "./auth";
+import EventEmitter from "eventemitter3";
+import { decodeApiKeyContext, decodeSessionToken } from "./auth";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
+import { LifecycleRuntime } from "./lifecycle-runtime";
 import { StarciteSession } from "./session";
-import { TailSocketManager } from "./tail/socket-manager";
+import { SocketManager } from "./socket-manager";
 import type { TransportConfig } from "./transport";
 import {
   request,
@@ -18,6 +16,7 @@ import type {
   IssueSessionTokenInput,
   RequestOptions,
   SessionAppendOptions,
+  SessionCreatedLifecycleEvent,
   SessionListOptions,
   SessionListPage,
   SessionLogOptions,
@@ -36,6 +35,8 @@ const DEFAULT_BASE_URL =
   globalThis.process?.env?.STARCITE_BASE_URL ?? "http://localhost:4000";
 const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
 const TRAILING_SLASHES_REGEX = /\/+$/;
+const LIFECYCLE_AUTH_ERROR_MESSAGE =
+  "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.";
 
 /**
  * Resolves auth issuer base URL in this order:
@@ -43,12 +44,9 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
  */
 function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
-  apiKey: string | undefined
+  issuerAuthority: string | undefined
 ): string | undefined {
-  const value =
-    explicitAuthUrl ??
-    DEFAULT_AUTH_URL ??
-    (apiKey ? inferIssuerAuthorityFromApiKey(apiKey) : undefined);
+  const value = explicitAuthUrl ?? DEFAULT_AUTH_URL ?? issuerAuthority;
   if (!value) {
     return undefined;
   }
@@ -83,6 +81,11 @@ function mergeAppendOptions(
   };
 }
 
+interface StarciteLifecycleEvents {
+  "session.created": (event: SessionCreatedLifecycleEvent) => void;
+  error: (error: Error) => void;
+}
+
 /**
  * Tenant-scoped Starcite client.
  *
@@ -95,11 +98,14 @@ export class Starcite {
 
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
-  private readonly inferredIdentity?: StarciteIdentity;
+  private readonly inferredTenantId?: string;
   private readonly socketAuthToken: string | undefined;
   private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
+  private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
+  private lifecycleRuntime: LifecycleRuntime | undefined;
+  private lifecycleRefs = 0;
 
   constructor(options: StarciteOptions = {}) {
     const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -109,33 +115,105 @@ export class Starcite {
     const fetchFn: typeof fetch = userFetch
       ? (input, init) => userFetch(input, init)
       : (input, init) => fetch(input, init);
-    const headers = new Headers(options.headers);
     const apiKey = options.apiKey;
     let authorization: string | undefined;
+    let issuerAuthority: string | undefined;
 
     if (apiKey) {
+      const apiKeyContext = decodeApiKeyContext(apiKey);
       authorization = `Bearer ${apiKey}`;
-      this.inferredIdentity = inferIdentityFromApiKey(apiKey);
+      issuerAuthority = apiKeyContext.issuerAuthority;
+      this.inferredTenantId = apiKeyContext.tenantId;
     }
 
-    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, apiKey);
+    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
 
     const socketAuthToken = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
     this.socketAuthToken = socketAuthToken;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
-
     this.transport = {
       baseUrl,
       authorization: authorization ?? null,
-      tailSocketManager: new TailSocketManager({
+      socketManager: new SocketManager({
         socketUrl: this.socketUrl,
         token: socketAuthToken,
       }),
       fetchFn,
-      headers,
     };
+  }
+
+  /**
+   * Subscribes to tenant-scoped Starcite lifecycle events.
+   *
+   * Today the SDK supports only live `session.created` notifications.
+   * Backend/service auth is required by the server.
+   */
+  on(
+    eventName: "session.created",
+    listener: (event: SessionCreatedLifecycleEvent) => void
+  ): () => void;
+  on(eventName: "error", listener: (error: Error) => void): () => void;
+  on(
+    eventName: "session.created" | "error",
+    listener:
+      | ((event: SessionCreatedLifecycleEvent) => void)
+      | ((error: Error) => void)
+  ): () => void {
+    if (!this.socketAuthToken) {
+      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
+    }
+
+    this.ensureLifecycleRuntime();
+
+    if (eventName === "session.created") {
+      this.lifecycle.on(
+        eventName,
+        listener as (event: SessionCreatedLifecycleEvent) => void
+      );
+    } else {
+      this.lifecycle.on(eventName, listener as (error: Error) => void);
+    }
+
+    this.lifecycleRefs += 1;
+    return () => {
+      if (eventName === "session.created") {
+        this.off(
+          eventName,
+          listener as (event: SessionCreatedLifecycleEvent) => void
+        );
+      } else {
+        this.off(eventName, listener as (error: Error) => void);
+      }
+    };
+  }
+
+  off(
+    eventName: "session.created",
+    listener: (event: SessionCreatedLifecycleEvent) => void
+  ): void;
+  off(eventName: "error", listener: (error: Error) => void): void;
+  off(
+    eventName: "session.created" | "error",
+    listener:
+      | ((event: SessionCreatedLifecycleEvent) => void)
+      | ((error: Error) => void)
+  ): void {
+    if (eventName === "session.created") {
+      this.lifecycle.off(
+        eventName,
+        listener as (event: SessionCreatedLifecycleEvent) => void
+      );
+    } else {
+      this.lifecycle.off(eventName, listener as (error: Error) => void);
+    }
+
+    this.lifecycleRefs = Math.max(0, this.lifecycleRefs - 1);
+    if (this.lifecycleRefs === 0) {
+      this.lifecycleRuntime?.close();
+      this.lifecycleRuntime = undefined;
+    }
   }
 
   /**
@@ -331,10 +409,10 @@ export class Starcite {
     token: string,
     socketAuth: { token: string | undefined }
   ): TransportConfig {
-    const tailSocketManager =
+    const socketManager =
       socketAuth.token === this.socketAuthToken
-        ? this.transport.tailSocketManager
-        : new TailSocketManager({
+        ? this.transport.socketManager
+        : new SocketManager({
             socketUrl: this.socketUrl,
             token: socketAuth.token,
           });
@@ -342,7 +420,7 @@ export class Starcite {
     return {
       ...this.transport,
       authorization: `Bearer ${token}`,
-      tailSocketManager,
+      socketManager,
     };
   }
 
@@ -394,10 +472,31 @@ export class Starcite {
   }
 
   private requireTenantId(method: string): string {
-    const tenantId = this.inferredIdentity?.tenantId;
+    const tenantId = this.inferredTenantId;
     if (!tenantId) {
       throw new StarciteError(`${method} requires apiKey to determine tenant.`);
     }
     return tenantId;
+  }
+
+  private ensureLifecycleRuntime(): void {
+    if (this.lifecycleRuntime) {
+      return;
+    }
+
+    if (!this.socketAuthToken) {
+      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
+    }
+
+    this.lifecycleRuntime = new LifecycleRuntime({
+      socketManager: this.transport.socketManager,
+    });
+
+    this.lifecycleRuntime.on("session.created", (event) => {
+      this.lifecycle.emit("session.created", event);
+    });
+    this.lifecycleRuntime.on("error", (error) => {
+      this.lifecycle.emit("error", error);
+    });
   }
 }

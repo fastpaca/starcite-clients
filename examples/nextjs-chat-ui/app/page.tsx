@@ -136,7 +136,7 @@ function ChatPane({ session }: { session: StarciteSession }) {
         <ConversationContent className="gap-5 p-4">
           {messages.length === 0 ? (
             <ConversationEmptyState
-              description="Send a prompt, then refresh mid-stream with the same ?sessionId=... to verify durability."
+              description="Reconnect with the same ?sessionId=... to verify durable history."
               title="No messages yet"
             />
           ) : (
@@ -161,14 +161,22 @@ function ChatPane({ session }: { session: StarciteSession }) {
 
       <PromptInput
         className="rounded-lg border bg-card p-2"
-        onSubmit={({ text }) => {
+        onSubmit={async ({ text }) => {
           const next = text.trim();
           if (next.length === 0 || busy) {
             return;
           }
 
           setChatError(undefined);
-          return sendMessage({ text: next });
+          try {
+            await sendMessage({ text: next });
+          } catch (error) {
+            const err =
+              error instanceof Error
+                ? error
+                : new Error("Chat append failed.");
+            setChatError(err.message);
+          }
         }}
       >
         <PromptInputBody>

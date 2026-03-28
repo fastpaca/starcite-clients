@@ -4,7 +4,7 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "./errors";
-import type { TailSocketManager } from "./tail/socket-manager";
+import type { SocketManager } from "./socket-manager";
 
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -16,10 +16,9 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
  */
 export interface TransportConfig {
   readonly baseUrl: string;
-  readonly tailSocketManager: TailSocketManager;
+  readonly socketManager: SocketManager;
   authorization: string | null;
   readonly fetchFn: typeof fetch;
-  readonly headers: Headers;
 }
 
 function parseHttpUrl(value: string, context: string): URL {
@@ -72,7 +71,7 @@ export async function requestWithBaseUrl<T>(
   init: RequestInit,
   schema: z.ZodType<T>
 ): Promise<T> {
-  const headers = new Headers(transport.headers);
+  const headers = new Headers();
 
   if (transport.authorization) {
     headers.set("authorization", transport.authorization);

@@ -7,7 +7,7 @@ It shows:
 
 - `useStarciteChat` from `@starcite/react`
 - server-side session creation with `@starcite/sdk`
-- server-side agent consumption with `streamText` from `ai`
+- lifecycle-driven AI SDK response handling with `streamText` from `ai`
 - off-the-shelf AI Elements UI primitives for conversation/input
 
 ## Run
@@ -29,13 +29,21 @@ Open `http://localhost:3000`.
 
 1. Browser reads `?sessionId=<id>`.
 2. Browser requests `/api/starcite/session` with optional `sessionId`.
-3. Route handler creates/reuses the session, registers `agent.ts`, and returns `{ token, sessionId }`.
+3. Route handler creates/reuses the user session and returns `{ token, sessionId }`.
 4. Client writes the returned `sessionId` to the query param.
 5. Client builds a session from the token and calls `useStarciteChat({ session, id: sessionId })`.
-6. Hook reads durable `session.events()` and updates on new `session.on("event")` events.
+6. `sendMessage(...)` durably appends the user event to Starcite.
+7. A server-only module imported by `app/layout.tsx` listens for `session.created` with `starcite.on(...)`, treats this single demo agent as the owner of every new session, then binds those sessions with `starcite.session({ identity, id })`.
+8. When a live `chat.user.message` event arrives, that listener reads `session.events()`, runs `streamText(...)`, and appends assistant chunks back into the same session.
+9. The hook updates from durable `session.on("event")` events as the assistant chunks arrive.
+
+## Current limitation
+
+`session.created` is live-only today. This demo therefore attaches responders only for
+sessions created while the server process is running.
 
 ## Manual durability checks
 
 1. Cold load with an existing `sessionId`: full history should render after connect.
 2. Send a new message in an existing session: status transitions (`submitted`/`streaming`/`ready`) and assistant output should stream in-place.
-3. Start a longer response, refresh mid-stream, keep same `sessionId`: stream should continue and finish without losing history.
+3. Reload or reopen the page with the same `sessionId`: previously completed conversation history should still render.

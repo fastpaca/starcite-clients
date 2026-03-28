@@ -7,6 +7,65 @@ import {
 } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
 
+vi.mock("phoenix", () => {
+  class MockChannel {
+    on(): number {
+      return 0;
+    }
+
+    off(): void {
+      return;
+    }
+
+    leave(): void {
+      return;
+    }
+
+    rejoin(): void {
+      return;
+    }
+
+    join(): {
+      receive: (
+        _status: "ok" | "error" | "timeout",
+        _callback: () => void
+      ) => {
+        receive: (
+          _nextStatus: "ok" | "error" | "timeout",
+          _nextCallback: () => void
+        ) => ReturnType<MockChannel["join"]>;
+      };
+    } {
+      return {
+        receive: () => this.join(),
+      };
+    }
+  }
+
+  class MockSocket {
+    connect(): void {
+      return;
+    }
+
+    disconnect(): void {
+      return;
+    }
+
+    isConnected(): boolean {
+      return true;
+    }
+
+    channel(): MockChannel {
+      return new MockChannel();
+    }
+  }
+
+  return {
+    Channel: MockChannel,
+    Socket: MockSocket,
+  };
+});
+
 async function waitForValues<T>(
   values: T[],
   expectedCount: number

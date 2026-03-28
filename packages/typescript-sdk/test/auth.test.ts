@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeApiKeyContext,
   inferIdentityFromApiKey,
   inferIssuerAuthorityFromApiKey,
 } from "../src/auth";
@@ -112,5 +113,31 @@ describe("inferIdentityFromApiKey", () => {
   it("returns undefined when claims are empty", () => {
     const token = tokenFromClaims({});
     expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+
+  it("returns undefined for service principals", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "svc-backend",
+      principal_type: "service",
+    });
+
+    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+  });
+});
+
+describe("decodeApiKeyContext", () => {
+  it("keeps tenant scope for service principals without inventing an identity", () => {
+    const token = tokenFromClaims({
+      tenant_id: "acme",
+      principal_id: "svc-backend",
+      principal_type: "service",
+    });
+
+    expect(decodeApiKeyContext(token)).toEqual({
+      issuerAuthority: undefined,
+      tenantId: "acme",
+      identity: undefined,
+    });
   });
 });

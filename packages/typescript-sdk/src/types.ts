@@ -623,12 +623,7 @@ export interface StarciteOptions {
    */
   fetch?: typeof fetch;
   /**
-   * Headers applied to every HTTP request.
-   */
-  headers?: HeadersInit;
-  /**
-   * Service key / JWT token. When set, the SDK automatically sends
-   * `Authorization: Bearer <token>` for HTTP requests.
+   * Service key / JWT token used for authenticated backend requests.
    */
   apiKey?: string;
   /**
@@ -647,6 +642,28 @@ export interface StarciteOptions {
    */
   appendOptions?: SessionAppendOptions;
 }
+
+/**
+ * Live tenant-scoped lifecycle event emitted by `starcite.on(...)`.
+ */
+export const LifecycleEventEnvelopeSchema = z
+  .object({
+    kind: z.string().min(1),
+  })
+  .passthrough();
+
+export const SessionCreatedLifecycleEventSchema = z.object({
+  kind: z.literal("session.created"),
+  session_id: z.string().min(1),
+  tenant_id: z.string().min(1),
+  title: z.string().nullable().optional(),
+  metadata: ArbitraryObjectSchema,
+  created_at: z.string().min(1),
+});
+
+export type SessionCreatedLifecycleEvent = z.infer<
+  typeof SessionCreatedLifecycleEventSchema
+>;
 
 /**
  * Error payload shape returned by non-2xx API responses.

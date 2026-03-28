@@ -157,7 +157,7 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
         throw err;
       }
     },
-    [append, userMessageSource, onError]
+    [append, onError, userMessageSource]
   );
 
   return useMemo(

@@ -150,6 +150,7 @@ function assistantText(messages: readonly UIMessage[]): string {
 describe("useStarciteChat", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("hydrates from durable events and detects active streaming", async () => {

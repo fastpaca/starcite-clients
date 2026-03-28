@@ -36,6 +36,7 @@ export type {
   SessionAppendQueueState,
   SessionAppendQueueStatus,
   SessionAppendRetryPolicy,
+  SessionCreatedLifecycleEvent,
   SessionEvent,
   SessionEventContext,
   SessionEventListener,

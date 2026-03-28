@@ -9,6 +9,8 @@ keeping a familiar surface:
 - `sendMessage`
 - `status`
 
+For the migration spec, see `docs/ai-sdk-migration.md`.
+
 ## Install
 
 ```bash
@@ -48,6 +50,16 @@ export function Chat({ token }: { token: string }) {
 }
 ```
 
+## Server Integration
+
+`useStarciteChat` only covers the frontend session state and durable user
+appends. The default server model is lifecycle-driven: your backend listens
+with `starcite.on("session.created", ...)`, decides whether a given agent owns
+that session, binds owned sessions with `starcite.session({ identity, id })`,
+then attaches `session.on("event", ...)` handlers and appends assistant chunks
+back into the same session. The SDK handles the per-session stream lifecycle
+after the session is bound.
+
 ## Hook Options
 
 - `session` (required): session scoped to the active session token.
@@ -62,6 +74,7 @@ export function Chat({ token }: { token: string }) {
   - `chat.user.message`
   - `chat.assistant.chunk`
 - Appends outgoing user messages as strict chat envelopes.
+- `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Terminal append failures pause the SDK outbox by default; inspect `session.appendState()` and use `session.resumeAppendQueue()` or `session.resetAppendQueue()` for operational recovery.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
