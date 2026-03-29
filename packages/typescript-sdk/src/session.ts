@@ -1,8 +1,7 @@
 import EventEmitter from "eventemitter3";
 import { z } from "zod";
+import { AppendQueue } from "./append-queue";
 import {
-  StarciteApiError,
-  StarciteConnectionError,
   StarciteError,
   StarciteTailError,
   StarciteTokenExpiredError,
@@ -14,20 +13,14 @@ import {
   readJoinFailureReason,
 } from "./socket-manager";
 import type { TransportConfig } from "./transport";
-import { request } from "./transport";
 import {
-  type AppendEventRequest,
-  type AppendEventResponse,
   type AppendResult,
-  AppendEventResponseSchema,
   type RequestOptions,
-  type SessionAppendFailureSnapshot,
   type SessionAppendInput,
   type SessionAppendLifecycleEvent,
   type SessionAppendListener,
   type SessionAppendOptions,
   type SessionAppendQueueState,
-  type SessionAppendStoreState,
   type SessionEventContext,
   type SessionEventListener,
   type SessionGapListener,
@@ -37,13 +30,16 @@ import {
   type SessionSnapshot,
   type SessionStore,
   type SessionStoreState,
-  type TailCursor,
   type TailEvent,
   TailEventSchema,
   type TailGap,
   TailGapSchema,
   TailTokenExpiredPayloadSchema,
 } from "./types";
+
+const TailEventsPayloadSchema = z.object({
+  events: z.array(TailEventSchema),
+});
 
 /**
  * Construction options for a `StarciteSession`.
@@ -65,114 +61,6 @@ interface SessionLifecycleEvents {
   gap: (gap: TailGap) => void;
 }
 
-interface Deferred<T> {
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-}
-
-interface RuntimeAppendQueueItem {
-  id: string;
-  request: AppendEventRequest;
-  enqueuedAtMs: number;
-  retryAttempt: number;
-  signal?: AbortSignal;
-  deferred?: Deferred<AppendEventResponse>;
-}
-
-interface ResolvedSessionAppendRetryPolicy {
-  mode: "fixed" | "exponential";
-  initialDelayMs: number;
-  maxDelayMs: number;
-  multiplier: number;
-  jitterRatio: number;
-  maxAttempts: number;
-}
-
-interface ResolvedSessionAppendOptions {
-  retryPolicy: ResolvedSessionAppendRetryPolicy;
-  persist: boolean;
-  autoFlush: boolean;
-  terminalFailureMode: "pause" | "clear";
-}
-
-const APPEND_RETRY_INITIAL_DELAY_MS = 250;
-const APPEND_RETRY_MAX_DELAY_MS = 5000;
-const APPEND_RETRY_MULTIPLIER = 2;
-const APPEND_RETRY_JITTER_RATIO = 0;
-const RETRYABLE_APPEND_STATUS_CODES = new Set([
-  408, 425, 429, 500, 502, 503, 504,
-]);
-const TailEventsPayloadSchema = z.object({
-  events: z.array(TailEventSchema),
-});
-
-function calculateAppendRetryDelay(
-  retryAttempt: number,
-  policy: ResolvedSessionAppendRetryPolicy
-): number {
-  const exponent = policy.mode === "fixed" ? 0 : Math.max(0, retryAttempt - 1);
-  const baseDelayMs = Math.min(
-    policy.initialDelayMs * policy.multiplier ** exponent,
-    policy.maxDelayMs
-  );
-
-  if (policy.jitterRatio === 0) {
-    return baseDelayMs;
-  }
-
-  const jitterWindowMs = Math.round(baseDelayMs * policy.jitterRatio);
-  const minimumDelayMs = Math.max(0, baseDelayMs - jitterWindowMs);
-  const maximumDelayMs = baseDelayMs + jitterWindowMs;
-  return Math.round(
-    minimumDelayMs + Math.random() * (maximumDelayMs - minimumDelayMs)
-  );
-}
-
-function createLinkedAbortController(
-  signals: readonly (AbortSignal | undefined)[]
-): {
-  controller: AbortController;
-  detach: () => void;
-} {
-  const controller = new AbortController();
-  const cleanups: Array<() => void> = [];
-
-  for (const signal of signals) {
-    if (!signal) {
-      continue;
-    }
-
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      break;
-    }
-
-    const abort = () => {
-      controller.abort(signal.reason);
-    };
-
-    signal.addEventListener("abort", abort, { once: true });
-    cleanups.push(() => {
-      signal.removeEventListener("abort", abort);
-    });
-  }
-
-  return {
-    controller,
-    detach: () => {
-      for (const cleanup of cleanups) {
-        cleanup();
-      }
-    },
-  };
-}
-
-function createAppendAbortError(sessionId: string): StarciteError {
-  return new StarciteError(
-    `append() aborted for session '${sessionId}' before the request could be sent`
-  );
-}
-
 /**
  * Session-scoped client bound to a specific identity and session token.
  *
@@ -189,18 +77,7 @@ export class StarciteSession {
   readonly record?: SessionRecord;
 
   private readonly transport: TransportConfig;
-  private readonly appendOptions: ResolvedSessionAppendOptions;
-  private appendProducerId: string;
-  private appendLastAcknowledgedProducerSeq = 0;
-  private readonly appendQueue: RuntimeAppendQueueItem[] = [];
-  private appendQueueTask: Promise<void> | undefined;
-  private appendQueueRunController: AbortController | undefined;
-  private appendQueueVersion = 0;
-  private appendQueueStatus: SessionAppendQueueState["status"] = "idle";
-  private appendInFlightItemId: string | undefined;
-  private appendRetryAttempt = 0;
-  private appendNextRetryAtMs: number | undefined;
-  private appendLastFailure: SessionAppendFailureSnapshot | undefined;
+  private readonly outbox: AppendQueue;
 
   readonly log: SessionLog;
   private readonly store: SessionStore | undefined;
@@ -223,45 +100,40 @@ export class StarciteSession {
     this.transport = options.transport;
     this.record = options.record;
     this.store = options.store;
-    const retryPolicy = options.appendOptions?.retryPolicy;
-    this.appendOptions = {
-      retryPolicy: {
-        mode: retryPolicy?.mode ?? "exponential",
-        initialDelayMs:
-          retryPolicy?.initialDelayMs ?? APPEND_RETRY_INITIAL_DELAY_MS,
-        maxDelayMs: retryPolicy?.maxDelayMs ?? APPEND_RETRY_MAX_DELAY_MS,
-        multiplier: retryPolicy?.multiplier ?? APPEND_RETRY_MULTIPLIER,
-        jitterRatio: retryPolicy?.jitterRatio ?? APPEND_RETRY_JITTER_RATIO,
-        maxAttempts: retryPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY,
-      },
-      persist:
-        this.store !== undefined && (options.appendOptions?.persist ?? true),
-      autoFlush: options.appendOptions?.autoFlush ?? true,
-      terminalFailureMode:
-        options.appendOptions?.terminalFailureMode ?? "pause",
-    };
-    this.appendProducerId = crypto.randomUUID();
     this.log = new SessionLog(options.logOptions);
+
+    this.outbox = new AppendQueue({
+      sessionId: options.id,
+      transport: options.transport,
+      appendOptions: options.appendOptions,
+      persist: this.store !== undefined,
+      onStateChange: () => this.persistLogState(),
+      onError: (error) => this.emitStreamError(error),
+      onLifecycle: (event) => {
+        for (const listener of this.lifecycle.listeners("append") as SessionAppendListener[]) {
+          try {
+            this.observeListenerResult(listener(event));
+          } catch (err) {
+            this.emitStreamError(err);
+          }
+        }
+      },
+    });
 
     const storedState = this.loadPersistedState();
     if (this.restorePersistedLogState(storedState)) {
-      this.restorePersistedAppendState(storedState);
-      const pendingCountBeforeReconciliation = this.appendQueue.length;
-      this.reconcileAppendQueueWithCommittedEvents(this.log.events);
-      if (this.appendQueue.length !== pendingCountBeforeReconciliation) {
+      if (storedState?.append) {
+        this.outbox.restoreState(storedState.append);
+      }
+      const pendingBefore = this.outbox.pendingCount;
+      this.outbox.reconcileWithCommittedEvents(this.log.events, this.log.lastSeq);
+      if (this.outbox.pendingCount !== pendingBefore) {
         this.persistLogState();
       }
     }
 
     this.ensureChannelAttached();
-
-    if (
-      this.appendOptions.autoFlush &&
-      this.appendQueueStatus !== "paused" &&
-      this.appendQueue.length > 0
-    ) {
-      this.ensureAppendQueueProcessing();
-    }
+    this.outbox.ensureProcessing();
   }
 
   /**
@@ -273,31 +145,7 @@ export class StarciteSession {
     input: SessionAppendInput,
     options?: RequestOptions
   ): Promise<AppendResult> {
-    const itemId = crypto.randomUUID();
-
-    return this.enqueueAppend({
-      id: itemId,
-      request: {
-        type: input.type ?? "content",
-        payload: input.payload ?? { text: input.text },
-        actor: input.actor,
-        producer_id: this.appendProducerId,
-        producer_seq: this.nextManagedProducerSeq(),
-        source: input.source ?? "agent",
-        metadata: input.metadata,
-        refs: input.refs,
-        idempotency_key: input.idempotencyKey ?? itemId,
-        expected_seq: input.expectedSeq,
-      },
-      enqueuedAtMs: Date.now(),
-      retryAttempt: 0,
-      signal: options?.signal,
-    }).then((result) => {
-      return {
-        seq: result.seq,
-        deduped: result.deduped,
-      };
-    });
+    return this.outbox.append(input, options?.signal);
   }
 
   /**
@@ -438,6 +286,7 @@ export class StarciteSession {
    */
   disconnect(): void {
     this.keepTailAttached = false;
+    this.outbox.stop();
     for (const unsubscribe of this.eventSubscriptions.values()) {
       unsubscribe();
     }
@@ -458,51 +307,21 @@ export class StarciteSession {
    * Returns the current append queue state.
    */
   appendState(): SessionAppendQueueState {
-    return this.snapshotAppendQueueState();
+    return this.outbox.state();
   }
 
   /**
    * Resumes a paused queue or starts a restored queue that was loaded with `autoFlush=false`.
    */
   resumeAppendQueue(): void {
-    if (this.appendQueue.length === 0) {
-      return;
-    }
-
-    for (const item of this.appendQueue) {
-      item.retryAttempt = 0;
-    }
-
-    this.appendQueueStatus = "idle";
-    this.appendRetryAttempt = 0;
-    this.appendNextRetryAtMs = undefined;
-    this.appendLastFailure = undefined;
-    this.persistLogState();
-    this.emitAppendLifecycle({
-      type: "resumed",
-      sessionId: this.id,
-      queue: this.snapshotAppendQueueState(),
-    });
-    this.ensureAppendQueueProcessing();
+    this.outbox.resume();
   }
 
   /**
    * Clears the append queue and rotates the managed producer identity.
    */
   resetAppendQueue(): void {
-    const rejection = new StarciteError(
-      `append queue reset for session '${this.id}' before pending items could be acknowledged`
-    );
-
-    this.clearAppendQueue(rejection, {
-      rotateProducer: true,
-      lastFailure: undefined,
-    });
-    this.emitAppendLifecycle({
-      type: "reset",
-      sessionId: this.id,
-      queue: this.snapshotAppendQueueState(),
-    });
+    this.outbox.reset();
   }
 
   /**
@@ -511,7 +330,7 @@ export class StarciteSession {
   state(): SessionSnapshot {
     return {
       ...this.log.state(this.tailChannel !== undefined),
-      append: this.snapshotAppendQueueState(),
+      append: this.outbox.state(),
     };
   }
 
@@ -599,7 +418,7 @@ export class StarciteSession {
       try {
         const appliedEvents = this.log.applyBatch(result.data.events);
         if (appliedEvents.length > 0) {
-          this.reconcileAppendQueueWithCommittedEvents(appliedEvents);
+          this.outbox.reconcileWithCommittedEvents(appliedEvents, this.log.lastSeq);
           this.persistLogState();
         }
       } catch (error) {
@@ -715,51 +534,6 @@ export class StarciteSession {
     }
   }
 
-  private restorePersistedAppendState(
-    storedState: SessionStoreState | undefined
-  ): void {
-    const storedAppendState = storedState?.append;
-    if (!(storedAppendState && this.appendOptions.persist)) {
-      return;
-    }
-
-    this.appendProducerId = storedAppendState.producerId;
-    this.appendLastAcknowledgedProducerSeq =
-      storedAppendState.lastAcknowledgedProducerSeq;
-    this.appendQueue.length = 0;
-
-    for (const pending of storedAppendState.pending) {
-      this.appendQueue.push({
-        id: pending.id,
-        request: structuredClone(pending.request) as AppendEventRequest,
-        enqueuedAtMs: pending.enqueuedAtMs,
-        retryAttempt: pending.retryAttempt ?? 0,
-      });
-    }
-
-    this.appendInFlightItemId = undefined;
-    this.appendNextRetryAtMs = undefined;
-    this.appendRetryAttempt = this.appendQueue[0]?.retryAttempt ?? 0;
-    this.appendLastFailure = storedAppendState.lastFailure
-      ? { ...storedAppendState.lastFailure }
-      : undefined;
-
-    if (this.appendQueue.length === 0) {
-      this.appendQueueStatus = "idle";
-      return;
-    }
-
-    if (
-      storedAppendState.status === "paused" ||
-      !this.appendOptions.autoFlush
-    ) {
-      this.appendQueueStatus = "paused";
-      return;
-    }
-
-    this.appendQueueStatus = "idle";
-  }
-
   private persistLogState(): void {
     if (!this.store) {
       return;
@@ -770,7 +544,7 @@ export class StarciteSession {
         cursor: this.log.cursor,
         lastSeq: this.log.lastSeq,
         events: [...this.log.events],
-        append: this.serializeAppendStoreState(),
+        append: this.outbox.serializeState(),
         metadata: {
           schemaVersion: 4,
           updatedAtMs: Date.now(),
@@ -778,7 +552,7 @@ export class StarciteSession {
       });
     } catch (error) {
       const storeError = new StarciteError(
-        `Session store save failed for session '${this.id}': ${this.toError(error).message}`
+        `Session store save failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
       );
 
       if (this.lifecycle.listenerCount("error") > 0) {
@@ -787,580 +561,11 @@ export class StarciteSession {
     }
   }
 
-  private serializeAppendStoreState(): SessionAppendStoreState | undefined {
-    if (!this.appendOptions.persist) {
-      return undefined;
-    }
-
-    return {
-      producerId: this.appendProducerId,
-      lastAcknowledgedProducerSeq: this.appendLastAcknowledgedProducerSeq,
-      pending: this.appendQueue.map((item) => {
-        return {
-          id: item.id,
-          request: structuredClone(item.request) as AppendEventRequest,
-          enqueuedAtMs: item.enqueuedAtMs,
-          retryAttempt: item.retryAttempt,
-        };
-      }),
-      status: this.appendQueueStatus === "paused" ? "paused" : "idle",
-      lastFailure: this.appendLastFailure
-        ? { ...this.appendLastFailure }
-        : undefined,
-    };
-  }
-
   private clearPersistedLogState(): void {
     try {
       this.store?.clear?.(this.id);
     } catch {
       // Ignore cache-clear failures; the live stream can still recover state.
     }
-  }
-
-  private nextManagedProducerSeq(): number {
-    let highestProducerSeq = this.appendLastAcknowledgedProducerSeq;
-
-    for (const item of this.appendQueue) {
-      if (
-        item.request.producer_id === this.appendProducerId &&
-        item.request.producer_seq > highestProducerSeq
-      ) {
-        highestProducerSeq = item.request.producer_seq;
-      }
-    }
-
-    return highestProducerSeq + 1;
-  }
-
-  private enqueueAppend(
-    item: RuntimeAppendQueueItem
-  ): Promise<AppendEventResponse> {
-    if (item.signal?.aborted) {
-      return Promise.reject(createAppendAbortError(this.id));
-    }
-
-    const wasEmpty = this.appendQueue.length === 0;
-    const promise = new Promise<AppendEventResponse>((resolve, reject) => {
-      item.deferred = { resolve, reject };
-    });
-
-    this.appendQueue.push(item);
-    if (wasEmpty && this.appendQueueStatus === "idle") {
-      this.appendRetryAttempt = 0;
-      this.appendNextRetryAtMs = undefined;
-      this.appendLastFailure = undefined;
-    }
-
-    this.persistLogState();
-    this.emitAppendLifecycle({
-      type: "queued",
-      sessionId: this.id,
-      item: this.snapshotPendingAppend(item),
-      queue: this.snapshotAppendQueueState(),
-    });
-
-    if (this.appendQueueStatus !== "paused" && this.appendOptions.autoFlush) {
-      this.ensureAppendQueueProcessing();
-    }
-
-    return promise;
-  }
-
-  private ensureAppendQueueProcessing(): void {
-    if (
-      this.appendQueueTask ||
-      this.appendQueueStatus === "paused" ||
-      this.appendQueue.length === 0
-    ) {
-      return;
-    }
-
-    const runId = ++this.appendQueueVersion;
-    const controller = new AbortController();
-    this.appendQueueRunController = controller;
-
-    const task = this.runAppendQueue(runId, controller.signal).finally(() => {
-      if (this.appendQueueTask === task) {
-        this.appendQueueTask = undefined;
-      }
-      if (this.appendQueueRunController === controller) {
-        this.appendQueueRunController = undefined;
-      }
-      if (this.appendQueue.length > 0 && this.appendQueueStatus !== "paused") {
-        this.ensureAppendQueueProcessing();
-      }
-    });
-
-    this.appendQueueTask = task;
-  }
-
-  private async runAppendQueue(
-    runId: number,
-    runSignal: AbortSignal
-  ): Promise<void> {
-    while (!runSignal.aborted && runId === this.appendQueueVersion) {
-      if (this.appendQueueStatus === "paused") {
-        return;
-      }
-
-      const head = this.appendQueue[0];
-      if (!head) {
-        this.appendQueueStatus = "idle";
-        this.appendInFlightItemId = undefined;
-        this.appendRetryAttempt = 0;
-        this.appendNextRetryAtMs = undefined;
-        this.persistLogState();
-        return;
-      }
-
-      const shouldContinue = await this.processAppendQueueHead(
-        head,
-        runId,
-        runSignal
-      );
-      if (!shouldContinue) {
-        return;
-      }
-    }
-  }
-
-  private async processAppendQueueHead(
-    item: RuntimeAppendQueueItem,
-    runId: number,
-    runSignal: AbortSignal
-  ): Promise<boolean> {
-    if (item.signal?.aborted) {
-      this.handleTerminalAppendFailure(item, createAppendAbortError(this.id));
-      return false;
-    }
-
-    this.appendQueueStatus = "flushing";
-    this.appendInFlightItemId = item.id;
-    this.appendRetryAttempt = item.retryAttempt;
-    this.appendNextRetryAtMs = undefined;
-    this.persistLogState();
-    this.emitAppendLifecycle({
-      type: "attempt_started",
-      sessionId: this.id,
-      itemId: item.id,
-      attempt: item.retryAttempt + 1,
-      queue: this.snapshotAppendQueueState(),
-    });
-
-    const { controller, detach } = createLinkedAbortController([
-      item.signal,
-      runSignal,
-    ]);
-
-    try {
-      const response = await request(
-        this.transport,
-        `/sessions/${encodeURIComponent(this.id)}/append`,
-        {
-          method: "POST",
-          body: JSON.stringify(item.request),
-          signal: controller.signal,
-        },
-        AppendEventResponseSchema
-      );
-
-      if (
-        runSignal.aborted ||
-        runId !== this.appendQueueVersion ||
-        this.appendQueue[0]?.id !== item.id
-      ) {
-        return false;
-      }
-
-      this.handleAcknowledgedAppend(item, response);
-      return true;
-    } catch (error) {
-      if (
-        runSignal.aborted ||
-        runId !== this.appendQueueVersion ||
-        this.appendQueue[0]?.id !== item.id
-      ) {
-        return false;
-      }
-
-      if (item.signal?.aborted) {
-        this.handleTerminalAppendFailure(item, createAppendAbortError(this.id));
-        return false;
-      }
-
-      const retryable = this.isRetryableAppendError(error);
-      const nextRetryAttempt = item.retryAttempt + 1;
-      if (
-        retryable &&
-        nextRetryAttempt <= this.appendOptions.retryPolicy.maxAttempts
-      ) {
-        const failure = this.snapshotAppendFailure(error, true, false);
-        item.retryAttempt = nextRetryAttempt;
-        this.appendQueueStatus = "retrying";
-        this.appendRetryAttempt = item.retryAttempt;
-        const delayMs = calculateAppendRetryDelay(
-          item.retryAttempt,
-          this.appendOptions.retryPolicy
-        );
-        this.appendNextRetryAtMs = Date.now() + delayMs;
-        this.appendLastFailure = failure;
-        this.persistLogState();
-        this.emitAppendLifecycle({
-          type: "retry_scheduled",
-          sessionId: this.id,
-          itemId: item.id,
-          attempt: item.retryAttempt + 1,
-          delayMs,
-          failure,
-          queue: this.snapshotAppendQueueState(),
-        });
-
-        await this.waitForAppendRetry(delayMs, item.signal, runSignal);
-        return !runSignal.aborted && runId === this.appendQueueVersion;
-      }
-
-      const terminalFailure = this.snapshotAppendFailure(
-        error,
-        retryable,
-        true
-      );
-      this.handleTerminalAppendFailure(
-        item,
-        this.toError(error),
-        terminalFailure
-      );
-      return false;
-    } finally {
-      detach();
-    }
-  }
-
-  private handleAcknowledgedAppend(
-    item: RuntimeAppendQueueItem,
-    response: AppendEventResponse
-  ): void {
-    this.appendQueue.shift();
-    this.appendInFlightItemId = undefined;
-    this.appendRetryAttempt = 0;
-    this.appendNextRetryAtMs = undefined;
-    this.appendLastFailure = undefined;
-    this.appendQueueStatus = "idle";
-
-    if (item.request.producer_id === this.appendProducerId) {
-      this.appendLastAcknowledgedProducerSeq = Math.max(
-        this.appendLastAcknowledgedProducerSeq,
-        item.request.producer_seq
-      );
-    }
-
-    this.persistLogState();
-    item.deferred?.resolve(response);
-    this.emitAppendLifecycle({
-      type: "acknowledged",
-      sessionId: this.id,
-      itemId: item.id,
-      seq: response.seq,
-      deduped: response.deduped,
-      queue: this.snapshotAppendQueueState(),
-    });
-  }
-
-  private reconcileAppendQueueWithCommittedEvents(
-    events: readonly TailEvent[]
-  ): void {
-    if (this.appendQueue.length === 0) {
-      return;
-    }
-
-    const reconciled: Array<{
-      event: TailEvent;
-      item: RuntimeAppendQueueItem;
-    }> = [];
-    let removedInFlightItem = false;
-
-    for (const event of events) {
-      const matchedIndex = this.appendQueue.findIndex((item) => {
-        return this.matchesCommittedEvent(item.request, event);
-      });
-      if (matchedIndex < 0) {
-        continue;
-      }
-
-      const [matchedItem] = this.appendQueue.splice(matchedIndex, 1);
-      if (!matchedItem) {
-        continue;
-      }
-
-      if (matchedItem.id === this.appendInFlightItemId) {
-        removedInFlightItem = true;
-      }
-
-      if (matchedItem.request.producer_id === this.appendProducerId) {
-        this.appendLastAcknowledgedProducerSeq = Math.max(
-          this.appendLastAcknowledgedProducerSeq,
-          matchedItem.request.producer_seq
-        );
-      }
-
-      reconciled.push({
-        event,
-        item: matchedItem,
-      });
-    }
-
-    if (reconciled.length === 0) {
-      return;
-    }
-
-    if (removedInFlightItem) {
-      this.appendQueueVersion += 1;
-      this.appendQueueRunController?.abort();
-    }
-
-    if (this.appendQueueStatus !== "paused") {
-      this.appendQueueStatus = "idle";
-    }
-
-    if (removedInFlightItem || this.appendQueue.length === 0) {
-      this.appendInFlightItemId = undefined;
-      this.appendRetryAttempt = 0;
-      this.appendNextRetryAtMs = undefined;
-      this.appendLastFailure = undefined;
-    }
-
-    const queueSnapshot = this.snapshotAppendQueueState();
-    for (const { event, item } of reconciled) {
-      item.deferred?.resolve({
-        deduped: false,
-        last_seq: this.log.lastSeq,
-        seq: event.seq,
-      });
-      this.emitAppendLifecycle({
-        type: "acknowledged",
-        sessionId: this.id,
-        itemId: item.id,
-        seq: event.seq,
-        deduped: false,
-        queue: queueSnapshot,
-      });
-    }
-
-    if (
-      !(removedInFlightItem || this.appendQueueTask) &&
-      this.appendQueue.length > 0 &&
-      this.appendQueueStatus !== "paused" &&
-      this.appendOptions.autoFlush
-    ) {
-      this.ensureAppendQueueProcessing();
-    }
-  }
-
-  private matchesCommittedEvent(
-    request: AppendEventRequest,
-    event: TailEvent
-  ): boolean {
-    if (
-      request.idempotency_key &&
-      event.idempotency_key &&
-      request.idempotency_key === event.idempotency_key
-    ) {
-      return true;
-    }
-
-    return (
-      request.producer_id === event.producer_id &&
-      request.producer_seq === event.producer_seq
-    );
-  }
-
-  private handleTerminalAppendFailure(
-    item: RuntimeAppendQueueItem,
-    error: Error,
-    failure = this.snapshotAppendFailure(error, false, true)
-  ): void {
-    item.deferred?.reject(error);
-
-    if (this.appendOptions.terminalFailureMode === "clear") {
-      this.clearAppendQueue(error, {
-        rotateProducer: true,
-        lastFailure: failure,
-      });
-      this.emitAppendLifecycle({
-        type: "cleared",
-        sessionId: this.id,
-        itemId: item.id,
-        failure,
-        queue: this.snapshotAppendQueueState(),
-      });
-      return;
-    }
-
-    this.appendQueueStatus = "paused";
-    this.appendInFlightItemId = undefined;
-    this.appendRetryAttempt = item.retryAttempt;
-    this.appendNextRetryAtMs = undefined;
-    this.appendLastFailure = failure;
-    this.persistLogState();
-    this.emitAppendLifecycle({
-      type: "paused",
-      sessionId: this.id,
-      itemId: item.id,
-      failure,
-      queue: this.snapshotAppendQueueState(),
-    });
-  }
-
-  private clearAppendQueue(
-    reason: Error,
-    options: {
-      rotateProducer: boolean;
-      lastFailure: SessionAppendFailureSnapshot | undefined;
-    }
-  ): void {
-    this.appendQueueVersion += 1;
-    this.appendQueueRunController?.abort();
-
-    const pendingItems = [...this.appendQueue];
-    this.appendQueue.length = 0;
-    this.appendQueueStatus = "idle";
-    this.appendInFlightItemId = undefined;
-    this.appendRetryAttempt = 0;
-    this.appendNextRetryAtMs = undefined;
-    this.appendLastFailure = options.lastFailure;
-
-    if (options.rotateProducer) {
-      this.appendProducerId = crypto.randomUUID();
-      this.appendLastAcknowledgedProducerSeq = 0;
-    }
-
-    for (const pending of pendingItems) {
-      pending.deferred?.reject(reason);
-    }
-
-    this.persistLogState();
-  }
-
-  private toError(error: unknown): Error {
-    if (error instanceof Error) {
-      return error;
-    }
-
-    return new StarciteError(String(error));
-  }
-
-  private snapshotAppendFailure(
-    error: unknown,
-    retryable: boolean,
-    terminal: boolean
-  ): SessionAppendFailureSnapshot {
-    if (error instanceof StarciteApiError) {
-      return {
-        name: error.name,
-        message: error.message,
-        retryable,
-        terminal,
-        occurredAtMs: Date.now(),
-        status: error.status,
-        code: error.code,
-      };
-    }
-
-    const appendError = this.toError(error);
-    return {
-      name: appendError.name,
-      message: appendError.message,
-      retryable,
-      terminal,
-      occurredAtMs: Date.now(),
-    };
-  }
-
-  private snapshotPendingAppend(item: RuntimeAppendQueueItem) {
-    return {
-      id: item.id,
-      request: structuredClone(item.request) as AppendEventRequest,
-      enqueuedAtMs: item.enqueuedAtMs,
-      retryAttempt: item.retryAttempt,
-    };
-  }
-
-  private snapshotAppendQueueState(): SessionAppendQueueState {
-    return {
-      status: this.appendQueueStatus,
-      producerId: this.appendProducerId,
-      lastAcknowledgedProducerSeq: this.appendLastAcknowledgedProducerSeq,
-      pending: this.appendQueue.map((item) => this.snapshotPendingAppend(item)),
-      inFlightItemId: this.appendInFlightItemId,
-      retryAttempt: this.appendRetryAttempt || undefined,
-      nextRetryAtMs: this.appendNextRetryAtMs,
-      lastFailure: this.appendLastFailure
-        ? { ...this.appendLastFailure }
-        : undefined,
-    };
-  }
-
-  private emitAppendLifecycle(event: SessionAppendLifecycleEvent): void {
-    const listeners = this.lifecycle.listeners(
-      "append"
-    ) as SessionAppendListener[];
-
-    for (const listener of listeners) {
-      try {
-        this.observeListenerResult(listener(event));
-      } catch (error) {
-        this.emitStreamError(error);
-      }
-    }
-  }
-
-  private isRetryableAppendError(error: unknown): boolean {
-    if (error instanceof StarciteConnectionError) {
-      return true;
-    }
-
-    return (
-      error instanceof StarciteApiError &&
-      RETRYABLE_APPEND_STATUS_CODES.has(error.status)
-    );
-  }
-
-  private waitForAppendRetry(
-    delayMs: number,
-    itemSignal: AbortSignal | undefined,
-    runSignal: AbortSignal
-  ): Promise<void> {
-    if (delayMs <= 0 || runSignal.aborted) {
-      return Promise.resolve();
-    }
-
-    const { controller, detach } = createLinkedAbortController([
-      itemSignal,
-      runSignal,
-    ]);
-    if (controller.signal.aborted) {
-      detach();
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        clearTimeout(timer);
-        detach();
-        resolve();
-      };
-
-      const timer = setTimeout(() => {
-        finish();
-      }, delayMs);
-
-      controller.signal.addEventListener("abort", finish, { once: true });
-    });
   }
 }
