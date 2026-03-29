@@ -1,5 +1,4 @@
 import EventEmitter from "eventemitter3";
-import type { Channel } from "phoenix";
 import { z } from "zod";
 import {
   StarciteApiError,
@@ -10,37 +9,38 @@ import {
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
 import { SessionLog, type SessionLogSubscriptionContext } from "./session-log";
+import {
+  type RejoinableChannel,
+  readJoinFailureReason,
+} from "./socket-manager";
 import type { TransportConfig } from "./transport";
 import { request } from "./transport";
-import type {
-  AppendEventRequest,
-  AppendEventResponse,
-  AppendResult,
-  RequestOptions,
-  SessionAppendFailureSnapshot,
-  SessionAppendInput,
-  SessionAppendLifecycleEvent,
-  SessionAppendListener,
-  SessionAppendOptions,
-  SessionAppendQueueState,
-  SessionAppendStoreState,
-  SessionEvent,
-  SessionEventContext,
-  SessionEventListener,
-  SessionGapListener,
-  SessionLogOptions,
-  SessionOnEventOptions,
-  SessionRecord,
-  SessionSnapshot,
-  SessionStore,
-  SessionStoreState,
-  TailCursor,
-  TailGap,
-} from "./types";
 import {
+  type AppendEventRequest,
+  type AppendEventResponse,
+  type AppendResult,
   AppendEventResponseSchema,
-  SessionAppendInputSchema,
+  type RequestOptions,
+  type SessionAppendFailureSnapshot,
+  type SessionAppendInput,
+  type SessionAppendLifecycleEvent,
+  type SessionAppendListener,
+  type SessionAppendOptions,
+  type SessionAppendQueueState,
+  type SessionAppendStoreState,
+  type SessionEventContext,
+  type SessionEventListener,
+  type SessionGapListener,
+  type SessionLogOptions,
+  type SessionOnEventOptions,
+  type SessionRecord,
+  type SessionSnapshot,
+  type SessionStore,
+  type SessionStoreState,
+  type TailCursor,
+  type TailEvent,
   TailEventSchema,
+  type TailGap,
   TailGapSchema,
   TailTokenExpiredPayloadSchema,
 } from "./types";
@@ -63,10 +63,6 @@ interface SessionLifecycleEvents {
   error: (error: Error) => void;
   append: (event: SessionAppendLifecycleEvent) => void;
   gap: (gap: TailGap) => void;
-}
-
-interface RejoinableChannel extends Channel {
-  rejoin: (timeout?: number) => void;
 }
 
 interface Deferred<T> {
@@ -109,28 +105,6 @@ const RETRYABLE_APPEND_STATUS_CODES = new Set([
 const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
 });
-
-function readJoinFailureReason(payload: unknown): string {
-  if (payload instanceof Error) {
-    return payload.message;
-  }
-
-  if (typeof payload === "string") {
-    return payload;
-  }
-
-  if (typeof payload === "object" && payload !== null) {
-    if ("reason" in payload && typeof payload.reason === "string") {
-      return payload.reason;
-    }
-
-    if ("message" in payload && typeof payload.message === "string") {
-      return payload.message;
-    }
-  }
-
-  return "join failed";
-}
 
 function calculateAppendRetryDelay(
   retryAttempt: number,
@@ -299,22 +273,21 @@ export class StarciteSession {
     input: SessionAppendInput,
     options?: RequestOptions
   ): Promise<AppendResult> {
-    const parsed = SessionAppendInputSchema.parse(input);
     const itemId = crypto.randomUUID();
 
     return this.enqueueAppend({
       id: itemId,
       request: {
-        type: parsed.type ?? "content",
-        payload: parsed.payload ?? { text: parsed.text },
-        actor: parsed.actor,
+        type: input.type ?? "content",
+        payload: input.payload ?? { text: input.text },
+        actor: input.actor,
         producer_id: this.appendProducerId,
         producer_seq: this.nextManagedProducerSeq(),
-        source: parsed.source ?? "agent",
-        metadata: parsed.metadata,
-        refs: parsed.refs,
-        idempotency_key: parsed.idempotencyKey ?? itemId,
-        expected_seq: parsed.expectedSeq,
+        source: input.source ?? "agent",
+        metadata: input.metadata,
+        refs: input.refs,
+        idempotency_key: input.idempotencyKey ?? itemId,
+        expected_seq: input.expectedSeq,
       },
       enqueuedAtMs: Date.now(),
       retryAttempt: 0,
@@ -331,7 +304,7 @@ export class StarciteSession {
    * Subscribes to canonical session events and lifecycle errors.
    */
   on(eventName: "event", listener: SessionEventListener): () => void;
-  on<TEvent extends SessionEvent>(
+  on<TEvent extends TailEvent>(
     eventName: "event",
     listener: SessionEventListener<TEvent>,
     options: SessionOnEventOptions<TEvent>
@@ -355,7 +328,7 @@ export class StarciteSession {
         const replay = eventOptions?.replay ?? true;
 
         const dispatch = (
-          event: SessionEvent,
+          event: TailEvent,
           logContext: SessionLogSubscriptionContext
         ): void => {
           const parsedEvent = this.parseOnEvent(event, eventOptions);
@@ -474,13 +447,6 @@ export class StarciteSession {
   }
 
   /**
-   * Backwards-compatible alias for `disconnect()`.
-   */
-  close(): void {
-    this.disconnect();
-  }
-
-  /**
    * Updates in-memory session log retention.
    */
   setLogOptions(options: SessionLogOptions): void {
@@ -552,12 +518,12 @@ export class StarciteSession {
   /**
    * Returns the retained canonical event list.
    */
-  events(): readonly SessionEvent[] {
+  events(): readonly TailEvent[] {
     return this.log.events;
   }
 
-  private parseOnEvent<TEvent extends SessionEvent>(
-    event: SessionEvent,
+  private parseOnEvent<TEvent extends TailEvent>(
+    event: TailEvent,
     options: SessionOnEventOptions<TEvent> | undefined
   ): TEvent | undefined {
     if (options?.agent && event.actor !== `agent:${options.agent}`) {
@@ -618,15 +584,7 @@ export class StarciteSession {
     const managedChannel =
       this.transport.socketManager.openChannel<RejoinableChannel>({
         topic: `tail:${this.id}`,
-        params: () => {
-          const payload: {
-            cursor?: TailCursor;
-          } = {};
-
-          payload.cursor = this.log.cursor ?? 0;
-
-          return payload;
-        },
+        params: () => ({ cursor: this.log.cursor ?? 0 }),
       });
     const channel = managedChannel.channel;
     this.closeTailChannel = managedChannel.close;
@@ -819,14 +777,9 @@ export class StarciteSession {
         },
       });
     } catch (error) {
-      const storeError =
-        error instanceof Error
-          ? new StarciteError(
-              `Session store save failed for session '${this.id}': ${error.message}`
-            )
-          : new StarciteError(
-              `Session store save failed for session '${this.id}': ${String(error)}`
-            );
+      const storeError = new StarciteError(
+        `Session store save failed for session '${this.id}': ${this.toError(error).message}`
+      );
 
       if (this.lifecycle.listenerCount("error") > 0) {
         this.lifecycle.emit("error", storeError);
@@ -1092,7 +1045,7 @@ export class StarciteSession {
     this.appendRetryAttempt = 0;
     this.appendNextRetryAtMs = undefined;
     this.appendLastFailure = undefined;
-    this.appendQueueStatus = this.appendQueue.length > 0 ? "idle" : "idle";
+    this.appendQueueStatus = "idle";
 
     if (item.request.producer_id === this.appendProducerId) {
       this.appendLastAcknowledgedProducerSeq = Math.max(
@@ -1114,14 +1067,14 @@ export class StarciteSession {
   }
 
   private reconcileAppendQueueWithCommittedEvents(
-    events: readonly SessionEvent[]
+    events: readonly TailEvent[]
   ): void {
     if (this.appendQueue.length === 0) {
       return;
     }
 
     const reconciled: Array<{
-      event: SessionEvent;
+      event: TailEvent;
       item: RuntimeAppendQueueItem;
     }> = [];
     let removedInFlightItem = false;
@@ -1165,9 +1118,7 @@ export class StarciteSession {
       this.appendQueueRunController?.abort();
     }
 
-    if (this.appendQueue.length === 0) {
-      this.appendQueueStatus = "idle";
-    } else if (this.appendQueueStatus !== "paused") {
+    if (this.appendQueueStatus !== "paused") {
       this.appendQueueStatus = "idle";
     }
 
@@ -1207,7 +1158,7 @@ export class StarciteSession {
 
   private matchesCommittedEvent(
     request: AppendEventRequest,
-    event: SessionEvent
+    event: TailEvent
   ): boolean {
     if (
       request.idempotency_key &&

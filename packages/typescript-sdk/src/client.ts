@@ -13,23 +13,20 @@ import {
   toApiBaseUrl,
   toWebSocketBaseUrl,
 } from "./transport";
-import type {
-  IssueSessionTokenInput,
-  RequestOptions,
-  SessionAppendOptions,
-  SessionCreatedLifecycleEvent,
-  SessionListOptions,
-  SessionListPage,
-  SessionLogOptions,
-  SessionRecord,
-  SessionStore,
-  StarciteOptions,
-} from "./types";
 import {
+  type IssueSessionTokenInput,
   IssueSessionTokenResponseSchema,
-  SessionListOptionsSchema,
+  type RequestOptions,
+  type SessionAppendOptions,
+  type SessionCreatedLifecycleEvent,
+  type SessionListOptions,
+  type SessionListPage,
   SessionListPageSchema,
+  type SessionLogOptions,
+  type SessionRecord,
   SessionRecordSchema,
+  type SessionStore,
+  type StarciteOptions,
 } from "./types";
 
 const LIFECYCLE_AUTH_ERROR_MESSAGE =
@@ -158,26 +155,13 @@ export class Starcite {
     }
 
     this.ensureLifecycleRuntime();
-
-    if (eventName === "session.created") {
-      this.lifecycle.on(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.lifecycle.on(eventName, listener as (error: Error) => void);
-    }
-
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.lifecycle.on(eventName, listener as any);
     this.lifecycleRefs += 1;
+
     return () => {
-      if (eventName === "session.created") {
-        this.off(
-          eventName,
-          listener as (event: SessionCreatedLifecycleEvent) => void
-        );
-      } else {
-        this.off(eventName, listener as (error: Error) => void);
-      }
+      // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+      this.off(eventName as any, listener as any);
     };
   }
 
@@ -192,15 +176,8 @@ export class Starcite {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): void {
-    if (eventName === "session.created") {
-      this.lifecycle.off(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.lifecycle.off(eventName, listener as (error: Error) => void);
-    }
-
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.lifecycle.off(eventName, listener as any);
     this.lifecycleRefs = Math.max(0, this.lifecycleRefs - 1);
     if (this.lifecycleRefs === 0) {
       this.lifecycleRuntime?.close();
@@ -286,19 +263,18 @@ export class Starcite {
     options: SessionListOptions = {},
     requestOptions?: RequestOptions
   ): Promise<SessionListPage> {
-    const parsed = SessionListOptionsSchema.parse(options);
     const query = new URLSearchParams();
 
-    if (parsed.limit !== undefined) {
-      query.set("limit", `${parsed.limit}`);
+    if (options.limit !== undefined) {
+      query.set("limit", `${options.limit}`);
     }
 
-    if (parsed.cursor !== undefined) {
-      query.set("cursor", parsed.cursor);
+    if (options.cursor !== undefined) {
+      query.set("cursor", options.cursor);
     }
 
-    if (parsed.metadata !== undefined) {
-      for (const [key, value] of Object.entries(parsed.metadata)) {
+    if (options.metadata !== undefined) {
+      for (const [key, value] of Object.entries(options.metadata)) {
         query.set(`metadata.${key}`, value);
       }
     }
@@ -359,9 +335,7 @@ export class Starcite {
       id: sessionId,
       token: tokenResponse.token,
       identity: input.identity,
-      transport: this.buildSessionTransport(tokenResponse.token, {
-        token: tokenResponse.token,
-      }),
+      transport: this.buildSessionTransport(tokenResponse.token),
       store: this.store,
       record,
       logOptions: input.logOptions,
@@ -390,23 +364,20 @@ export class Starcite {
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport: this.buildSessionTransport(token, { token }),
+      transport: this.buildSessionTransport(token),
       store: this.store,
       logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
-  private buildSessionTransport(
-    token: string,
-    socketAuth: { token: string | undefined }
-  ): TransportConfig {
+  private buildSessionTransport(token: string): TransportConfig {
     const socketManager =
-      socketAuth.token === this.apiKey
+      token === this.apiKey
         ? this.transport.socketManager
         : new SocketManager({
             socketUrl: this.socketUrl,
-            token: socketAuth.token,
+            token,
           });
 
     return {
