@@ -49,23 +49,23 @@ function resolvePrincipal(
   return { id: rawId, type: defaultType };
 }
 
-function resolveApiKeyIdentity(input: {
-  tenantId: string | undefined;
-  rawId: string | undefined;
-  principalType: ApiKeyPrincipalType;
-}): StarciteIdentity | undefined {
-  if (!(input.tenantId && input.rawId)) {
+function resolveApiKeyIdentity(
+  tenantId: string | undefined,
+  rawId: string | undefined,
+  principalType: ApiKeyPrincipalType
+): StarciteIdentity | undefined {
+  if (!(tenantId && rawId)) {
     return undefined;
   }
 
-  if (input.principalType === "service") {
+  if (principalType === "service") {
     return undefined;
   }
 
-  const principal = resolvePrincipal(input.rawId, input.principalType);
+  const principal = resolvePrincipal(rawId, principalType);
 
   return new StarciteIdentity({
-    tenantId: input.tenantId,
+    tenantId,
     id: principal.id,
     type: principal.type,
   });
@@ -82,30 +82,12 @@ export function decodeApiKeyContext(apiKey: string): ApiKeyContext {
   return {
     issuerAuthority,
     tenantId: claims.tenant_id,
-    identity: resolveApiKeyIdentity({
-      tenantId: claims.tenant_id,
-      rawId: claims.principal_id ?? claims.sub,
+    identity: resolveApiKeyIdentity(
+      claims.tenant_id,
+      claims.principal_id ?? claims.sub,
       principalType,
-    }),
+    ),
   };
-}
-
-/**
- * Extracts the issuer authority (protocol + host) from an API key JWT.
- */
-export function inferIssuerAuthorityFromApiKey(
-  apiKey: string
-): string | undefined {
-  return decodeApiKeyContext(apiKey).issuerAuthority;
-}
-
-/**
- * Infers caller identity from API key JWT claims.
- */
-export function inferIdentityFromApiKey(
-  apiKey: string
-): StarciteIdentity | undefined {
-  return decodeApiKeyContext(apiKey).identity;
 }
 
 /**

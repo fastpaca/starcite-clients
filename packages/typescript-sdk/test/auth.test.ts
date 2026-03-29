@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  decodeApiKeyContext,
-  inferIdentityFromApiKey,
-  inferIssuerAuthorityFromApiKey,
-} from "../src/auth";
+import { decodeApiKeyContext } from "../src/auth";
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
   const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
@@ -12,37 +8,39 @@ function tokenFromClaims(claims: Record<string, unknown>): string {
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.N6fK2qA`;
 }
 
-describe("inferIssuerAuthorityFromApiKey", () => {
+describe("decodeApiKeyContext — issuerAuthority", () => {
   it("extracts issuer authority from a valid JWT", () => {
     const token = tokenFromClaims({ iss: "https://starcite.ai/custom/path" });
-    expect(inferIssuerAuthorityFromApiKey(token)).toBe("https://starcite.ai");
+    expect(decodeApiKeyContext(token).issuerAuthority).toBe(
+      "https://starcite.ai"
+    );
   });
 
   it("throws for a non-JWT token", () => {
-    expect(() => inferIssuerAuthorityFromApiKey("not_a_jwt")).toThrow();
+    expect(() => decodeApiKeyContext("not_a_jwt")).toThrow();
   });
 
   it("strips path from issuer URL", () => {
     const token = tokenFromClaims({ iss: "https://auth.example.com/v1/keys" });
-    expect(inferIssuerAuthorityFromApiKey(token)).toBe(
+    expect(decodeApiKeyContext(token).issuerAuthority).toBe(
       "https://auth.example.com"
     );
   });
 
   it("returns undefined when iss is missing", () => {
     const token = tokenFromClaims({});
-    expect(inferIssuerAuthorityFromApiKey(token)).toBeUndefined();
+    expect(decodeApiKeyContext(token).issuerAuthority).toBeUndefined();
   });
 });
 
-describe("inferIdentityFromApiKey", () => {
+describe("decodeApiKeyContext — identity", () => {
   it("infers identity from explicit claims", () => {
     const token = tokenFromClaims({
       tenant_id: "acme",
       principal_id: "planner",
       principal_type: "agent",
     });
-    const identity = inferIdentityFromApiKey(token);
+    const { identity } = decodeApiKeyContext(token);
     expect(identity).toBeDefined();
     expect(identity).toEqual(
       expect.objectContaining({
@@ -59,7 +57,7 @@ describe("inferIdentityFromApiKey", () => {
       tenant_id: "acme",
       principal_type: "agent",
     });
-    const identity = inferIdentityFromApiKey(token);
+    const { identity } = decodeApiKeyContext(token);
     expect(identity).toBeDefined();
     expect(identity).toEqual(
       expect.objectContaining({
@@ -75,7 +73,7 @@ describe("inferIdentityFromApiKey", () => {
       principal_id: "planner",
       principal_type: "agent",
     });
-    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+    expect(decodeApiKeyContext(token).identity).toBeUndefined();
   });
 
   it("normalizes actor-style principal_id claims", () => {
@@ -85,7 +83,7 @@ describe("inferIdentityFromApiKey", () => {
       principal_type: "user",
     });
 
-    expect(inferIdentityFromApiKey(token)).toEqual(
+    expect(decodeApiKeyContext(token).identity).toEqual(
       expect.objectContaining({
         tenantId: "acme",
         id: "planner",
@@ -99,7 +97,7 @@ describe("inferIdentityFromApiKey", () => {
       tenant_id: "acme",
       principal_id: "planner",
     });
-    const identity = inferIdentityFromApiKey(token);
+    const { identity } = decodeApiKeyContext(token);
     expect(identity).toBeDefined();
     expect(identity).toEqual(
       expect.objectContaining({
@@ -112,7 +110,7 @@ describe("inferIdentityFromApiKey", () => {
 
   it("returns undefined when claims are empty", () => {
     const token = tokenFromClaims({});
-    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+    expect(decodeApiKeyContext(token).identity).toBeUndefined();
   });
 
   it("returns undefined for service principals", () => {
@@ -122,7 +120,7 @@ describe("inferIdentityFromApiKey", () => {
       principal_type: "service",
     });
 
-    expect(inferIdentityFromApiKey(token)).toBeUndefined();
+    expect(decodeApiKeyContext(token).identity).toBeUndefined();
   });
 });
 
