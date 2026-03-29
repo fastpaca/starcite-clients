@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type SessionEvent, StarciteIdentity } from "@starcite/sdk";
+import { StarciteIdentity, type TailEvent } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
 import { StarciteCliStore } from "../src/store";
@@ -22,7 +22,7 @@ interface FakeSession {
 
 function createOnMock(input: {
   error?: Error;
-  events?: SessionEvent[];
+  events?: TailEvent[];
   gap?: Record<string, unknown>;
 }): ReturnType<typeof vi.fn> {
   return vi.fn((eventName, listener, options) => {
