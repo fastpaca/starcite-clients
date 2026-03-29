@@ -6,8 +6,6 @@ import {
 } from "./errors";
 import type { SocketManager } from "./socket-manager";
 
-const TRAILING_SLASHES_REGEX = /\/+$/;
-
 /**
  * Shared HTTP + WebSocket transport configuration.
  *
@@ -17,17 +15,21 @@ const TRAILING_SLASHES_REGEX = /\/+$/;
 export interface TransportConfig {
   readonly baseUrl: string;
   readonly socketManager: SocketManager;
-  authorization: string | null;
+  bearerToken: string | null;
   readonly fetchFn: typeof fetch;
 }
 
-function parseHttpUrl(value: string, context: string): URL {
+/**
+ * Validates a URL has an http/https protocol, strips trailing slashes, and returns the URL object.
+ */
+export function parseHttpUrl(value: string): URL {
   const url = new URL(value);
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new StarciteError(`${context} must use http:// or https://`);
+    throw new StarciteError(`URL must use http:// or https://: ${value}`);
   }
 
+  url.pathname = url.pathname.replace(/\/+$/, "");
   return url;
 }
 
@@ -35,8 +37,7 @@ function parseHttpUrl(value: string, context: string): URL {
  * Converts a Starcite base URL to the `/v1` API root used by this SDK.
  */
 export function toApiBaseUrl(baseUrl: string): string {
-  const url = parseHttpUrl(baseUrl, "baseUrl");
-  const value = url.toString().replace(TRAILING_SLASHES_REGEX, "");
+  const value = parseHttpUrl(baseUrl).toString();
   return value.endsWith("/v1") ? value : `${value}/v1`;
 }
 
@@ -44,9 +45,9 @@ export function toApiBaseUrl(baseUrl: string): string {
  * Converts HTTP API base URL to its websocket equivalent.
  */
 export function toWebSocketBaseUrl(apiBaseUrl: string): string {
-  const url = parseHttpUrl(apiBaseUrl, "apiBaseUrl");
+  const url = parseHttpUrl(apiBaseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return url.toString();
 }
 
 /**
@@ -73,8 +74,8 @@ export async function requestWithBaseUrl<T>(
 ): Promise<T> {
   const headers = new Headers();
 
-  if (transport.authorization) {
-    headers.set("authorization", transport.authorization);
+  if (transport.bearerToken) {
+    headers.set("authorization", `Bearer ${transport.bearerToken}`);
   }
 
   if (init.body !== undefined && !headers.has("content-type")) {

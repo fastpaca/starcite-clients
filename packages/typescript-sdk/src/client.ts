@@ -7,6 +7,7 @@ import { StarciteSession } from "./session";
 import { SocketManager } from "./socket-manager";
 import type { TransportConfig } from "./transport";
 import {
+  parseHttpUrl,
   request,
   requestWithBaseUrl,
   toApiBaseUrl,
@@ -31,10 +32,6 @@ import {
   SessionRecordSchema,
 } from "./types";
 
-const DEFAULT_BASE_URL =
-  globalThis.process?.env?.STARCITE_BASE_URL ?? "http://localhost:4000";
-const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
-const TRAILING_SLASHES_REGEX = /\/+$/;
 const LIFECYCLE_AUTH_ERROR_MESSAGE =
   "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.";
 
@@ -46,17 +43,15 @@ function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
   issuerAuthority: string | undefined
 ): string | undefined {
-  const value = explicitAuthUrl ?? DEFAULT_AUTH_URL ?? issuerAuthority;
+  const value =
+    explicitAuthUrl ??
+    globalThis.process?.env?.STARCITE_AUTH_URL ??
+    issuerAuthority;
   if (!value) {
     return undefined;
   }
 
-  const url = new URL(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new StarciteError("authUrl must use http:// or https://");
-  }
-
-  return url.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return parseHttpUrl(value).toString();
 }
 
 function mergeAppendOptions(
@@ -99,7 +94,7 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredTenantId?: string;
-  private readonly socketAuthToken: string | undefined;
+  private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
@@ -108,37 +103,34 @@ export class Starcite {
   private lifecycleRefs = 0;
 
   constructor(options: StarciteOptions = {}) {
-    const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
+    const baseUrl = toApiBaseUrl(
+      options.baseUrl ??
+        globalThis.process?.env?.STARCITE_BASE_URL ??
+        "http://localhost:4000"
+    );
     this.baseUrl = baseUrl;
 
-    const userFetch = options.fetch;
-    const fetchFn: typeof fetch = userFetch
-      ? (input, init) => userFetch(input, init)
-      : (input, init) => fetch(input, init);
+    const fetchFn = options.fetch ?? fetch;
     const apiKey = options.apiKey;
-    let authorization: string | undefined;
     let issuerAuthority: string | undefined;
 
     if (apiKey) {
       const apiKeyContext = decodeApiKeyContext(apiKey);
-      authorization = `Bearer ${apiKey}`;
       issuerAuthority = apiKeyContext.issuerAuthority;
       this.inferredTenantId = apiKeyContext.tenantId;
     }
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
-
-    const socketAuthToken = apiKey;
+    this.apiKey = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
-    this.socketAuthToken = socketAuthToken;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
       baseUrl,
-      authorization: authorization ?? null,
+      bearerToken: apiKey ?? null,
       socketManager: new SocketManager({
         socketUrl: this.socketUrl,
-        token: socketAuthToken,
+        token: apiKey,
       }),
       fetchFn,
     };
@@ -161,7 +153,7 @@ export class Starcite {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): () => void {
-    if (!this.socketAuthToken) {
+    if (!this.apiKey) {
       throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
     }
 
@@ -410,7 +402,7 @@ export class Starcite {
     socketAuth: { token: string | undefined }
   ): TransportConfig {
     const socketManager =
-      socketAuth.token === this.socketAuthToken
+      socketAuth.token === this.apiKey
         ? this.transport.socketManager
         : new SocketManager({
             socketUrl: this.socketUrl,
@@ -419,7 +411,7 @@ export class Starcite {
 
     return {
       ...this.transport,
-      authorization: `Bearer ${token}`,
+      bearerToken: token,
       socketManager,
     };
   }
@@ -444,7 +436,7 @@ export class Starcite {
   private issueSessionToken(
     input: IssueSessionTokenInput
   ): Promise<{ token: string; expires_in: number }> {
-    if (!this.transport.authorization) {
+    if (!this.transport.bearerToken) {
       throw new StarciteError(
         "session() with identity requires apiKey. Set StarciteOptions.apiKey."
       );
@@ -484,7 +476,7 @@ export class Starcite {
       return;
     }
 
-    if (!this.socketAuthToken) {
+    if (!this.apiKey) {
       throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
     }
 
