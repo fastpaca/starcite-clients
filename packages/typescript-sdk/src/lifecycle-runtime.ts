@@ -1,7 +1,10 @@
 import EventEmitter from "eventemitter3";
-import type { Channel } from "phoenix";
 import { StarciteError } from "./errors";
-import type { SocketManager } from "./socket-manager";
+import {
+  type RejoinableChannel,
+  readJoinFailureReason,
+  type SocketManager,
+} from "./socket-manager";
 import {
   LifecycleEventEnvelopeSchema,
   type SessionCreatedLifecycleEvent,
@@ -14,33 +17,7 @@ interface LifecycleRuntimeEvents {
   error: (error: Error) => void;
 }
 
-interface RejoinableChannel extends Channel {
-  rejoin: (timeout?: number) => void;
-}
-
 const LIFECYCLE_TOPIC = "lifecycle";
-
-function readJoinFailureReason(payload: unknown): string {
-  if (payload instanceof Error) {
-    return payload.message;
-  }
-
-  if (typeof payload === "string") {
-    return payload;
-  }
-
-  if (typeof payload === "object" && payload !== null) {
-    if ("reason" in payload && typeof payload.reason === "string") {
-      return payload.reason;
-    }
-
-    if ("message" in payload && typeof payload.message === "string") {
-      return payload.message;
-    }
-  }
-
-  return "join failed";
-}
 
 export class LifecycleRuntime {
   private readonly socketManager: SocketManager;
@@ -67,25 +44,13 @@ export class LifecycleRuntime {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): () => void {
-    if (eventName === "session.created") {
-      this.emitter.on(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.emitter.on(eventName, listener as (error: Error) => void);
-    }
-
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.emitter.on(eventName, listener as any);
     this.ensureChannelAttached();
+
     return () => {
-      if (eventName === "session.created") {
-        this.off(
-          eventName,
-          listener as (event: SessionCreatedLifecycleEvent) => void
-        );
-      } else {
-        this.off(eventName, listener as (error: Error) => void);
-      }
+      // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+      this.off(eventName as any, listener as any);
     };
   }
 
@@ -100,14 +65,8 @@ export class LifecycleRuntime {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): void {
-    if (eventName === "session.created") {
-      this.emitter.off(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.emitter.off(eventName, listener as (error: Error) => void);
-    }
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.emitter.off(eventName, listener as any);
 
     if (this.listenerCount() === 0) {
       this.close();

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import Conf from "conf";
 import { parse as parseToml } from "toml";
 import { z } from "zod";
+import { trimString } from "./runtime";
 
 const DEFAULT_CONFIG_DIRECTORY_NAME = ".starcite";
 const CONFIG_JSON_FILENAME = "config.json";
@@ -29,11 +30,6 @@ type CredentialsFile = z.infer<typeof CredentialsFileSchema>;
 export interface StarciteCliConfig {
   baseUrl?: string;
   apiKey?: string;
-}
-
-function trimString(value?: string): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
 function normalizeConfig(input: unknown): StarciteCliConfig {
