@@ -704,6 +704,170 @@ describe("Phoenix Tail Transport", () => {
     planner.disconnect();
   });
 
+  it("rejoins same-session identity subscribers independently when only one socket resets", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(makeSessionRecord("ses_rejoin"))
+      .mockResolvedValueOnce(makeTokenResponse("ses_rejoin", "planner"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(makeTokenResponse("ses_rejoin", "reviewer"));
+
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const planner = await client.session({
+      identity: client.agent({ id: "planner" }),
+      id: "ses_rejoin",
+    });
+    const reviewer = await client.session({
+      identity: client.agent({ id: "reviewer" }),
+      id: "ses_rejoin",
+    });
+
+    const plannerSeen: number[] = [];
+    const reviewerSeen: number[] = [];
+    const stopPlanner = planner.on("event", (event) => {
+      plannerSeen.push(event.seq);
+    });
+    const stopReviewer = reviewer.on("event", (event) => {
+      reviewerSeen.push(event.seq);
+    });
+
+    await waitForSocketCount(2);
+    const plannerSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const reviewerSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [plannerChannel, reviewerChannel] = await waitForChannels(
+      "tail:ses_rejoin",
+      2
+    );
+
+    plannerSocket?.emitOpen();
+    reviewerSocket?.emitOpen();
+    plannerChannel.emitJoinOk({});
+    reviewerChannel.emitJoinOk({});
+
+    const firstUserEvent = makeEvent(1, "user:alice", 1);
+    plannerChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    reviewerChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    await flush();
+
+    plannerSocket?.emitClose({ code: 1006, reason: "planner reset" });
+    plannerSocket?.emitOpen();
+    plannerChannel.emitJoinOk({});
+
+    expect(plannerChannel.rejoinCalls.at(-1)).toEqual({ cursor: 1 });
+    expect(reviewerChannel.rejoinCalls).toHaveLength(0);
+
+    plannerChannel.emit("events", {
+      events: [makeEvent(2, "user:alice", 2)],
+    });
+    await flush();
+
+    expect(plannerSeen).toEqual([1, 2]);
+    expect(reviewerSeen).toEqual([1]);
+
+    stopPlanner();
+    stopReviewer();
+    planner.disconnect();
+    reviewer.disconnect();
+  });
+
+  it("delivers later follow-up user events after a burst of same-session worker traffic", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(makeSessionRecord("ses_followup"))
+      .mockResolvedValueOnce(makeTokenResponse("ses_followup", "coordinator"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(makeTokenResponse("ses_followup", "worker"));
+
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const coordinator = await client.session({
+      identity: client.agent({ id: "coordinator" }),
+      id: "ses_followup",
+    });
+    const worker = await client.session({
+      identity: client.agent({ id: "worker" }),
+      id: "ses_followup",
+    });
+
+    const coordinatorSeen: number[] = [];
+    const stopCoordinator = coordinator.on("event", (event) => {
+      coordinatorSeen.push(event.seq);
+    });
+
+    await waitForSocketCount(2);
+    const coordinatorSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const workerSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [coordinatorChannel, workerChannel] = await waitForChannels(
+      "tail:ses_followup",
+      2
+    );
+
+    coordinatorSocket?.emitOpen();
+    workerSocket?.emitOpen();
+    coordinatorChannel.emitJoinOk({});
+    workerChannel.emitJoinOk({});
+
+    const firstUserEvent = makeEvent(1, "user:alice", 1);
+    coordinatorChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    workerChannel.emit("events", {
+      events: [firstUserEvent],
+    });
+    await flush();
+
+    const workerBurst = [
+      makeEvent(2, "agent:worker", 2),
+      makeEvent(3, "agent:worker", 3),
+      makeEvent(4, "agent:worker", 4),
+    ];
+    coordinatorChannel.emit("events", {
+      events: workerBurst,
+    });
+    workerChannel.emit("events", {
+      events: workerBurst,
+    });
+    await flush();
+
+    coordinatorChannel.emit("events", {
+      events: [makeEvent(5, "user:alice", 5)],
+    });
+    await flush();
+
+    expect(coordinatorSeen).toEqual([1, 2, 3, 4, 5]);
+
+    stopCoordinator();
+    coordinator.disconnect();
+    worker.disconnect();
+  });
+
   it("joins from the stored cursor and replays retained events to late listeners", async () => {
     const store = new MemoryStore();
     store.save("ses_replay", {
