@@ -10,6 +10,7 @@ import {
   parseHttpUrl,
   request,
   requestWithBaseUrl,
+  stripTrailingSlashes,
   toApiBaseUrl,
   toWebSocketBaseUrl,
 } from "./transport";
@@ -48,7 +49,7 @@ function resolveAuthBaseUrl(
     return undefined;
   }
 
-  return parseHttpUrl(value).toString();
+  return stripTrailingSlashes(parseHttpUrl(value).toString());
 }
 
 function mergeAppendOptions(

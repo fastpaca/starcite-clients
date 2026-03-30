@@ -6,6 +6,8 @@ import {
 } from "./errors";
 import type { SocketManager } from "./socket-manager";
 
+const TRAILING_SLASHES_RE = /\/+$/;
+
 /**
  * Shared HTTP + WebSocket transport configuration.
  *
@@ -29,7 +31,7 @@ export function parseHttpUrl(value: string): URL {
     throw new StarciteError(`URL must use http:// or https://: ${value}`);
   }
 
-  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.pathname = url.pathname.replace(TRAILING_SLASHES_RE, "");
   return url;
 }
 
@@ -37,7 +39,7 @@ export function parseHttpUrl(value: string): URL {
  * Converts a Starcite base URL to the `/v1` API root used by this SDK.
  */
 export function toApiBaseUrl(baseUrl: string): string {
-  const value = parseHttpUrl(baseUrl).toString();
+  const value = stripTrailingSlashes(parseHttpUrl(baseUrl).toString());
   return value.endsWith("/v1") ? value : `${value}/v1`;
 }
 
@@ -47,7 +49,11 @@ export function toApiBaseUrl(baseUrl: string): string {
 export function toWebSocketBaseUrl(apiBaseUrl: string): string {
   const url = parseHttpUrl(apiBaseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return stripTrailingSlashes(url.toString());
+}
+
+export function stripTrailingSlashes(value: string): string {
+  return value.replace(TRAILING_SLASHES_RE, "");
 }
 
 /**
