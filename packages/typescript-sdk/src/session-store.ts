@@ -1,8 +1,6 @@
 import { z } from "zod";
 import { StarciteError } from "./errors";
 import {
-  type AppendEventRequest,
-  type SessionAppendStoreState,
   SessionAppendStoreStateSchema,
   type SessionStore,
   type SessionStoreState,
@@ -65,53 +63,8 @@ export interface WebStorageSessionStoreOptions<
   stateSchema?: z.ZodType<SessionStoreState<TEvent>>;
 }
 
-function cloneEvents<TEvent extends TailEvent>(
-  events: readonly TEvent[]
-): TEvent[] {
-  // Store boundaries should not share mutable arrays across callers.
-  return events.map((event) => structuredClone(event) as TEvent);
-}
-
-function cloneState<TEvent extends TailEvent>(
-  state: SessionStoreState<TEvent>
-): SessionStoreState<TEvent> {
-  return {
-    lastSeq: state.lastSeq,
-    cursor: state.cursor,
-    events: cloneEvents(state.events),
-    append: cloneAppendState(state.append),
-    metadata: state.metadata ? { ...state.metadata } : undefined,
-  };
-}
-
-function cloneAppendState(
-  state: SessionAppendStoreState | undefined
-): SessionAppendStoreState | undefined {
-  if (!state) {
-    return undefined;
-  }
-
-  return {
-    producerId: state.producerId,
-    lastAcknowledgedProducerSeq: state.lastAcknowledgedProducerSeq,
-    status: state.status,
-    lastFailure: state.lastFailure ? { ...state.lastFailure } : undefined,
-    pending: state.pending.map((append) => {
-      return {
-        id: append.id,
-        request: structuredClone(append.request) as AppendEventRequest,
-        enqueuedAtMs: append.enqueuedAtMs,
-        retryAttempt: append.retryAttempt,
-      };
-    }),
-  };
-}
-
 /**
  * Default in-memory session store.
- *
- * Persists both `lastSeq` and resume `cursor` for each session so late
- * subscribers can replay immediately after process-local reconnect/rebind.
  */
 export class MemoryStore<TEvent extends TailEvent = TailEvent>
   implements SessionStore<TEvent>
@@ -119,12 +72,11 @@ export class MemoryStore<TEvent extends TailEvent = TailEvent>
   private readonly sessions = new Map<string, SessionStoreState<TEvent>>();
 
   load(sessionId: string): SessionStoreState<TEvent> | undefined {
-    const stored = this.sessions.get(sessionId);
-    return stored ? cloneState(stored) : undefined;
+    return this.sessions.get(sessionId);
   }
 
   save(sessionId: string, state: SessionStoreState<TEvent>): void {
-    this.sessions.set(sessionId, cloneState(state));
+    this.sessions.set(sessionId, state);
   }
 
   clear(sessionId: string): void {
@@ -176,14 +128,11 @@ export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
       return undefined;
     }
 
-    return cloneState(parsed.data);
+    return parsed.data;
   }
 
   save(sessionId: string, state: SessionStoreState<TEvent>): void {
-    this.storage.setItem(
-      this.keyForSession(sessionId),
-      JSON.stringify(cloneState(state))
-    );
+    this.storage.setItem(this.keyForSession(sessionId), JSON.stringify(state));
   }
 
   clear(sessionId: string): void {

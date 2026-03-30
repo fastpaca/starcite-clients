@@ -1,9 +1,9 @@
 import type {
   AppendResult,
   SessionAppendInput,
-  SessionEvent,
   SessionEventListener,
   SessionOnEventOptions,
+  TailEvent,
 } from "@starcite/sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -14,11 +14,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export interface StarciteSessionLike {
   readonly id: string;
   append(input: SessionAppendInput): Promise<AppendResult>;
-  events(): readonly SessionEvent[];
+  events(): readonly TailEvent[];
   on(
     eventName: "event",
     listener: SessionEventListener,
-    options?: SessionOnEventOptions<SessionEvent>
+    options?: SessionOnEventOptions<TailEvent>
   ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
 }
@@ -32,13 +32,13 @@ export interface UseStarciteSessionOptions {
 }
 
 export interface UseStarciteSessionResult {
-  events: readonly SessionEvent[];
+  events: readonly TailEvent[];
   append: (input: SessionAppendInput) => Promise<AppendResult>;
 }
 
 const NOOP_APPEND = (): Promise<AppendResult> =>
   Promise.resolve({ seq: -1, deduped: false });
-const EMPTY_EVENTS: readonly SessionEvent[] = [];
+const EMPTY_EVENTS: readonly TailEvent[] = [];
 
 export function useStarciteSession(
   options: UseStarciteSessionOptions
@@ -46,7 +46,7 @@ export function useStarciteSession(
   const { session, id, onError } = options;
   const resetKey = id ?? session?.id ?? "__none__";
 
-  const [events, setEvents] = useState<readonly SessionEvent[]>([]);
+  const [events, setEvents] = useState<readonly TailEvent[]>([]);
 
   const refreshVersionRef = useRef(0);
   const sessionKeyRef = useRef(resetKey);
@@ -100,8 +100,8 @@ export function useStarciteSession(
   }, [refresh, resetKey]);
 
   const onEvent = useCallback(
-    (_event: SessionEvent, context?: { replayed: boolean }) => {
-      if (context?.replayed) {
+    (_event: TailEvent, context?: { phase: string }) => {
+      if (context?.phase === "replay") {
         scheduleReplay();
       } else {
         scheduleLive();

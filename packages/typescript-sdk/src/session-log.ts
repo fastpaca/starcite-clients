@@ -1,7 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
 import type {
-  SessionLogOptions,
   SessionSnapshot,
   SessionStoreState,
   TailCursor,
@@ -19,36 +18,16 @@ export interface SessionLogSubscriptionContext {
 /**
  * Canonical in-memory log for one session.
  *
- * Invariants:
- * - Maintains a best-effort committed mirror keyed by `seq`.
- * - Treats repeated identical events as idempotent no-ops.
- * - Accepts out-of-order or corrected server events and overwrites local state.
+ * Maintains a seq-indexed ordered history of committed events.
+ * Same seq = always overwrite (server is source of truth).
+ * New seq = insert in sorted order.
  */
 export class SessionLog {
   private readonly history: TailEvent[] = [];
   private readonly emitter = new EventEmitter<SessionLogEvents>();
-  private readonly canonicalBySeq = new Map<number, string>();
-  private maxEvents: number | undefined;
+  private readonly eventBySeq = new Map<number, TailEvent>();
   private appliedSeq = 0;
   private appliedCursor: TailCursor | undefined;
-
-  constructor(options: SessionLogOptions = {}) {
-    this.setMaxEvents(options.maxEvents);
-  }
-
-  setMaxEvents(maxEvents: number | undefined): void {
-    if (
-      maxEvents !== undefined &&
-      (!Number.isInteger(maxEvents) || maxEvents <= 0)
-    ) {
-      throw new StarciteError(
-        "Session log maxEvents must be a positive integer"
-      );
-    }
-
-    this.maxEvents = maxEvents;
-    this.enforceRetention();
-  }
 
   applyBatch(batch: TailEvent[]): TailEvent[] {
     const applied: TailEvent[] = [];
@@ -70,39 +49,28 @@ export class SessionLog {
       );
     }
 
-    const nextBySeq = new Map<number, TailEvent>();
-    const nextCanonicalBySeq = new Map<number, string>();
-    for (const event of state.events) {
-      if (event.seq > state.lastSeq) {
-        throw new StarciteError(
-          `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
-        );
-      }
+    const sorted = [...state.events]
+      .filter((event) => {
+        if (event.seq > state.lastSeq) {
+          throw new StarciteError(
+            `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
+          );
+        }
+        return true;
+      })
+      .sort((a, b) => a.seq - b.seq);
 
-      nextBySeq.set(event.seq, event);
-      nextCanonicalBySeq.set(event.seq, JSON.stringify(event));
-    }
-
-    const nextHistory = [...nextBySeq.values()].sort((left, right) => {
-      return left.seq - right.seq;
-    });
-    const latestEvent = nextHistory.at(-1);
+    const latestEvent = sorted.at(-1);
 
     this.history.length = 0;
-    this.history.push(...nextHistory);
-    this.canonicalBySeq.clear();
-    for (const [seq, canonical] of nextCanonicalBySeq.entries()) {
-      this.canonicalBySeq.set(seq, canonical);
+    this.history.push(...sorted);
+    this.eventBySeq.clear();
+    for (const event of sorted) {
+      this.eventBySeq.set(event.seq, event);
     }
+
     this.appliedSeq = state.lastSeq;
-    if (state.cursor) {
-      this.appliedCursor = state.cursor;
-    } else if (latestEvent?.cursor) {
-      this.appliedCursor = latestEvent.cursor;
-    } else {
-      this.appliedCursor = undefined;
-    }
-    this.enforceRetention();
+    this.appliedCursor = state.cursor ?? latestEvent?.cursor;
   }
 
   subscribe(
@@ -112,8 +80,7 @@ export class SessionLog {
     ) => void,
     options: { replay?: boolean } = {}
   ): () => void {
-    const shouldReplay = options.replay ?? true;
-    if (shouldReplay) {
+    if (options.replay ?? true) {
       for (const event of this.history) {
         listener(event, { replayed: true });
       }
@@ -123,52 +90,6 @@ export class SessionLog {
     return () => {
       this.emitter.off("event", listener);
     };
-  }
-
-  private apply(event: TailEvent): boolean {
-    const previousLastSeq = this.appliedSeq;
-    const incomingCanonical = JSON.stringify(event);
-    const existingCanonical = this.canonicalBySeq.get(event.seq);
-
-    if (existingCanonical === incomingCanonical) {
-      return false;
-    }
-
-    const oldestRetainedSeq = this.history[0]?.seq;
-    if (
-      existingCanonical === undefined &&
-      oldestRetainedSeq !== undefined &&
-      event.seq < oldestRetainedSeq
-    ) {
-      return false;
-    }
-
-    const existingIndex = this.history.findIndex((entry) => {
-      return entry.seq === event.seq;
-    });
-    if (existingIndex >= 0) {
-      this.history[existingIndex] = event;
-    } else {
-      const insertIndex = this.history.findIndex((entry) => {
-        return entry.seq > event.seq;
-      });
-      if (insertIndex === -1) {
-        this.history.push(event);
-      } else {
-        this.history.splice(insertIndex, 0, event);
-      }
-    }
-
-    this.canonicalBySeq.set(event.seq, incomingCanonical);
-    this.appliedSeq = Math.max(this.appliedSeq, event.seq);
-    if (
-      event.cursor &&
-      (this.appliedCursor === undefined || event.seq >= previousLastSeq)
-    ) {
-      this.appliedCursor = event.cursor;
-    }
-    this.enforceRetention();
-    return true;
   }
 
   state(syncing: boolean): SessionSnapshot {
@@ -181,7 +102,7 @@ export class SessionLog {
   }
 
   get events(): readonly TailEvent[] {
-    return this.history.slice();
+    return this.history;
   }
 
   get cursor(): TailCursor | undefined {
@@ -196,18 +117,40 @@ export class SessionLog {
     this.appliedCursor = cursor;
   }
 
-  private enforceRetention(): void {
-    if (this.maxEvents === undefined) {
-      return;
-    }
+  private apply(event: TailEvent): boolean {
+    const previousLastSeq = this.appliedSeq;
 
-    while (this.history.length > this.maxEvents) {
-      const removed = this.history.shift();
-      if (!removed) {
-        return;
+    if (this.eventBySeq.has(event.seq)) {
+      // Same seq — overwrite in place (server is source of truth)
+      const existingIndex = this.history.findIndex((e) => e.seq === event.seq);
+      if (existingIndex >= 0) {
+        this.history[existingIndex] = event;
+        this.eventBySeq.set(event.seq, event);
+      }
+    } else {
+      // New seq — insert in sorted order (fast path: append)
+      const lastSeq = this.history.at(-1)?.seq;
+      if (lastSeq === undefined || event.seq > lastSeq) {
+        this.history.push(event);
+      } else {
+        const insertAt = this.history.findIndex((e) => e.seq > event.seq);
+        if (insertAt === -1) {
+          this.history.push(event);
+        } else {
+          this.history.splice(insertAt, 0, event);
+        }
       }
 
-      this.canonicalBySeq.delete(removed.seq);
+      this.eventBySeq.set(event.seq, event);
     }
+
+    this.appliedSeq = Math.max(this.appliedSeq, event.seq);
+    if (
+      event.cursor &&
+      (this.appliedCursor === undefined || event.seq >= previousLastSeq)
+    ) {
+      this.appliedCursor = event.cursor;
+    }
+    return true;
   }
 }

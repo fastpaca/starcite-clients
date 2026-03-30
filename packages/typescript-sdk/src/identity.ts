@@ -1,30 +1,17 @@
 import { z } from "zod";
 
-const AGENT_PREFIX = "agent:";
-const USER_PREFIX = "user:";
-
 export const PrincipalTypeSchema = z.enum(["user", "agent"]);
 export type PrincipalType = z.infer<typeof PrincipalTypeSchema>;
 
-export const SessionCreatorPrincipalSchema = z.object({
-  tenant_id: z.string().min(1),
-  id: z.string().min(1),
-  type: PrincipalTypeSchema,
-});
+export interface SessionCreatorPrincipal {
+  tenant_id: string;
+  id: string;
+  type: PrincipalType;
+}
 
-export type SessionCreatorPrincipal = z.infer<
-  typeof SessionCreatorPrincipalSchema
->;
-
-export const SessionTokenPrincipalSchema = z.object({
-  type: PrincipalTypeSchema,
-  id: z.string().min(1),
-});
-
-export type SessionTokenPrincipal = z.infer<typeof SessionTokenPrincipalSchema>;
-
-function hasPrincipalPrefix(id: string): boolean {
-  return id.startsWith(AGENT_PREFIX) || id.startsWith(USER_PREFIX);
+export interface SessionTokenPrincipal {
+  type: PrincipalType;
+  id: string;
 }
 
 /**
@@ -40,7 +27,7 @@ export class StarciteIdentity {
     id: string;
     type: PrincipalType;
   }) {
-    if (hasPrincipalPrefix(options.id)) {
+    if (options.id.startsWith("agent:") || options.id.startsWith("user:")) {
       throw new Error(
         `StarciteIdentity id must not include a principal prefix; received '${options.id}'`
       );
@@ -71,13 +58,4 @@ export class StarciteIdentity {
   toActor(): string {
     return `${this.type}:${this.id}`;
   }
-}
-
-/**
- * Extracts the agent name from an actor value like `agent:planner`.
- */
-export function agentFromActor(actor: string): string | undefined {
-  return actor.startsWith(AGENT_PREFIX)
-    ? actor.slice(AGENT_PREFIX.length)
-    : undefined;
 }

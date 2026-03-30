@@ -2,39 +2,38 @@ import EventEmitter from "eventemitter3";
 import { decodeApiKeyContext, decodeSessionToken } from "./auth";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
-import { LifecycleRuntime } from "./lifecycle-runtime";
 import { StarciteSession } from "./session";
-import { SocketManager } from "./socket-manager";
+import {
+  type RejoinableChannel,
+  readJoinFailureReason,
+  SocketManager,
+} from "./socket-manager";
 import type { TransportConfig } from "./transport";
 import {
+  parseHttpUrl,
   request,
   requestWithBaseUrl,
+  stripTrailingSlashes,
   toApiBaseUrl,
   toWebSocketBaseUrl,
 } from "./transport";
-import type {
-  IssueSessionTokenInput,
-  RequestOptions,
-  SessionAppendOptions,
-  SessionCreatedLifecycleEvent,
-  SessionListOptions,
-  SessionListPage,
-  SessionLogOptions,
-  SessionRecord,
-  SessionStore,
-  StarciteOptions,
-} from "./types";
 import {
+  type IssueSessionTokenInput,
   IssueSessionTokenResponseSchema,
-  SessionListOptionsSchema,
+  LifecycleEventEnvelopeSchema,
+  type RequestOptions,
+  type SessionAppendOptions,
+  type SessionCreatedLifecycleEvent,
+  SessionCreatedLifecycleEventSchema,
+  type SessionListOptions,
+  type SessionListPage,
   SessionListPageSchema,
+  type SessionRecord,
   SessionRecordSchema,
+  type SessionStore,
+  type StarciteOptions,
 } from "./types";
 
-const DEFAULT_BASE_URL =
-  globalThis.process?.env?.STARCITE_BASE_URL ?? "http://localhost:4000";
-const DEFAULT_AUTH_URL = globalThis.process?.env?.STARCITE_AUTH_URL;
-const TRAILING_SLASHES_REGEX = /\/+$/;
 const LIFECYCLE_AUTH_ERROR_MESSAGE =
   "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.";
 
@@ -46,17 +45,15 @@ function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
   issuerAuthority: string | undefined
 ): string | undefined {
-  const value = explicitAuthUrl ?? DEFAULT_AUTH_URL ?? issuerAuthority;
+  const value =
+    explicitAuthUrl ??
+    globalThis.process?.env?.STARCITE_AUTH_URL ??
+    issuerAuthority;
   if (!value) {
     return undefined;
   }
 
-  const url = new URL(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new StarciteError("authUrl must use http:// or https://");
-  }
-
-  return url.toString().replace(TRAILING_SLASHES_REGEX, "");
+  return stripTrailingSlashes(parseHttpUrl(value).toString());
 }
 
 function mergeAppendOptions(
@@ -99,46 +96,45 @@ export class Starcite {
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredTenantId?: string;
-  private readonly socketAuthToken: string | undefined;
+  private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
   private readonly store: SessionStore | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
-  private lifecycleRuntime: LifecycleRuntime | undefined;
-  private lifecycleRefs = 0;
+  private lifecycleChannel: RejoinableChannel | undefined;
+  private closeLifecycleChannel: (() => void) | undefined;
+  private lifecycleBindingRef = 0;
 
   constructor(options: StarciteOptions = {}) {
-    const baseUrl = toApiBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
+    const baseUrl = toApiBaseUrl(
+      options.baseUrl ??
+        globalThis.process?.env?.STARCITE_BASE_URL ??
+        "http://localhost:4000"
+    );
     this.baseUrl = baseUrl;
 
-    const userFetch = options.fetch;
-    const fetchFn: typeof fetch = userFetch
-      ? (input, init) => userFetch(input, init)
-      : (input, init) => fetch(input, init);
+    const fetchFn =
+      options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
     const apiKey = options.apiKey;
-    let authorization: string | undefined;
     let issuerAuthority: string | undefined;
 
     if (apiKey) {
       const apiKeyContext = decodeApiKeyContext(apiKey);
-      authorization = `Bearer ${apiKey}`;
       issuerAuthority = apiKeyContext.issuerAuthority;
       this.inferredTenantId = apiKeyContext.tenantId;
     }
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
-
-    const socketAuthToken = apiKey;
+    this.apiKey = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
-    this.socketAuthToken = socketAuthToken;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
       baseUrl,
-      authorization: authorization ?? null,
+      bearerToken: apiKey ?? null,
       socketManager: new SocketManager({
         socketUrl: this.socketUrl,
-        token: socketAuthToken,
+        token: apiKey,
       }),
       fetchFn,
     };
@@ -161,31 +157,17 @@ export class Starcite {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): () => void {
-    if (!this.socketAuthToken) {
+    if (!this.apiKey) {
       throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
     }
 
-    this.ensureLifecycleRuntime();
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.lifecycle.on(eventName, listener as any);
+    this.ensureLifecycleChannelAttached();
 
-    if (eventName === "session.created") {
-      this.lifecycle.on(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.lifecycle.on(eventName, listener as (error: Error) => void);
-    }
-
-    this.lifecycleRefs += 1;
     return () => {
-      if (eventName === "session.created") {
-        this.off(
-          eventName,
-          listener as (event: SessionCreatedLifecycleEvent) => void
-        );
-      } else {
-        this.off(eventName, listener as (error: Error) => void);
-      }
+      // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+      this.off(eventName as any, listener as any);
     };
   }
 
@@ -200,20 +182,9 @@ export class Starcite {
       | ((event: SessionCreatedLifecycleEvent) => void)
       | ((error: Error) => void)
   ): void {
-    if (eventName === "session.created") {
-      this.lifecycle.off(
-        eventName,
-        listener as (event: SessionCreatedLifecycleEvent) => void
-      );
-    } else {
-      this.lifecycle.off(eventName, listener as (error: Error) => void);
-    }
-
-    this.lifecycleRefs = Math.max(0, this.lifecycleRefs - 1);
-    if (this.lifecycleRefs === 0) {
-      this.lifecycleRuntime?.close();
-      this.lifecycleRuntime = undefined;
-    }
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    this.lifecycle.off(eventName, listener as any);
+    this.detachLifecycleChannelIfIdle();
   }
 
   /**
@@ -249,7 +220,6 @@ export class Starcite {
    */
   session(input: {
     token: string;
-    logOptions?: SessionLogOptions;
     appendOptions?: SessionAppendOptions;
   }): StarciteSession;
   session(input: {
@@ -257,14 +227,12 @@ export class Starcite {
     id?: string;
     title?: string;
     metadata?: Record<string, unknown>;
-    logOptions?: SessionLogOptions;
     appendOptions?: SessionAppendOptions;
   }): Promise<StarciteSession>;
   session(
     input:
       | {
           token: string;
-          logOptions?: SessionLogOptions;
           appendOptions?: SessionAppendOptions;
         }
       | {
@@ -272,16 +240,11 @@ export class Starcite {
           id?: string;
           title?: string;
           metadata?: Record<string, unknown>;
-          logOptions?: SessionLogOptions;
           appendOptions?: SessionAppendOptions;
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
-      return this.sessionFromToken(
-        input.token,
-        input.logOptions,
-        input.appendOptions
-      );
+      return this.sessionFromToken(input.token, input.appendOptions);
     }
 
     return this.sessionFromIdentity(input);
@@ -294,19 +257,18 @@ export class Starcite {
     options: SessionListOptions = {},
     requestOptions?: RequestOptions
   ): Promise<SessionListPage> {
-    const parsed = SessionListOptionsSchema.parse(options);
     const query = new URLSearchParams();
 
-    if (parsed.limit !== undefined) {
-      query.set("limit", `${parsed.limit}`);
+    if (options.limit !== undefined) {
+      query.set("limit", `${options.limit}`);
     }
 
-    if (parsed.cursor !== undefined) {
-      query.set("cursor", parsed.cursor);
+    if (options.cursor !== undefined) {
+      query.set("cursor", options.cursor);
     }
 
-    if (parsed.metadata !== undefined) {
-      for (const [key, value] of Object.entries(parsed.metadata)) {
+    if (options.metadata !== undefined) {
+      for (const [key, value] of Object.entries(options.metadata)) {
         query.set(`metadata.${key}`, value);
       }
     }
@@ -329,7 +291,6 @@ export class Starcite {
     id?: string;
     title?: string;
     metadata?: Record<string, unknown>;
-    logOptions?: SessionLogOptions;
     appendOptions?: SessionAppendOptions;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
@@ -367,12 +328,9 @@ export class Starcite {
       id: sessionId,
       token: tokenResponse.token,
       identity: input.identity,
-      transport: this.buildSessionTransport(tokenResponse.token, {
-        token: tokenResponse.token,
-      }),
+      transport: this.buildSessionTransport(tokenResponse.token),
       store: this.store,
       record,
-      logOptions: input.logOptions,
       appendOptions: mergeAppendOptions(
         this.appendOptions,
         input.appendOptions
@@ -382,7 +340,6 @@ export class Starcite {
 
   private sessionFromToken(
     token: string,
-    logOptions?: SessionLogOptions,
     appendOptions?: SessionAppendOptions
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
@@ -398,28 +355,24 @@ export class Starcite {
       id: sessionId,
       token,
       identity: decoded.identity,
-      transport: this.buildSessionTransport(token, { token }),
+      transport: this.buildSessionTransport(token),
       store: this.store,
-      logOptions,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
     });
   }
 
-  private buildSessionTransport(
-    token: string,
-    socketAuth: { token: string | undefined }
-  ): TransportConfig {
+  private buildSessionTransport(token: string): TransportConfig {
     const socketManager =
-      socketAuth.token === this.socketAuthToken
+      token === this.apiKey
         ? this.transport.socketManager
         : new SocketManager({
             socketUrl: this.socketUrl,
-            token: socketAuth.token,
+            token,
           });
 
     return {
       ...this.transport,
-      authorization: `Bearer ${token}`,
+      bearerToken: token,
       socketManager,
     };
   }
@@ -444,7 +397,7 @@ export class Starcite {
   private issueSessionToken(
     input: IssueSessionTokenInput
   ): Promise<{ token: string; expires_in: number }> {
-    if (!this.transport.authorization) {
+    if (!this.transport.bearerToken) {
       throw new StarciteError(
         "session() with identity requires apiKey. Set StarciteOptions.apiKey."
       );
@@ -479,24 +432,97 @@ export class Starcite {
     return tenantId;
   }
 
-  private ensureLifecycleRuntime(): void {
-    if (this.lifecycleRuntime) {
+  private ensureLifecycleChannelAttached(): void {
+    if (
+      this.lifecycleChannel ||
+      this.lifecycle.listenerCount("session.created") === 0
+    ) {
       return;
     }
 
-    if (!this.socketAuthToken) {
-      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
+    const managed = this.transport.socketManager.openChannel<RejoinableChannel>(
+      {
+        topic: "lifecycle",
+        params: {},
+      }
+    );
+    const channel = managed.channel;
+
+    this.closeLifecycleChannel = managed.close;
+    this.lifecycleChannel = channel;
+
+    this.lifecycleBindingRef = channel.on("lifecycle", (payload) => {
+      this.handleLifecyclePayload(payload);
+    });
+
+    channel
+      .join()
+      .receive("error", (payload) => {
+        this.emitLifecycleError(
+          new StarciteError(
+            `Lifecycle subscription failed: ${readJoinFailureReason(payload)}`
+          )
+        );
+      })
+      .receive("timeout", () => {
+        this.emitLifecycleError(
+          new StarciteError("Lifecycle subscription failed: join timeout")
+        );
+      });
+  }
+
+  private handleLifecyclePayload(payload: unknown): void {
+    const event = (payload as { event?: unknown })?.event;
+    const envelope = LifecycleEventEnvelopeSchema.safeParse(event);
+    if (!envelope.success) {
+      this.emitLifecycleError(
+        new StarciteError(
+          `Invalid lifecycle payload: ${envelope.error.issues[0]?.message ?? "parse failed"}`
+        )
+      );
+      return;
     }
 
-    this.lifecycleRuntime = new LifecycleRuntime({
-      socketManager: this.transport.socketManager,
-    });
+    if (envelope.data.kind !== "session.created") {
+      return;
+    }
 
-    this.lifecycleRuntime.on("session.created", (event) => {
-      this.lifecycle.emit("session.created", event);
-    });
-    this.lifecycleRuntime.on("error", (error) => {
+    const parsed = SessionCreatedLifecycleEventSchema.safeParse(envelope.data);
+    if (!parsed.success) {
+      this.emitLifecycleError(
+        new StarciteError(
+          `Invalid session.created payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
+        )
+      );
+      return;
+    }
+
+    this.lifecycle.emit("session.created", parsed.data);
+  }
+
+  private detachLifecycleChannelIfIdle(): void {
+    if (this.lifecycle.listenerCount("session.created") > 0) {
+      return;
+    }
+
+    if (this.lifecycleChannel) {
+      this.lifecycleChannel.off("lifecycle", this.lifecycleBindingRef);
+      this.lifecycleChannel = undefined;
+    }
+
+    this.lifecycleBindingRef = 0;
+    this.closeLifecycleChannel?.();
+    this.closeLifecycleChannel = undefined;
+  }
+
+  private emitLifecycleError(error: Error): void {
+    if (this.lifecycle.listenerCount("error") > 0) {
       this.lifecycle.emit("error", error);
+      return;
+    }
+
+    queueMicrotask(() => {
+      throw error;
     });
   }
 }
