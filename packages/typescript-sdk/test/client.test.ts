@@ -324,12 +324,12 @@ describe("Starcite", () => {
 
     const firstTransport = (
       firstSession as unknown as {
-        transport: { authorization: string; socketManager: unknown };
+        transport: { bearerToken: string; socketManager: unknown };
       }
     ).transport;
     const secondTransport = (
       secondSession as unknown as {
-        transport: { authorization: string; socketManager: unknown };
+        transport: { bearerToken: string; socketManager: unknown };
       }
     ).transport;
     const clientSocketManager = (
@@ -338,11 +338,11 @@ describe("Starcite", () => {
       }
     ).transport.socketManager;
 
-    expect(firstTransport.authorization).toBe(
-      `Bearer ${makeTailSessionToken("ses_same", "agent-one")}`
+    expect(firstTransport.bearerToken).toBe(
+      makeTailSessionToken("ses_same", "agent-one")
     );
-    expect(secondTransport.authorization).toBe(
-      `Bearer ${makeTailSessionToken("ses_same", "agent-two")}`
+    expect(secondTransport.bearerToken).toBe(
+      makeTailSessionToken("ses_same", "agent-two")
     );
     expect(firstTransport.socketManager).not.toBe(clientSocketManager);
     expect(secondTransport.socketManager).not.toBe(clientSocketManager);

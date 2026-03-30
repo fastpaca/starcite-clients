@@ -4,7 +4,7 @@ import { useStarciteSession } from "@starcite/react";
 import {
   LocalStorageSessionStore,
   Starcite,
-  type SessionEvent,
+  type TailEvent,
   type StarciteSession,
 } from "@starcite/sdk";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
@@ -459,7 +459,7 @@ function InputBar({ onSend }: { onSend: (text: string) => void }) {
   );
 }
 
-function derivePresentation(events: readonly SessionEvent[]): FeedPresentation {
+function derivePresentation(events: readonly TailEvent[]): FeedPresentation {
   const committed: FeedEntry[] = [];
   const pendingByAgent = new Map<string, FeedEntry>();
   const agents = new Map<string, AgentColor>([
@@ -525,7 +525,7 @@ function derivePresentation(events: readonly SessionEvent[]): FeedPresentation {
   return { agents, committed, pending: [...pendingByAgent.values()] };
 }
 
-function payloadOf(event: SessionEvent): Record<string, unknown> {
+function payloadOf(event: TailEvent): Record<string, unknown> {
   const payload = event.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return {};

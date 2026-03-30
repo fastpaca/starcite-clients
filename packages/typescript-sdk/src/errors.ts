@@ -1,5 +1,3 @@
-import type { StarciteErrorPayload } from "./types";
-
 /**
  * Base error type for SDK-level failures.
  */
@@ -19,13 +17,13 @@ export class StarciteApiError extends StarciteError {
   /** Stable API error code (or synthesized `http_<status>` fallback). */
   readonly code: string;
   /** Parsed API error payload when available. */
-  readonly payload: StarciteErrorPayload | null;
+  readonly payload: Record<string, unknown> | null;
 
   constructor(
     message: string,
     status: number,
     code: string,
-    payload: StarciteErrorPayload | null
+    payload: Record<string, unknown> | null
   ) {
     super(message);
     this.name = "StarciteApiError";
@@ -50,7 +48,7 @@ export type StarciteTailErrorStage = "connect" | "stream" | "gap";
 /**
  * Thrown for tail-stream failures with structured stage/context fields.
  */
-export class StarciteTailError extends StarciteConnectionError {
+export class StarciteTailError extends StarciteError {
   /** Session id tied to this tail stream. */
   readonly sessionId: string;
   /** Failure stage in the tail lifecycle. */

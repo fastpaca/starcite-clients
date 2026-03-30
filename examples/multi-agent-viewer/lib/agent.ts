@@ -1,6 +1,6 @@
 import { openai } from "@ai-sdk/openai";
 import { streamText, tool } from "ai";
-import { type SessionEvent, type StarciteSession } from "@starcite/sdk";
+import { type TailEvent, type StarciteSession } from "@starcite/sdk";
 import { z } from "zod";
 import { starcite } from "./starcite";
 
@@ -219,7 +219,7 @@ function slugify(value: string): string {
   return slug || "agent";
 }
 
-function messageText(event: SessionEvent): string {
+function messageText(event: TailEvent): string {
   const payload = event.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return "";

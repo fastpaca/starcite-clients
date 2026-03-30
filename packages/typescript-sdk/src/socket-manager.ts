@@ -8,6 +8,32 @@ export interface ManagedChannel<TChannel extends Channel = Channel> {
   close: () => void;
 }
 
+export interface RejoinableChannel extends Channel {
+  rejoin: (timeout?: number) => void;
+}
+
+export function readJoinFailureReason(payload: unknown): string {
+  if (payload instanceof Error) {
+    return payload.message;
+  }
+
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (typeof payload === "object" && payload !== null) {
+    if ("reason" in payload && typeof payload.reason === "string") {
+      return payload.reason;
+    }
+
+    if ("message" in payload && typeof payload.message === "string") {
+      return payload.message;
+    }
+  }
+
+  return "join failed";
+}
+
 export class SocketManager {
   private activeChannelCount = 0;
   private readonly socketUrl: string;
@@ -60,7 +86,7 @@ export class SocketManager {
   }
 
   private releaseChannel(): void {
-    this.activeChannelCount = Math.max(0, this.activeChannelCount - 1);
+    this.activeChannelCount -= 1;
     if (this.activeChannelCount > 0) {
       return;
     }

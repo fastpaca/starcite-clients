@@ -1,36 +1,13 @@
 import { z } from "zod";
-import {
-  SessionCreatorPrincipalSchema as SessionCreatorPrincipalSchemaValue,
-  SessionTokenPrincipalSchema as SessionTokenPrincipalSchemaValue,
-} from "./identity";
-
-export const SessionCreatorPrincipalSchema = SessionCreatorPrincipalSchemaValue;
-export const SessionTokenPrincipalSchema = SessionTokenPrincipalSchemaValue;
 
 const ArbitraryObjectSchema = z.record(z.unknown());
 
-const SessionTokenScopeSchema = z.enum(["session:read", "session:append"]);
-
-export type SessionTokenScope = z.infer<typeof SessionTokenScopeSchema>;
-
-/**
- * Request payload for minting a session token from the auth issuer service.
- */
-export const IssueSessionTokenInputSchema = z.object({
-  session_id: z.string().min(1),
-  principal: SessionTokenPrincipalSchema,
-  scopes: z.array(SessionTokenScopeSchema).min(1),
-  ttl_seconds: z
-    .number()
-    .int()
-    .positive()
-    .max(24 * 60 * 60)
-    .optional(),
-});
-
-export type IssueSessionTokenInput = z.infer<
-  typeof IssueSessionTokenInputSchema
->;
+export interface IssueSessionTokenInput {
+  session_id: string;
+  principal: { type: "user" | "agent"; id: string };
+  scopes: ("session:read" | "session:append")[];
+  ttl_seconds?: number;
+}
 
 /**
  * Response payload returned by the auth issuer service when minting a session token.
@@ -39,25 +16,6 @@ export const IssueSessionTokenResponseSchema = z.object({
   token: z.string().min(1),
   expires_in: z.number().int().positive(),
 });
-
-export type IssueSessionTokenResponse = z.infer<
-  typeof IssueSessionTokenResponseSchema
->;
-
-/**
- * Request payload for creating a session.
- */
-export const CreateSessionInputSchema = z.object({
-  id: z.string().optional(),
-  title: z.string().optional(),
-  metadata: ArbitraryObjectSchema.optional(),
-  creator_principal: SessionCreatorPrincipalSchema.optional(),
-});
-
-/**
- * Inferred TypeScript type for {@link CreateSessionInputSchema}.
- */
-export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
 
 /**
  * Session record returned by the Starcite API.
@@ -148,16 +106,9 @@ export interface AppendResult {
 }
 
 /**
- * Seq-only cursor used by the public tail stream.
- */
-export const TailWireCursorSchema = z.number().int().nonnegative();
-
-export type TailWireCursor = z.infer<typeof TailWireCursorSchema>;
-
-/**
  * Tail resume cursor accepted by the SDK.
  */
-export const TailCursorSchema = TailWireCursorSchema;
+export const TailCursorSchema = z.number().int().nonnegative();
 
 /**
  * User-facing tail cursor input.
@@ -165,16 +116,11 @@ export const TailCursorSchema = TailWireCursorSchema;
 export type TailCursor = z.infer<typeof TailCursorSchema>;
 
 /**
- * Tail frame batch size accepted by the SDK.
- */
-export const TailBatchSizeSchema = z.number().int().min(1).max(1000);
-
-/**
  * Raw event frame shape emitted by the Starcite tail stream.
  */
 export const TailEventSchema = z.object({
   seq: z.number().int().nonnegative(),
-  cursor: TailWireCursorSchema.optional(),
+  cursor: TailCursorSchema.optional(),
   type: z.string().min(1),
   payload: ArbitraryObjectSchema,
   actor: z.string().min(1),
@@ -193,11 +139,6 @@ export const TailEventSchema = z.object({
 export type TailEvent = z.infer<typeof TailEventSchema>;
 
 /**
- * Canonical session event surfaced by the SDK.
- */
-export type SessionEvent = TailEvent;
-
-/**
  * Listener dispatch phase for `session.on("event")`.
  */
 export type SessionEventPhase = "replay" | "live";
@@ -210,16 +151,12 @@ export interface SessionEventContext {
    * Indicates whether this event originated from retained replay or live tail sync.
    */
   phase: SessionEventPhase;
-  /**
-   * Convenience flag for `phase === "replay"`.
-   */
-  replayed: boolean;
 }
 
 /**
  * Session event listener signature.
  */
-export type SessionEventListener<TEvent extends SessionEvent = SessionEvent> = (
+export type SessionEventListener<TEvent extends TailEvent = TailEvent> = (
   event: TEvent,
   context: SessionEventContext
 ) => void | Promise<void>;
@@ -227,9 +164,7 @@ export type SessionEventListener<TEvent extends SessionEvent = SessionEvent> = (
 /**
  * Listener options for `session.on("event", ...)`.
  */
-export interface SessionOnEventOptions<
-  TEvent extends SessionEvent = SessionEvent,
-> {
+export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
   /**
    * Whether retained in-memory events should be replayed to this listener.
    *
@@ -254,10 +189,10 @@ export interface SessionOnEventOptions<
 export const TailGapSchema = z.object({
   type: z.literal("gap"),
   reason: z.enum(["cursor_expired", "resume_invalidated"]),
-  from_cursor: TailWireCursorSchema,
-  next_cursor: TailWireCursorSchema,
-  committed_cursor: TailWireCursorSchema,
-  earliest_available_cursor: TailWireCursorSchema,
+  from_cursor: TailCursorSchema,
+  next_cursor: TailCursorSchema,
+  committed_cursor: TailCursorSchema,
+  earliest_available_cursor: TailCursorSchema,
 });
 
 /**
@@ -271,25 +206,6 @@ export type TailGap = z.infer<typeof TailGapSchema>;
 export const TailTokenExpiredPayloadSchema = z.object({
   reason: z.literal("token_expired"),
 });
-
-/**
- * Inferred TypeScript type for {@link TailTokenExpiredPayloadSchema}.
- */
-export type TailTokenExpiredPayload = z.infer<
-  typeof TailTokenExpiredPayloadSchema
->;
-
-/**
- * Retention options for a session's in-memory canonical log.
- */
-export interface SessionLogOptions {
-  /**
-   * Maximum number of events retained in memory.
-   *
-   * When omitted, the log keeps all applied events for the current runtime.
-   */
-  maxEvents?: number;
-}
 
 /**
  * Snapshot of a session's canonical in-memory log state.
@@ -569,37 +485,26 @@ export interface SessionStore<TEvent extends TailEvent = TailEvent> {
  * The SDK manages `producer_id` and `producer_seq` automatically.
  * Provide `text` or `payload`, and optionally override `actor`.
  */
-export const SessionAppendInputSchema = z
-  .object({
-    text: z.string().optional(),
-    payload: ArbitraryObjectSchema.optional(),
-    type: z.string().optional(),
-    actor: z.string().min(1).optional(),
-    source: z.string().optional(),
-    metadata: ArbitraryObjectSchema.optional(),
-    refs: ArbitraryObjectSchema.optional(),
-    idempotencyKey: z.string().optional(),
-    expectedSeq: z.number().int().nonnegative().optional(),
-  })
-  .refine((value) => !!(value.text || value.payload), {
-    message: "append() requires either 'text' or an object 'payload'",
-  });
-
-/**
- * Inferred TypeScript type for {@link SessionAppendInputSchema}.
- */
-export type SessionAppendInput = z.infer<typeof SessionAppendInputSchema>;
+export interface SessionAppendInput {
+  text?: string;
+  payload?: Record<string, unknown>;
+  type?: string;
+  actor?: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  refs?: Record<string, unknown>;
+  idempotencyKey?: string;
+  expectedSeq?: number;
+}
 
 /**
  * Options for listing sessions.
  */
-export const SessionListOptionsSchema = z.object({
-  limit: z.number().int().positive().optional(),
-  cursor: z.string().min(1).optional(),
-  metadata: z.record(z.string().min(1), z.string().min(1)).optional(),
-});
-
-export type SessionListOptions = z.input<typeof SessionListOptionsSchema>;
+export interface SessionListOptions {
+  limit?: number;
+  cursor?: string;
+  metadata?: Record<string, string>;
+}
 
 /**
  * Options forwarded to individual HTTP requests.
@@ -665,8 +570,3 @@ export const SessionCreatedLifecycleEventSchema = z.object({
 export type SessionCreatedLifecycleEvent = z.infer<
   typeof SessionCreatedLifecycleEventSchema
 >;
-
-/**
- * Error payload shape returned by non-2xx API responses.
- */
-export type StarciteErrorPayload = Record<string, unknown>;

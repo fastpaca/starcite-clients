@@ -1,4 +1,4 @@
-import type { SessionEvent } from "@starcite/sdk";
+import type { TailEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
@@ -59,7 +59,7 @@ function readChunkType(payload: unknown): string | undefined {
   return result.success ? result.data.chunk.type : undefined;
 }
 
-function isAssistantOpen(events: readonly SessionEvent[]): boolean {
+function isAssistantOpen(events: readonly TailEvent[]): boolean {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (!event || event.type !== chatAssistantChunkEventType) {

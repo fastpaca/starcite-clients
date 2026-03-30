@@ -1,9 +1,9 @@
 import type {
   SessionAppendInput,
-  SessionEvent,
   SessionEventContext,
   SessionEventListener,
   SessionOnEventOptions,
+  TailEvent,
 } from "@starcite/sdk";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { UIMessage } from "ai";
@@ -24,19 +24,19 @@ class FakeSession implements StarciteChatSession {
   readonly id: string;
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
-  private readonly eventLog: SessionEvent[];
+  private readonly eventLog: TailEvent[];
   private nextSeq: number;
 
   failNextAppend = false;
   appendCalls: SessionAppendInput[] = [];
 
-  constructor(id: string, seedEvents: SessionEvent[] = []) {
+  constructor(id: string, seedEvents: TailEvent[] = []) {
     this.id = id;
     this.eventLog = [...seedEvents];
     this.nextSeq = (seedEvents.at(-1)?.seq ?? 0) + 1;
   }
 
-  events(): readonly SessionEvent[] {
+  events(): readonly TailEvent[] {
     return [...this.eventLog];
   }
 
@@ -58,7 +58,7 @@ class FakeSession implements StarciteChatSession {
   on(
     eventName: "event",
     listener: SessionEventListener,
-    _options?: SessionOnEventOptions<SessionEvent>
+    _options?: SessionOnEventOptions<TailEvent>
   ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
@@ -95,7 +95,7 @@ class FakeSession implements StarciteChatSession {
       actor: "agent:test",
       producer_id: "producer:test",
       producer_seq: seq,
-    } as SessionEvent;
+    } as TailEvent;
 
     this.eventLog.push(event);
     for (const listener of this.eventListeners) {
@@ -104,11 +104,11 @@ class FakeSession implements StarciteChatSession {
   }
 
   emitEvent(type: string, payload: unknown): void {
-    this.emitWithContext(type, payload, { phase: "live", replayed: false });
+    this.emitWithContext(type, payload, { phase: "live" });
   }
 
   emitReplayEvent(type: string, payload: unknown): void {
-    this.emitWithContext(type, payload, { phase: "replay", replayed: true });
+    this.emitWithContext(type, payload, { phase: "replay" });
   }
 
   emitError(error: Error): void {
@@ -201,7 +201,7 @@ describe("useStarciteChat", () => {
         producer_id: "producer:agent",
         producer_seq: 4,
       },
-    ] as SessionEvent[];
+    ] as TailEvent[];
 
     const session = new FakeSession("ses_history", seedEvents);
     const { result } = renderHook(() => useStarciteChat({ session }));
@@ -420,7 +420,7 @@ describe("useStarciteChat", () => {
         producer_id: "producer:user",
         producer_seq: 1,
       },
-    ] as SessionEvent[]);
+    ] as TailEvent[]);
 
     const { result, rerender } = renderHook(
       ({ session }) => useStarciteChat({ session }),
@@ -509,7 +509,7 @@ describe("useStarciteChat", () => {
         producer_id: "producer:agent",
         producer_seq: 4,
       },
-    ] as SessionEvent[];
+    ] as TailEvent[];
 
     const firstSession = new FakeSession("ses_refresh", seedEvents);
     const { result, rerender } = renderHook(
@@ -604,7 +604,7 @@ describe("useStarciteChat", () => {
         producer_id: "producer:agent",
         producer_seq: 4,
       },
-    ] as SessionEvent[]);
+    ] as TailEvent[]);
 
     const { result } = renderHook(() => useStarciteChat({ session }));
 
