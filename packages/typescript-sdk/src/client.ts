@@ -114,7 +114,8 @@ export class Starcite {
     this.baseUrl = baseUrl;
 
     const fetchFn =
-      options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+      options.fetch ??
+      ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
     const apiKey = options.apiKey;
     let issuerAuthority: string | undefined;
 
