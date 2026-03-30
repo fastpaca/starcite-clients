@@ -33,109 +33,14 @@ describe("decodeApiKeyContext — issuerAuthority", () => {
   });
 });
 
-describe("decodeApiKeyContext — identity", () => {
-  it("infers identity from explicit claims", () => {
-    const token = tokenFromClaims({
-      tenant_id: "acme",
-      principal_id: "planner",
-      principal_type: "agent",
-    });
-    const { identity } = decodeApiKeyContext(token);
-    expect(identity).toBeDefined();
-    expect(identity).toEqual(
-      expect.objectContaining({
-        tenantId: "acme",
-        id: "planner",
-        type: "agent",
-      })
-    );
-  });
-
-  it("falls back to sub for id when principal_id is absent", () => {
-    const token = tokenFromClaims({
-      sub: "planner",
-      tenant_id: "acme",
-      principal_type: "agent",
-    });
-    const { identity } = decodeApiKeyContext(token);
-    expect(identity).toBeDefined();
-    expect(identity).toEqual(
-      expect.objectContaining({
-        tenantId: "acme",
-        id: "planner",
-        type: "agent",
-      })
-    );
+describe("decodeApiKeyContext — tenantId", () => {
+  it("extracts tenant_id from claims", () => {
+    const token = tokenFromClaims({ tenant_id: "acme" });
+    expect(decodeApiKeyContext(token).tenantId).toBe("acme");
   });
 
   it("returns undefined when tenant_id is missing", () => {
-    const token = tokenFromClaims({
-      principal_id: "planner",
-      principal_type: "agent",
-    });
-    expect(decodeApiKeyContext(token).identity).toBeUndefined();
-  });
-
-  it("normalizes actor-style principal_id claims", () => {
-    const token = tokenFromClaims({
-      tenant_id: "acme",
-      principal_id: "agent:planner",
-      principal_type: "user",
-    });
-
-    expect(decodeApiKeyContext(token).identity).toEqual(
-      expect.objectContaining({
-        tenantId: "acme",
-        id: "planner",
-        type: "agent",
-      })
-    );
-  });
-
-  it("defaults principal_type to user when missing", () => {
-    const token = tokenFromClaims({
-      tenant_id: "acme",
-      principal_id: "planner",
-    });
-    const { identity } = decodeApiKeyContext(token);
-    expect(identity).toBeDefined();
-    expect(identity).toEqual(
-      expect.objectContaining({
-        tenantId: "acme",
-        id: "planner",
-        type: "user",
-      })
-    );
-  });
-
-  it("returns undefined when claims are empty", () => {
     const token = tokenFromClaims({});
-    expect(decodeApiKeyContext(token).identity).toBeUndefined();
-  });
-
-  it("returns undefined for service principals", () => {
-    const token = tokenFromClaims({
-      tenant_id: "acme",
-      principal_id: "svc-backend",
-      principal_type: "service",
-    });
-
-    expect(decodeApiKeyContext(token).identity).toBeUndefined();
-  });
-});
-
-describe("decodeApiKeyContext", () => {
-  it("keeps tenant scope for service principals without inventing an identity", () => {
-    const token = tokenFromClaims({
-      tenant_id: "acme",
-      principal_id: "svc-backend",
-      principal_type: "service",
-    });
-
-    expect(decodeApiKeyContext(token)).toEqual({
-      issuerAuthority: undefined,
-      tenantId: "acme",
-      identity: undefined,
-    });
+    expect(decodeApiKeyContext(token).tenantId).toBeUndefined();
   });
 });

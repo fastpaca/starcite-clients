@@ -104,11 +104,11 @@ class FakeSession implements StarciteChatSession {
   }
 
   emitEvent(type: string, payload: unknown): void {
-    this.emitWithContext(type, payload, { phase: "live", replayed: false });
+    this.emitWithContext(type, payload, { phase: "live" });
   }
 
   emitReplayEvent(type: string, payload: unknown): void {
-    this.emitWithContext(type, payload, { phase: "replay", replayed: true });
+    this.emitWithContext(type, payload, { phase: "replay" });
   }
 
   emitError(error: Error): void {

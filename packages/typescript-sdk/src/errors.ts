@@ -48,7 +48,7 @@ export type StarciteTailErrorStage = "connect" | "stream" | "gap";
 /**
  * Thrown for tail-stream failures with structured stage/context fields.
  */
-export class StarciteTailError extends StarciteConnectionError {
+export class StarciteTailError extends StarciteError {
   /** Session id tied to this tail stream. */
   readonly sessionId: string;
   /** Failure stage in the tail lifecycle. */

@@ -399,7 +399,7 @@ export class AppendQueue {
       lastAcknowledgedProducerSeq: this.appendLastAcknowledgedProducerSeq,
       pending: this.appendQueue.map((item) => ({
         id: item.id,
-        request: structuredClone(item.request) as AppendEventRequest,
+        request: item.request,
         enqueuedAtMs: item.enqueuedAtMs,
         retryAttempt: item.retryAttempt,
       })),
@@ -423,7 +423,7 @@ export class AppendQueue {
     for (const pending of storedState.pending) {
       this.appendQueue.push({
         id: pending.id,
-        request: structuredClone(pending.request) as AppendEventRequest,
+        request: pending.request,
         enqueuedAtMs: pending.enqueuedAtMs,
         retryAttempt: pending.retryAttempt ?? 0,
       });
@@ -832,7 +832,7 @@ export class AppendQueue {
   ): SessionPendingAppend {
     return {
       id: item.id,
-      request: structuredClone(item.request) as AppendEventRequest,
+      request: item.request,
       enqueuedAtMs: item.enqueuedAtMs,
       retryAttempt: item.retryAttempt,
     };

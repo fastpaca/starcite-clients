@@ -24,7 +24,6 @@ import {
   type SessionEventContext,
   type SessionEventListener,
   type SessionGapListener,
-  type SessionLogOptions,
   type SessionOnEventOptions,
   type SessionRecord,
   type SessionSnapshot,
@@ -51,7 +50,6 @@ export interface StarciteSessionOptions {
   transport: TransportConfig;
   store?: SessionStore;
   record?: SessionRecord;
-  logOptions?: SessionLogOptions;
   appendOptions?: SessionAppendOptions;
 }
 
@@ -100,7 +98,7 @@ export class StarciteSession {
     this.transport = options.transport;
     this.record = options.record;
     this.store = options.store;
-    this.log = new SessionLog(options.logOptions);
+    this.log = new SessionLog();
 
     this.outbox = new AppendQueue({
       sessionId: options.id,
@@ -189,9 +187,9 @@ export class StarciteSession {
             return;
           }
 
-          const classifiedContext: SessionEventContext = logContext.replayed
-            ? { phase: "replay", replayed: true }
-            : { phase: "live", replayed: false };
+          const classifiedContext: SessionEventContext = {
+            phase: logContext.replayed ? "replay" : "live",
+          };
 
           try {
             this.observeListenerResult(
@@ -298,14 +296,6 @@ export class StarciteSession {
     this.eventSubscriptions.clear();
     this.detachTailChannel();
     this.lifecycle.removeAllListeners();
-  }
-
-  /**
-   * Updates in-memory session log retention.
-   */
-  setLogOptions(options: SessionLogOptions): void {
-    this.log.setMaxEvents(options.maxEvents);
-    this.persistLogState();
   }
 
   /**

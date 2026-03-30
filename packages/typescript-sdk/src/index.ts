@@ -42,7 +42,6 @@ export type {
   SessionListItem,
   SessionListOptions,
   SessionListPage,
-  SessionLogOptions,
   SessionOnEventOptions,
   SessionRecord,
   SessionSnapshot,

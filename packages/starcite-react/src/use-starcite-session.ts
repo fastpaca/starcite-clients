@@ -100,8 +100,8 @@ export function useStarciteSession(
   }, [refresh, resetKey]);
 
   const onEvent = useCallback(
-    (_event: TailEvent, context?: { replayed: boolean }) => {
-      if (context?.replayed) {
+    (_event: TailEvent, context?: { phase: string }) => {
+      if (context?.phase === "replay") {
         scheduleReplay();
       } else {
         scheduleLive();

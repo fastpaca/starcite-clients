@@ -151,10 +151,6 @@ export interface SessionEventContext {
    * Indicates whether this event originated from retained replay or live tail sync.
    */
   phase: SessionEventPhase;
-  /**
-   * Convenience flag for `phase === "replay"`.
-   */
-  replayed: boolean;
 }
 
 /**
@@ -210,18 +206,6 @@ export type TailGap = z.infer<typeof TailGapSchema>;
 export const TailTokenExpiredPayloadSchema = z.object({
   reason: z.literal("token_expired"),
 });
-
-/**
- * Retention options for a session's in-memory canonical log.
- */
-export interface SessionLogOptions {
-  /**
-   * Maximum number of events retained in memory.
-   *
-   * When omitted, the log keeps all applied events for the current runtime.
-   */
-  maxEvents?: number;
-}
 
 /**
  * Snapshot of a session's canonical in-memory log state.

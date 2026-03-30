@@ -1,7 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
 import type {
-  SessionLogOptions,
   SessionSnapshot,
   SessionStoreState,
   TailCursor,
@@ -20,35 +19,15 @@ export interface SessionLogSubscriptionContext {
  * Canonical in-memory log for one session.
  *
  * Maintains a seq-indexed ordered history of committed events.
- * Duplicate deliveries at the same seq are idempotent no-ops.
- * Server corrections at an existing seq overwrite and re-emit.
+ * Same seq = always overwrite (server is source of truth).
+ * New seq = insert in sorted order.
  */
 export class SessionLog {
   private readonly history: TailEvent[] = [];
   private readonly emitter = new EventEmitter<SessionLogEvents>();
-  private readonly seenSeqs = new Set<number>();
   private readonly eventBySeq = new Map<number, TailEvent>();
-  private maxEvents: number | undefined;
   private appliedSeq = 0;
   private appliedCursor: TailCursor | undefined;
-
-  constructor(options: SessionLogOptions = {}) {
-    this.setMaxEvents(options.maxEvents);
-  }
-
-  setMaxEvents(maxEvents: number | undefined): void {
-    if (
-      maxEvents !== undefined &&
-      (!Number.isInteger(maxEvents) || maxEvents <= 0)
-    ) {
-      throw new StarciteError(
-        "Session log maxEvents must be a positive integer"
-      );
-    }
-
-    this.maxEvents = maxEvents;
-    this.enforceRetention();
-  }
 
   applyBatch(batch: TailEvent[]): TailEvent[] {
     const applied: TailEvent[] = [];
@@ -70,32 +49,28 @@ export class SessionLog {
       );
     }
 
-    // Deduplicate and validate in one pass
-    const bySeq = new Map<number, TailEvent>();
-    for (const event of state.events) {
-      if (event.seq > state.lastSeq) {
-        throw new StarciteError(
-          `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
-        );
-      }
-      bySeq.set(event.seq, event);
-    }
+    const sorted = [...state.events]
+      .filter((event) => {
+        if (event.seq > state.lastSeq) {
+          throw new StarciteError(
+            `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
+          );
+        }
+        return true;
+      })
+      .sort((a, b) => a.seq - b.seq);
 
-    const sorted = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
     const latestEvent = sorted.at(-1);
 
     this.history.length = 0;
     this.history.push(...sorted);
-    this.seenSeqs.clear();
     this.eventBySeq.clear();
     for (const event of sorted) {
-      this.seenSeqs.add(event.seq);
       this.eventBySeq.set(event.seq, event);
     }
 
     this.appliedSeq = state.lastSeq;
     this.appliedCursor = state.cursor ?? latestEvent?.cursor;
-    this.enforceRetention();
   }
 
   subscribe(
@@ -127,7 +102,7 @@ export class SessionLog {
   }
 
   get events(): readonly TailEvent[] {
-    return this.history.slice();
+    return this.history;
   }
 
   get cursor(): TailCursor | undefined {
@@ -145,29 +120,15 @@ export class SessionLog {
   private apply(event: TailEvent): boolean {
     const previousLastSeq = this.appliedSeq;
 
-    // Fast path: we've seen this seq before
-    if (this.seenSeqs.has(event.seq)) {
-      const existing = this.eventBySeq.get(event.seq);
-
-      // Identical event redelivery — skip
-      if (existing && this.eventsEqual(existing, event)) {
-        return false;
-      }
-
-      // Server correction at same seq — overwrite
+    if (this.eventBySeq.has(event.seq)) {
+      // Same seq — overwrite in place (server is source of truth)
       const existingIndex = this.history.findIndex((e) => e.seq === event.seq);
       if (existingIndex >= 0) {
         this.history[existingIndex] = event;
         this.eventBySeq.set(event.seq, event);
       }
     } else {
-      // Older than retained window — ignore
-      const oldestSeq = this.history[0]?.seq;
-      if (oldestSeq !== undefined && event.seq < oldestSeq) {
-        return false;
-      }
-
-      // Insert in sorted order (fast path: append)
+      // New seq — insert in sorted order (fast path: append)
       const lastSeq = this.history.at(-1)?.seq;
       if (lastSeq === undefined || event.seq > lastSeq) {
         this.history.push(event);
@@ -180,7 +141,6 @@ export class SessionLog {
         }
       }
 
-      this.seenSeqs.add(event.seq);
       this.eventBySeq.set(event.seq, event);
     }
 
@@ -191,75 +151,6 @@ export class SessionLog {
     ) {
       this.appliedCursor = event.cursor;
     }
-    this.enforceRetention();
     return true;
   }
-
-  /**
-   * Compares two events by their identifying/content fields.
-   * Avoids JSON.stringify — uses direct field comparison.
-   */
-  private eventsEqual(a: TailEvent, b: TailEvent): boolean {
-    return (
-      a.seq === b.seq &&
-      a.type === b.type &&
-      a.actor === b.actor &&
-      a.producer_id === b.producer_id &&
-      a.producer_seq === b.producer_seq &&
-      a.source === b.source &&
-      a.idempotency_key === b.idempotency_key &&
-      a.inserted_at === b.inserted_at &&
-      a.cursor === b.cursor &&
-      shallowEqual(a.payload, b.payload) &&
-      shallowEqual(a.metadata, b.metadata) &&
-      shallowEqual(a.refs, b.refs)
-    );
-  }
-
-  private enforceRetention(): void {
-    if (this.maxEvents === undefined) {
-      return;
-    }
-
-    while (this.history.length > this.maxEvents) {
-      const removed = this.history.shift();
-      if (!removed) {
-        return;
-      }
-
-      this.seenSeqs.delete(removed.seq);
-      this.eventBySeq.delete(removed.seq);
-    }
-  }
-}
-
-/**
- * Shallow equality for plain objects (one level deep).
- * Handles undefined/null symmetrically.
- */
-function shallowEqual(
-  a: Record<string, unknown> | undefined,
-  b: Record<string, unknown> | undefined
-): boolean {
-  if (a === b) {
-    return true;
-  }
-
-  if (!(a && b)) {
-    return false;
-  }
-
-  const keysA = Object.keys(a);
-  const keysB = Object.keys(b);
-  if (keysA.length !== keysB.length) {
-    return false;
-  }
-
-  for (const key of keysA) {
-    if (a[key] !== b[key]) {
-      return false;
-    }
-  }
-
-  return true;
 }
