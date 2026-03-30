@@ -85,7 +85,7 @@ export function decodeApiKeyContext(apiKey: string): ApiKeyContext {
     identity: resolveApiKeyIdentity(
       claims.tenant_id,
       claims.principal_id ?? claims.sub,
-      principalType,
+      principalType
     ),
   };
 }

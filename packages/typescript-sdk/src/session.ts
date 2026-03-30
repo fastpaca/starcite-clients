@@ -110,7 +110,9 @@ export class StarciteSession {
       onStateChange: () => this.persistLogState(),
       onError: (error) => this.emitStreamError(error),
       onLifecycle: (event) => {
-        for (const listener of this.lifecycle.listeners("append") as SessionAppendListener[]) {
+        for (const listener of this.lifecycle.listeners(
+          "append"
+        ) as SessionAppendListener[]) {
           try {
             this.observeListenerResult(listener(event));
           } catch (err) {
@@ -126,7 +128,10 @@ export class StarciteSession {
         this.outbox.restoreState(storedState.append);
       }
       const pendingBefore = this.outbox.pendingCount;
-      this.outbox.reconcileWithCommittedEvents(this.log.events, this.log.lastSeq);
+      this.outbox.reconcileWithCommittedEvents(
+        this.log.events,
+        this.log.lastSeq
+      );
       if (this.outbox.pendingCount !== pendingBefore) {
         this.persistLogState();
       }
@@ -418,7 +423,10 @@ export class StarciteSession {
       try {
         const appliedEvents = this.log.applyBatch(result.data.events);
         if (appliedEvents.length > 0) {
-          this.outbox.reconcileWithCommittedEvents(appliedEvents, this.log.lastSeq);
+          this.outbox.reconcileWithCommittedEvents(
+            appliedEvents,
+            this.log.lastSeq
+          );
           this.persistLogState();
         }
       } catch (error) {

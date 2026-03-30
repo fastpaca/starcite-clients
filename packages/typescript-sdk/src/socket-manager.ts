@@ -86,7 +86,7 @@ export class SocketManager {
   }
 
   private releaseChannel(): void {
-    this.activeChannelCount = Math.max(0, this.activeChannelCount - 1);
+    this.activeChannelCount -= 1;
     if (this.activeChannelCount > 0) {
       return;
     }

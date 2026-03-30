@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-const AGENT_PREFIX = "agent:";
-const USER_PREFIX = "user:";
-
 export const PrincipalTypeSchema = z.enum(["user", "agent"]);
 export type PrincipalType = z.infer<typeof PrincipalTypeSchema>;
 
@@ -15,10 +12,6 @@ export interface SessionCreatorPrincipal {
 export interface SessionTokenPrincipal {
   type: PrincipalType;
   id: string;
-}
-
-function hasPrincipalPrefix(id: string): boolean {
-  return id.startsWith(AGENT_PREFIX) || id.startsWith(USER_PREFIX);
 }
 
 /**
@@ -34,7 +27,7 @@ export class StarciteIdentity {
     id: string;
     type: PrincipalType;
   }) {
-    if (hasPrincipalPrefix(options.id)) {
+    if (options.id.startsWith("agent:") || options.id.startsWith("user:")) {
       throw new Error(
         `StarciteIdentity id must not include a principal prefix; received '${options.id}'`
       );

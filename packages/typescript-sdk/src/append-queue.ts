@@ -72,12 +72,12 @@ const RETRYABLE_APPEND_STATUS_CODES = new Set([
 
 function calculateAppendRetryDelay(
   retryAttempt: number,
-  policy: ResolvedSessionAppendRetryPolicy,
+  policy: ResolvedSessionAppendRetryPolicy
 ): number {
   const exponent = policy.mode === "fixed" ? 0 : Math.max(0, retryAttempt - 1);
   const baseDelayMs = Math.min(
     policy.initialDelayMs * policy.multiplier ** exponent,
-    policy.maxDelayMs,
+    policy.maxDelayMs
   );
 
   if (policy.jitterRatio === 0) {
@@ -88,12 +88,12 @@ function calculateAppendRetryDelay(
   const minimumDelayMs = Math.max(0, baseDelayMs - jitterWindowMs);
   const maximumDelayMs = baseDelayMs + jitterWindowMs;
   return Math.round(
-    minimumDelayMs + Math.random() * (maximumDelayMs - minimumDelayMs),
+    minimumDelayMs + Math.random() * (maximumDelayMs - minimumDelayMs)
   );
 }
 
 function createLinkedAbortController(
-  signals: readonly (AbortSignal | undefined)[],
+  signals: readonly (AbortSignal | undefined)[]
 ): {
   controller: AbortController;
   detach: () => void;
@@ -133,7 +133,7 @@ function createLinkedAbortController(
 
 function createAppendAbortError(sessionId: string): StarciteError {
   return new StarciteError(
-    `append() aborted for session '${sessionId}' before the request could be sent`,
+    `append() aborted for session '${sessionId}' before the request could be sent`
   );
 }
 
@@ -195,8 +195,7 @@ export class AppendQueue {
       },
       persist: opts.persist && (opts.appendOptions?.persist ?? true),
       autoFlush: opts.appendOptions?.autoFlush ?? true,
-      terminalFailureMode:
-        opts.appendOptions?.terminalFailureMode ?? "pause",
+      terminalFailureMode: opts.appendOptions?.terminalFailureMode ?? "pause",
     };
 
     this.appendProducerId = crypto.randomUUID();
@@ -208,7 +207,7 @@ export class AppendQueue {
 
   append(
     input: SessionAppendInput,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<AppendResult> {
     const itemId = crypto.randomUUID();
 
@@ -263,7 +262,7 @@ export class AppendQueue {
 
   reset(): void {
     const rejection = new StarciteError(
-      `append queue reset for session '${this.sessionId}' before pending items could be acknowledged`,
+      `append queue reset for session '${this.sessionId}' before pending items could be acknowledged`
     );
 
     this.clear(rejection, {
@@ -298,7 +297,7 @@ export class AppendQueue {
 
   reconcileWithCommittedEvents(
     events: readonly TailEvent[],
-    lastSeq: number,
+    lastSeq: number
   ): boolean {
     if (this.appendQueue.length === 0) {
       return false;
@@ -312,7 +311,7 @@ export class AppendQueue {
 
     for (const event of events) {
       const matchedIndex = this.appendQueue.findIndex((item) =>
-        this.matchesCommittedEvent(item.request, event),
+        this.matchesCommittedEvent(item.request, event)
       );
       if (matchedIndex < 0) {
         continue;
@@ -330,7 +329,7 @@ export class AppendQueue {
       if (matchedItem.request.producer_id === this.appendProducerId) {
         this.appendLastAcknowledgedProducerSeq = Math.max(
           this.appendLastAcknowledgedProducerSeq,
-          matchedItem.request.producer_seq,
+          matchedItem.request.producer_seq
         );
       }
 
@@ -459,7 +458,7 @@ export class AppendQueue {
   // -----------------------------------------------------------------------
 
   private enqueueAppend(
-    item: RuntimeAppendQueueItem,
+    item: RuntimeAppendQueueItem
   ): Promise<AppendEventResponse> {
     if (item.signal?.aborted) {
       return Promise.reject(createAppendAbortError(this.sessionId));
@@ -522,7 +521,7 @@ export class AppendQueue {
 
   private async runAppendQueue(
     runId: number,
-    runSignal: AbortSignal,
+    runSignal: AbortSignal
   ): Promise<void> {
     while (!runSignal.aborted && runId === this.appendQueueVersion) {
       if (this.appendQueueStatus === "paused") {
@@ -542,7 +541,7 @@ export class AppendQueue {
       const shouldContinue = await this.processAppendQueueHead(
         head,
         runId,
-        runSignal,
+        runSignal
       );
       if (!shouldContinue) {
         return;
@@ -553,12 +552,12 @@ export class AppendQueue {
   private async processAppendQueueHead(
     item: RuntimeAppendQueueItem,
     runId: number,
-    runSignal: AbortSignal,
+    runSignal: AbortSignal
   ): Promise<boolean> {
     if (item.signal?.aborted) {
       this.handleTerminalAppendFailure(
         item,
-        createAppendAbortError(this.sessionId),
+        createAppendAbortError(this.sessionId)
       );
       return false;
     }
@@ -590,7 +589,7 @@ export class AppendQueue {
           body: JSON.stringify(item.request),
           signal: controller.signal,
         },
-        AppendEventResponseSchema,
+        AppendEventResponseSchema
       );
 
       if (
@@ -615,7 +614,7 @@ export class AppendQueue {
       if (item.signal?.aborted) {
         this.handleTerminalAppendFailure(
           item,
-          createAppendAbortError(this.sessionId),
+          createAppendAbortError(this.sessionId)
         );
         return false;
       }
@@ -632,7 +631,7 @@ export class AppendQueue {
         this.appendRetryAttempt = item.retryAttempt;
         const delayMs = calculateAppendRetryDelay(
           item.retryAttempt,
-          this.options.retryPolicy,
+          this.options.retryPolicy
         );
         this.appendNextRetryAtMs = Date.now() + delayMs;
         this.appendLastFailure = failure;
@@ -654,12 +653,12 @@ export class AppendQueue {
       const terminalFailure = this.snapshotAppendFailure(
         error,
         retryable,
-        true,
+        true
       );
       this.handleTerminalAppendFailure(
         item,
         this.toError(error),
-        terminalFailure,
+        terminalFailure
       );
       return false;
     } finally {
@@ -669,7 +668,7 @@ export class AppendQueue {
 
   private handleAcknowledgedAppend(
     item: RuntimeAppendQueueItem,
-    response: AppendEventResponse,
+    response: AppendEventResponse
   ): void {
     this.appendQueue.shift();
     this.appendInFlightItemId = undefined;
@@ -681,7 +680,7 @@ export class AppendQueue {
     if (item.request.producer_id === this.appendProducerId) {
       this.appendLastAcknowledgedProducerSeq = Math.max(
         this.appendLastAcknowledgedProducerSeq,
-        item.request.producer_seq,
+        item.request.producer_seq
       );
     }
 
@@ -700,7 +699,7 @@ export class AppendQueue {
   private handleTerminalAppendFailure(
     item: RuntimeAppendQueueItem,
     error: Error,
-    failure = this.snapshotAppendFailure(error, false, true),
+    failure = this.snapshotAppendFailure(error, false, true)
   ): void {
     item.deferred?.reject(error);
 
@@ -739,7 +738,7 @@ export class AppendQueue {
     options: {
       rotateProducer: boolean;
       lastFailure: SessionAppendFailureSnapshot | undefined;
-    },
+    }
   ): void {
     this.appendQueueVersion += 1;
     this.appendQueueRunController?.abort();
@@ -770,7 +769,7 @@ export class AppendQueue {
 
   private matchesCommittedEvent(
     req: AppendEventRequest,
-    event: TailEvent,
+    event: TailEvent
   ): boolean {
     if (
       req.idempotency_key &&
@@ -804,7 +803,7 @@ export class AppendQueue {
   private snapshotAppendFailure(
     error: unknown,
     retryable: boolean,
-    terminal: boolean,
+    terminal: boolean
   ): SessionAppendFailureSnapshot {
     if (error instanceof StarciteApiError) {
       return {
@@ -828,7 +827,9 @@ export class AppendQueue {
     };
   }
 
-  private snapshotPendingAppend(item: RuntimeAppendQueueItem): SessionPendingAppend {
+  private snapshotPendingAppend(
+    item: RuntimeAppendQueueItem
+  ): SessionPendingAppend {
     return {
       id: item.id,
       request: structuredClone(item.request) as AppendEventRequest,
@@ -859,7 +860,9 @@ export class AppendQueue {
       this.onError(
         error instanceof Error
           ? error
-          : new StarciteError(`Append lifecycle listener failed: ${String(error)}`),
+          : new StarciteError(
+              `Append lifecycle listener failed: ${String(error)}`
+            )
       );
     }
   }
@@ -878,7 +881,7 @@ export class AppendQueue {
   private waitForAppendRetry(
     delayMs: number,
     itemSignal: AbortSignal | undefined,
-    runSignal: AbortSignal,
+    runSignal: AbortSignal
   ): Promise<void> {
     if (delayMs <= 0 || runSignal.aborted) {
       return Promise.resolve();

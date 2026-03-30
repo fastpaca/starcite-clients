@@ -245,7 +245,7 @@ function shallowEqual(
     return true;
   }
 
-  if (!a || !b) {
+  if (!(a && b)) {
     return false;
   }
 

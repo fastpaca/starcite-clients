@@ -135,36 +135,32 @@ export class LifecycleRuntime {
   }
 
   private handleLifecyclePayload(payload: unknown): void {
-    const envelope = payload as { event?: unknown };
-    const lifecycleEvent = LifecycleEventEnvelopeSchema.safeParse(
-      envelope.event
-    );
-    if (!lifecycleEvent.success) {
+    const event = (payload as { event?: unknown })?.event;
+    const envelope = LifecycleEventEnvelopeSchema.safeParse(event);
+    if (!envelope.success) {
       this.emitError(
         new StarciteError(
-          `Invalid lifecycle payload: ${lifecycleEvent.error.issues[0]?.message ?? "parse failed"}`
+          `Invalid lifecycle payload: ${envelope.error.issues[0]?.message ?? "parse failed"}`
         )
       );
       return;
     }
 
-    if (lifecycleEvent.data.kind !== "session.created") {
+    if (envelope.data.kind !== "session.created") {
       return;
     }
 
-    const sessionCreated = SessionCreatedLifecycleEventSchema.safeParse(
-      lifecycleEvent.data
-    );
-    if (!sessionCreated.success) {
+    const parsed = SessionCreatedLifecycleEventSchema.safeParse(envelope.data);
+    if (!parsed.success) {
       this.emitError(
         new StarciteError(
-          `Invalid session.created payload: ${sessionCreated.error.issues[0]?.message ?? "parse failed"}`
+          `Invalid session.created payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
         )
       );
       return;
     }
 
-    this.emitter.emit("session.created", sessionCreated.data);
+    this.emitter.emit("session.created", parsed.data);
   }
 
   private detachChannel(): void {
