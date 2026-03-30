@@ -10,15 +10,15 @@ Clients for building and operating multi-agent systems on one ordered session ti
 
 ## Examples
 
-- Next.js chat UI (`examples/nextjs-chat-ui`) for minimal `useStarciteChat` durable session wiring
-- Franken monolith (`examples/franken-monolith`) for a Node monolith that orchestrates three live OpenAI Responses agents over Starcite sessions
-- Vite chat UI (`packages/usechat-streaming-example`) for local proxy-driven streaming demos
+- Next.js chat UI (`examples/nextjs-chat-ui`) for minimal durable chat streaming with `useStarciteChat`
+- Multi-agent viewer (`examples/multi-agent-viewer`) for a shared-session research swarm with a coordinator and specialist agents
 
-Detailed package docs:
+Detailed docs:
 - SDK guide: `packages/typescript-sdk/README.md`
 - React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
 - AI SDK migration guide: `docs/ai-sdk-migration.md`
+- Next.js chat UI example: `examples/nextjs-chat-ui/README.md`
 
 ## Public SDK Surface
 
@@ -132,12 +132,30 @@ starcite tail ses_demo --limit 1
 
 ## Development Commands
 
+From the repo root:
+
 ```bash
+## Monorepo scripts
+bun run format
 bun run build
 bun run lint
 bun run typecheck
 bun run test
+bun run check
+
+## Package checks
+bun run --cwd packages/typescript-sdk check
+bun run --cwd packages/starcite-cli check
+bun run --cwd packages/starcite-react check
+
+## Example app checks
+bun run --cwd examples/nextjs-chat-ui check
+bun run --cwd examples/multi-agent-viewer check
 ```
+
+`bun run lint` and `bun run format` cover the repo root plus the published
+packages. The example apps currently expose `check` (`typecheck` + `build`)
+rather than their own lint/format scripts.
 
 Build a standalone CLI binary:
 

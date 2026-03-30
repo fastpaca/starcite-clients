@@ -3,20 +3,29 @@
 ## Quick Reference
 
 ```bash
-# Repository-wide
+# Monorepo scripts
 bun run format
 bun run lint
 bun run typecheck
 bun run test
 bun run check
 
-# Workspace-focused
+# Package checks
 bun run --cwd packages/typescript-sdk check
 bun run --cwd packages/starcite-cli check
+bun run --cwd packages/starcite-react check
+
+# Example app checks
+bun run --cwd examples/nextjs-chat-ui check
+bun run --cwd examples/multi-agent-viewer check
 
 # Ultracite diagnostics
 bunx ultracite doctor
 ```
+
+`bun run lint` and `bun run format` cover the repo root plus the published
+packages. Example apps currently expose `check` (`typecheck` + `build`) instead
+of their own lint/format scripts.
 
 Commits: prefer Conventional Commits (`type(scope): subject`).
 
