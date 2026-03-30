@@ -53,6 +53,57 @@ Immutability and clarity:
   - No one-off helper wrappers that hide straightforward logic.
   - No speculative extensibility hooks without a concrete use case.
 
+## YAGNI & Simplification Rules
+
+These rules codify recurring anti-patterns found during cleanup. Follow them when writing new code and when reviewing existing code.
+
+### Validation placement
+
+- **Zod at wire boundaries only.** Keep `.parse()` / `.safeParse()` where untrusted data enters: server HTTP responses, WebSocket payloads, persisted state loaded from storage, user-supplied config at the public API surface. Never zod-parse typed internal function parameters.
+- **Trust internal types.** Once data has been validated at entry, pass it through internal layers with plain TypeScript types. Do not re-validate.
+
+### No speculative features
+
+- **Delete unused options and code paths.** If no consumer exercises a feature today (e.g., `maxEvents` retention, `setMaxEvents`, lifecycle `token_expired` handling for service tokens), remove it. Re-add when a real use case arrives.
+- **No configurability for one behavior.** If every caller passes the same value or the default is the only sensible choice, hard-code it. Don't expose an option.
+
+### Server is source of truth
+
+- **Same seq = overwrite unconditionally.** When the server sends an event whose sequence already exists locally, replace without content comparison. No deep-equality helpers (`eventsEqual`, `shallowEqual`, `JSON.stringify` comparison) needed.
+- **Don't second-guess server data.** Avoid defensive checks that re-verify server-provided values (e.g., `Math.max(0, serverValue)` when the schema already guarantees non-negative).
+
+### Eliminate unnecessary cloning
+
+- **No defensive `structuredClone` on internal plain data.** If the SDK constructed the object and passes it through internal layers, cloning adds cost with no safety benefit.
+- **Return internal arrays as `readonly` instead of `.slice()`.** Only copy at actual public snapshot boundaries where callers might mutate the array.
+- **Rely on `JSON.stringify` for copy-on-persist.** Serialization to storage already creates an independent copy; don't pre-clone before serializing.
+
+### Flatten indirection
+
+- **Inline single-use helpers.** If a function is called exactly once and its body is ≤3 lines, inline it at the call site. Examples: `toError(e)` → `e instanceof Error ? e : new StarciteError(String(e))`, `observeListenerResult(r)` → `Promise.resolve(r).catch(...)`.
+- **Fold single-consumer modules.** If a class or module is only imported by one parent and just adds a forwarding layer (e.g., `LifecycleRuntime` used only by `Starcite`), fold it into the parent.
+- **No double-EventEmitter proxying.** If module A's emitter just re-emits events from module B's emitter, eliminate one layer. The consumer should listen directly on the source.
+- **No intermediate variables for naming alone.** If the expression is clear, use it directly instead of assigning to a local just to give it a name.
+
+### Deduplicate state and types
+
+- **One canonical data structure per concern.** If a `Map` provides `.has()`, don't maintain a parallel `Set` of the same keys. If `phase` is `"replay" | "live"`, don't add a redundant `replayed: boolean`.
+- **Collapse synonymous type aliases.** If two types/interfaces describe the same shape (e.g., `SessionEvent` vs `TailEvent`), keep one and delete the other.
+- **Prune dead exports.** Types, schemas, and constants with zero consumers must be deleted, not left around "in case."
+
+### Error hierarchy integrity
+
+- **Inheritance must reflect actual relationships.** `StarciteTailError` (stream failure) must not extend `StarciteConnectionError` (HTTP transport failure) — they are distinct failure modes. Only subclass when the child genuinely *is-a* instance of the parent.
+- **Remove defensive `try/catch` that swallows or re-throws without context.** If failure should propagate, let it. If failure is ignorable (e.g., best-effort cache clear), use a bare `catch {}` with a comment explaining why.
+
+### Overload simplification
+
+- **Single `as any` in implementation body.** For `on`/`off` method overloads, maintain strict public signatures for callers but use one `as any` cast in the internal implementation rather than duplicating logic per overload branch.
+
+### JWT / auth economy
+
+- **Decode only what you use.** If the SDK only needs `tenant_id` and `session_id` from a JWT, don't extract and store unused claims (`sub`, `principal_id`, `identity`).
+
 ## Patterns
 
 Functions and flow:
