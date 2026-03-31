@@ -26,11 +26,11 @@ Detailed docs:
 import { MemoryStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY, // required for server-side session creation
+  apiKey: process.env.STARCITE_API_KEY, // required for user()/agent() and session({ identity })
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
-  authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
+  authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
-  store: new MemoryStore(), // log seq cursor + tail resume cursor + event persistence
+  store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
 
 const alice = starcite.user({ id: "u_123" });
@@ -47,14 +47,14 @@ const session = starcite.session({ token: "<jwt>" }); // sync, no network call
 session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
-session.log.events; // readonly SessionEvent[], ordered by seq with no gaps
-session.log.cursor; // { epoch, seq } | undefined, last tail resume cursor
+session.log.events; // readonly TailEvent[], ordered by seq
+session.log.cursor; // TailCursor | undefined, numeric tail resume cursor
 session.log.lastSeq; // number, highest applied seq
 
 await session.append({ text: "hello" }); // Promise<AppendResult> { seq, deduped }
 
-const unsub = session.on("event", (event) => {
-  console.log(event.seq);
+const unsub = session.on("event", (event, context) => {
+  console.log(event.seq, context.phase); // "replay" | "live"
 });
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
@@ -75,6 +75,7 @@ import { Starcite } from "@starcite/sdk";
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
+  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT iss already resolves the issuer
 });
 
 const planner = starcite.agent({ id: "planner" });

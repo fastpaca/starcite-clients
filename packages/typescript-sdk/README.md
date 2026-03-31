@@ -14,8 +14,12 @@ npm install @starcite/sdk
 
 - Node.js 22+ (or Bun / modern runtime with `fetch` + `WebSocket`)
 - Starcite base URL (for example `https://<your-instance>.starcite.io`)
-- API key JWT for backend flows
+- API key JWT for backend identity flows
 - Session token JWTs for frontend/session-scoped flows
+- For `session({ identity })`, auth issuer resolution through one of:
+  - `authUrl` in the `Starcite` constructor
+  - `STARCITE_AUTH_URL`
+  - the API key JWT `iss` claim
 
 The SDK normalizes the API URL to `/v1` automatically.
 
@@ -27,8 +31,11 @@ The SDK normalizes the API URL to `/v1` automatically.
 
 The key split:
 
-- backend: construct `Starcite` with `apiKey`
+- backend: construct `Starcite` with `apiKey`, then bind with `session({ identity })`
 - frontend: construct `Starcite` without `apiKey`, bind with `session({ token })`
+
+Under the hood, lifecycle and session live-sync both use the shared `/v1/socket`
+transport. Session streams attach to `tail:<sessionId>` Phoenix channels.
 
 ## How You Use This SDK
 
@@ -44,6 +51,7 @@ import { MemoryStore, Starcite } from "@starcite/sdk";
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
+  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT already has iss
   // Use a durable SessionStore in production.
   store: new MemoryStore(),
 });
@@ -61,7 +69,7 @@ export async function runPlanner(prompt: string, sessionId?: string) {
   await session.append({ text: `Planning started: ${prompt}` });
 
   const stop = session.on("event", async (event, context) => {
-    if (context.replayed) {
+    if (context.phase === "replay") {
       return;
     }
     if (event.type === "content") {
@@ -201,24 +209,20 @@ import {
   MemoryStore,
   Starcite,
   type AppendResult,
-  type SessionEvent,
+  type SessionSnapshot,
   type SessionStore,
-  type StarciteWebSocket,
+  type TailEvent,
 } from "@starcite/sdk";
 
 // ── Construction ────────────────────────────────────────────────────────────
 
 const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY, // required for server-side session creation
+  apiKey: process.env.STARCITE_API_KEY, // required for user()/agent() and session({ identity })
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
-  authUrl: process.env.STARCITE_AUTH_URL, // overrides iss-derived auth URL for token minting
+  authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
-  websocketFactory: (url) => new WebSocket(url),
-  store: new MemoryStore(), // cursor + event persistence
+  store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
-
-// WebSocketFactory — simplified, auth is always in access_token query string.
-type WebSocketFactory = (url: string) => StarciteWebSocket;
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
 
@@ -252,8 +256,9 @@ session.log; // SessionLog — best-effort committed mirror of backend state
 
 // ── Session log ─────────────────────────────────────────────────────────────
 
-session.log.events; // readonly SessionEvent[] — ordered committed events retained for replay
-session.log.cursor; // TailCursor | undefined — opaque resume cursor from the backend
+session.log.events; // readonly TailEvent[] — ordered committed events retained for replay
+session.log.cursor; // TailCursor | undefined — numeric resume cursor from the backend
+session.log.lastSeq; // number
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -266,7 +271,7 @@ await session.append({ payload: { ok: true }, type: "custom", source: "user" });
 session.appendState();
 // -> { status, pending, producerId, lastAcknowledgedProducerSeq, ... }
 
-session.state();
+const snapshot: SessionSnapshot = session.state();
 // -> { events, lastSeq, cursor, syncing, append }
 
 session.on("append", (event) => {
@@ -285,7 +290,16 @@ const unsub = session.on("event", (event, context) => {
   console.log(context.phase); // "replay" | "live"
 });
 
-// Fatal errors only (for example token expiry). Transient drops auto-reconnect.
+// Skip retained replay and only receive future live events.
+const stopLiveOnly = session.on(
+  "event",
+  (event) => {
+    console.log(event.type);
+  },
+  { replay: false }
+);
+
+// Stream, append, schema, and store errors are surfaced here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
 });
@@ -297,6 +311,7 @@ session.on("gap", (gap) => {
 });
 
 unsub();
+stopLiveOnly();
 unsubErr();
 
 // ── Teardown ────────────────────────────────────────────────────────────────
@@ -304,18 +319,14 @@ unsubErr();
 session.disconnect(); // stops WS immediately, removes all listeners
 ```
 
-## Tail Reliability Controls
+## Session Event Semantics
 
-`SessionTailOptions` supports:
-
-- `cursor`, `batchSize`, `agent`
-- `follow`, `reconnect`, `reconnectPolicy`
-- `connectionTimeoutMs`, `inactivityTimeoutMs`
-- `maxBufferedBatches`
-- `signal`
-- `onLifecycleEvent`
-
-This is designed for robust reconnect + resume semantics in long-running multi-agent workflows.
+- `session.on("event", listener)` replays retained `session.events()` synchronously by default, then continues with live events from the `tail:<sessionId>` channel.
+- The second callback argument is `{ phase: "replay" | "live" }`.
+- Pass `{ replay: false }` to skip retained replay and only receive future live events.
+- Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
+- Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
+- `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
 
 ## Session Stores
 
@@ -323,13 +334,13 @@ This is designed for robust reconnect + resume semantics in long-running multi-a
 and the append outbox across session rebinds.
 
 - No default store is configured. When omitted, startup catch-up replays from
-  stream cursor `0`.
+  channel cursor `0`.
 - Bring your own by implementing:
   - `load(sessionId)`
-  - `save(sessionId, { cursor, events })`
+  - `save(sessionId, { lastSeq, cursor, events, append?, metadata? })`
   - optional `clear(sessionId)`
-- `MemoryStore` and `LocalStorageSessionStore` persist the append queue through
-  the same contract.
+- `MemoryStore`, `WebStorageSessionStore`, and `LocalStorageSessionStore`
+  support the same contract.
 - Paused terminal failures are persisted, so a restarted session does not
   auto-replay a poisoned head append until you explicitly resume or reset it.
 
@@ -339,8 +350,6 @@ and the append outbox across session rebinds.
 - `StarciteConnectionError` for transport/JSON issues
 - `StarciteTailError` for streaming failures
 - `StarciteTokenExpiredError` when close code `4001` is observed
-- `StarciteRetryLimitError` when reconnect budget is exhausted
-- `StarciteBackpressureError` when consumer buffering limits are exceeded
 
 ## Local Development
 
