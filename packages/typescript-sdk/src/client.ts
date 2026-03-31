@@ -34,9 +34,6 @@ import {
   type StarciteOptions,
 } from "./types";
 
-const LIFECYCLE_AUTH_ERROR_MESSAGE =
-  "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.";
-
 /**
  * Resolves auth issuer base URL in this order:
  * explicit option -> env -> API key JWT issuer authority.
@@ -159,7 +156,7 @@ export class Starcite {
       | ((error: Error) => void)
   ): () => void {
     if (!this.apiKey) {
-      throw new StarciteError(LIFECYCLE_AUTH_ERROR_MESSAGE);
+      throw new StarciteError("starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token.");
     }
 
     // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
