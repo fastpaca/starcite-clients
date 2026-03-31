@@ -34,6 +34,11 @@ export function readJoinFailureReason(payload: unknown): string {
   return "join failed";
 }
 
+/**
+ * Manages multiple channels connected to a single socket. The socket
+ * itself is held open until each channel is _manually_ closed (need to be
+ * careful here). The socket is lazy opened on first use.
+ */
 export class SocketManager {
   private activeChannelCount = 0;
   private readonly socketUrl: string;

@@ -9,8 +9,6 @@ import {
   TailEventSchema,
 } from "./types";
 
-const DEFAULT_KEY_PREFIX = "starcite";
-
 const SessionStoreMetadataSchema = z.object({
   schemaVersion: z.literal(4),
   updatedAtMs: z.number().int().nonnegative(),
@@ -24,9 +22,6 @@ const SessionStoreStateSchema = z.object({
   metadata: SessionStoreMetadataSchema.optional(),
 });
 
-/**
- * Minimal Web Storage contract used by {@link WebStorageSessionStore}.
- */
 export interface StarciteWebStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -47,20 +42,6 @@ export interface SessionStoreOptions {
    * Custom key resolver. When provided it overrides `keyPrefix`.
    */
   keyForSession?: (sessionId: string) => string;
-}
-
-/**
- * Construction options for {@link WebStorageSessionStore}.
- */
-export interface WebStorageSessionStoreOptions<
-  TEvent extends TailEvent = TailEvent,
-> extends SessionStoreOptions {
-  /**
-   * Optional schema for validating persisted state payloads.
-   *
-   * When omitted, a default schema validates canonical TailEvent snapshots.
-   */
-  stateSchema?: z.ZodType<SessionStoreState<TEvent>>;
 }
 
 /**
@@ -85,6 +66,20 @@ export class MemoryStore<TEvent extends TailEvent = TailEvent>
 }
 
 /**
+ * Construction options for {@link WebStorageSessionStore}.
+ */
+export interface WebStorageSessionStoreOptions<
+  TEvent extends TailEvent = TailEvent,
+> extends SessionStoreOptions {
+  /**
+   * Optional schema for validating persisted state payloads.
+   *
+   * When omitted, a default schema validates canonical TailEvent snapshots.
+   */
+  stateSchema?: z.ZodType<SessionStoreState<TEvent>>;
+}
+
+/**
  * Session store backed by a Web Storage-compatible object.
  */
 export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
@@ -99,7 +94,7 @@ export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
     options: WebStorageSessionStoreOptions<TEvent> = {}
   ) {
     this.storage = storage;
-    const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX;
+    const prefix = options.keyPrefix ?? "starcite";
     this.keyForSession =
       options.keyForSession ??
       ((sessionId) => `${prefix}:${sessionId}:sessionStore`);
@@ -141,7 +136,7 @@ export class WebStorageSessionStore<TEvent extends TailEvent = TailEvent>
 }
 
 /**
- * Session store backed by `globalThis.localStorage`.
+ * Session store backed by browser local storage.
  */
 export class LocalStorageSessionStore<
   TEvent extends TailEvent = TailEvent,
@@ -153,5 +148,21 @@ export class LocalStorageSessionStore<
       );
     }
     super(localStorage, options);
+  }
+}
+
+/**
+ * Session store backed by browser session storage.
+ */
+export class SessionStorageSessionStore<
+  TEvent extends TailEvent = TailEvent,
+> extends WebStorageSessionStore<TEvent> {
+  constructor(options: WebStorageSessionStoreOptions<TEvent> = {}) {
+    if (typeof sessionStorage === "undefined") {
+      throw new StarciteError(
+        "sessionStorage is not available in this runtime. Use WebStorageSessionStore with a custom storage adapter."
+      );
+    }
+    super(sessionStorage, options);
   }
 }
