@@ -455,20 +455,13 @@ export class Starcite {
       this.handleLifecyclePayload(payload);
     });
 
-    channel
-      .join()
-      .receive("error", (payload) => {
-        this.emitLifecycleError(
-          new StarciteError(
-            `Lifecycle subscription failed: ${readJoinFailureReason(payload)}`
-          )
-        );
-      })
-      .receive("timeout", () => {
-        this.emitLifecycleError(
-          new StarciteError("Lifecycle subscription failed: join timeout")
-        );
-      });
+    channel.join().receive("error", (payload) => {
+      this.emitLifecycleError(
+        new StarciteError(
+          `Lifecycle subscription failed: ${readJoinFailureReason(payload)}`
+        )
+      );
+    });
   }
 
   private handleLifecyclePayload(payload: unknown): void {
