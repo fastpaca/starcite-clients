@@ -6,8 +6,6 @@ import {
 } from "./errors";
 import type { SocketManager } from "./socket-manager";
 
-const TRAILING_SLASHES_RE = /\/+$/;
-
 /**
  * Shared HTTP + WebSocket transport configuration.
  *
@@ -31,7 +29,7 @@ export function parseHttpUrl(value: string): URL {
     throw new StarciteError(`URL must use http:// or https://: ${value}`);
   }
 
-  url.pathname = url.pathname.replace(TRAILING_SLASHES_RE, "");
+  url.pathname = stripTrailingSlashes(url.pathname);
   return url;
 }
 
@@ -53,7 +51,7 @@ export function toWebSocketBaseUrl(apiBaseUrl: string): string {
 }
 
 export function stripTrailingSlashes(value: string): string {
-  return value.replace(TRAILING_SLASHES_RE, "");
+  return value.replace(/\/+$/, "");
 }
 
 /**
