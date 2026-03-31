@@ -18,16 +18,18 @@ export interface SessionLogSubscriptionContext {
 /**
  * Canonical in-memory log for one session.
  *
- * Maintains a seq-indexed ordered history of committed events.
+ * Maintains deduplicated events by sequence and exposes them in sequence order.
  * Same seq = always overwrite (server is source of truth).
- * New seq = insert in sorted order.
  */
 export class SessionLog {
-  private readonly history: TailEvent[] = [];
   private readonly emitter = new EventEmitter<SessionLogEvents>();
   private readonly eventBySeq = new Map<number, TailEvent>();
   private appliedSeq = 0;
   private appliedCursor: TailCursor | undefined;
+
+  private orderedEvents(): TailEvent[] {
+    return [...this.eventBySeq.values()].sort((a, b) => a.seq - b.seq);
+  }
 
   applyBatch(batch: TailEvent[]): TailEvent[] {
     const applied: TailEvent[] = [];
@@ -49,24 +51,26 @@ export class SessionLog {
       );
     }
 
-    const sorted = [...state.events]
-      .filter((event) => {
-        if (event.seq > state.lastSeq) {
-          throw new StarciteError(
-            `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
-          );
-        }
-        return true;
-      })
-      .sort((a, b) => a.seq - b.seq);
+    let latestEvent: TailEvent | undefined;
+    const nextEventsBySeq = new Map<number, TailEvent>();
 
-    const latestEvent = sorted.at(-1);
+    for (const event of state.events) {
+      if (event.seq > state.lastSeq) {
+        throw new StarciteError(
+          `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
+        );
+      }
 
-    this.history.length = 0;
-    this.history.push(...sorted);
+      if (latestEvent === undefined || event.seq > latestEvent.seq) {
+        latestEvent = event;
+      }
+
+      nextEventsBySeq.set(event.seq, event);
+    }
+
     this.eventBySeq.clear();
-    for (const event of sorted) {
-      this.eventBySeq.set(event.seq, event);
+    for (const [seq, event] of nextEventsBySeq) {
+      this.eventBySeq.set(seq, event);
     }
 
     this.appliedSeq = state.lastSeq;
@@ -81,7 +85,7 @@ export class SessionLog {
     options: { replay?: boolean } = {}
   ): () => void {
     if (options.replay ?? true) {
-      for (const event of this.history) {
+      for (const event of this.orderedEvents()) {
         listener(event, { replayed: true });
       }
     }
@@ -94,7 +98,7 @@ export class SessionLog {
 
   state(syncing: boolean): SessionSnapshot {
     return {
-      events: this.history.slice(),
+      events: this.orderedEvents(),
       lastSeq: this.appliedSeq,
       cursor: this.appliedCursor,
       syncing,
@@ -102,7 +106,7 @@ export class SessionLog {
   }
 
   get events(): readonly TailEvent[] {
-    return this.history;
+    return this.orderedEvents();
   }
 
   get cursor(): TailCursor | undefined {
@@ -119,30 +123,7 @@ export class SessionLog {
 
   private apply(event: TailEvent): boolean {
     const previousLastSeq = this.appliedSeq;
-
-    if (this.eventBySeq.has(event.seq)) {
-      // Same seq — overwrite in place (server is source of truth)
-      const existingIndex = this.history.findIndex((e) => e.seq === event.seq);
-      if (existingIndex >= 0) {
-        this.history[existingIndex] = event;
-        this.eventBySeq.set(event.seq, event);
-      }
-    } else {
-      // New seq — insert in sorted order (fast path: append)
-      const lastSeq = this.history.at(-1)?.seq;
-      if (lastSeq === undefined || event.seq > lastSeq) {
-        this.history.push(event);
-      } else {
-        const insertAt = this.history.findIndex((e) => e.seq > event.seq);
-        if (insertAt === -1) {
-          this.history.push(event);
-        } else {
-          this.history.splice(insertAt, 0, event);
-        }
-      }
-
-      this.eventBySeq.set(event.seq, event);
-    }
+    this.eventBySeq.set(event.seq, event);
 
     this.appliedSeq = Math.max(this.appliedSeq, event.seq);
     if (

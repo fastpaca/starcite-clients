@@ -82,6 +82,17 @@ describe("SessionLog", () => {
     ]);
   });
 
+  it("keeps exposed history sorted by seq even when events arrive out of order", () => {
+    const log = new SessionLog();
+
+    log.applyBatch([makeEvent(5), makeEvent(3), makeEvent(4)]);
+
+    expect(log.state(false).events.map((event) => event.seq)).toEqual([
+      3, 4, 5,
+    ]);
+    expect(log.events.map((event) => event.seq)).toEqual([3, 4, 5]);
+  });
+
   it("overwrites previously retained events when the server sends updated truth", () => {
     const log = new SessionLog();
 
@@ -154,6 +165,20 @@ describe("SessionLog", () => {
       log.hydrate({
         lastSeq: 1,
         events: [makeEvent(2, "invalid cached event")],
+      });
+    }).toThrow(StarciteError);
+
+    expect(log.lastSeq).toBe(0);
+    expect(log.events).toEqual([]);
+  });
+
+  it("does not retain partial state when hydrated payload has any invalid seq", () => {
+    const log = new SessionLog();
+
+    expect(() => {
+      log.hydrate({
+        lastSeq: 2,
+        events: [makeEvent(1), makeEvent(3), makeEvent(4)],
       });
     }).toThrow(StarciteError);
 
