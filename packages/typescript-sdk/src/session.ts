@@ -457,28 +457,16 @@ export class StarciteSession {
       this.emitStreamError(error);
     });
 
-    channel
-      .join()
-      .receive("error", (payload) => {
-        const error = new StarciteTailError(
-          `Tail connection failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
-          {
-            sessionId: this.id,
-            stage: "connect",
-          }
-        );
-        this.emitStreamError(error);
-      })
-      .receive("timeout", () => {
-        const error = new StarciteTailError(
-          `Tail connection failed for session '${this.id}': join timeout`,
-          {
-            sessionId: this.id,
-            stage: "connect",
-          }
-        );
-        this.emitStreamError(error);
-      });
+    channel.join().receive("error", (payload) => {
+      const error = new StarciteTailError(
+        `Tail connection failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
+        {
+          sessionId: this.id,
+          stage: "connect",
+        }
+      );
+      this.emitStreamError(error);
+    });
   }
 
   private detachTailChannelIfIdle(): void {

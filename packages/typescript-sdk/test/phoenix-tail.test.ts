@@ -127,6 +127,7 @@ const phoenixMock = vi.hoisted(() => {
     emitJoinError(payload?: unknown): void {
       this.state = "errored";
       this.joinPush.trigger("error", payload);
+      this.scheduleRejoin();
     }
 
     emitJoinOk(payload?: unknown): void {
@@ -137,6 +138,7 @@ const phoenixMock = vi.hoisted(() => {
     emitJoinTimeout(): void {
       this.state = "errored";
       this.joinPush.trigger("timeout");
+      this.scheduleRejoin();
     }
 
     triggerError(reason?: unknown): void {
@@ -148,6 +150,18 @@ const phoenixMock = vi.hoisted(() => {
 
     private resolveParams(): Record<string, unknown> {
       return typeof this.params === "function" ? this.params() : this.params;
+    }
+
+    private scheduleRejoin(): void {
+      if (!this.socket.connected) {
+        return;
+      }
+
+      setTimeout(() => {
+        if (this.state === "errored" && this.socket.connected) {
+          this.rejoin();
+        }
+      }, 0);
     }
   }
 
@@ -507,6 +521,51 @@ describe("Phoenix Tail Transport", () => {
 
     expect(seen).toEqual([]);
     expect(errors).toEqual([]);
+
+    stopCreated();
+    stopError();
+  });
+
+  it("retries lifecycle joins after a timeout without surfacing an error", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const seen: string[] = [];
+    const errors: Error[] = [];
+    const stopCreated = client.on("session.created", (event) => {
+      seen.push(event.session_id);
+    });
+    const stopError = client.on("error", (error) => {
+      errors.push(error);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinTimeout();
+    await flush();
+
+    expect(errors).toEqual([]);
+    expect(channel.rejoinCalls.at(-1)).toEqual({});
+
+    channel.emitJoinOk({});
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.created",
+        session_id: "ses_retry_lifecycle",
+        tenant_id: "tenant-alpha",
+        title: null,
+        metadata: {},
+        created_at: "2026-03-27T12:00:00Z",
+      },
+    });
+    await flush();
+
+    expect(seen).toEqual(["ses_retry_lifecycle"]);
 
     stopCreated();
     stopError();
@@ -1198,6 +1257,44 @@ describe("Phoenix Tail Transport", () => {
 
     stopError();
     stopEvents();
+  });
+
+  it("retries tail joins after a timeout without surfacing an error", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_join_timeout_retry") });
+
+    const errors: Error[] = [];
+    const seen: number[] = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
+    });
+    const stopEvents = session.on("event", (event) => {
+      seen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_join_timeout_retry");
+    socket?.emitOpen();
+    channel.emitJoinTimeout();
+    await flush();
+
+    expect(errors).toEqual([]);
+    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: 0 });
+
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    expect(seen).toEqual([1]);
+
+    stopError();
+    stopEvents();
+    session.disconnect();
   });
 
   it("surfaces join failures to session error listeners", async () => {
