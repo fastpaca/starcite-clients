@@ -6,6 +6,8 @@ import {
 } from "./errors";
 import type { SocketManager } from "./socket-manager";
 
+const TRAILING_SLASHES_REGEX = /\/+$/;
+
 /**
  * Shared HTTP + WebSocket transport configuration.
  *
@@ -51,7 +53,7 @@ export function toWebSocketBaseUrl(apiBaseUrl: string): string {
 }
 
 export function stripTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
+  return value.replace(TRAILING_SLASHES_REGEX, "");
 }
 
 /**

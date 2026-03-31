@@ -95,7 +95,7 @@ The required Starcite model is:
 4. backend binds owned sessions explicitly with `starcite.session({ identity, id })`
 5. backend listens to live session events with `session.on("event", ...)`
 6. backend appends assistant chunks back into the same session
-7. frontend renders from the session timeline with `session.events()` + `session.on("event")`
+7. frontend renders from the session timeline with `session.events()` or `useStarciteSession(...)`, plus `session.on("event")`
 
 These responsibilities must stay distinct:
 
@@ -140,8 +140,12 @@ Backend must use one long-lived `Starcite` client:
 const starcite = new Starcite({
   apiKey: process.env.STARCITE_API_KEY!,
   baseUrl: process.env.STARCITE_BASE_URL || "https://api.starcite.io",
+  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT iss already resolves the issuer
 });
 ```
+
+Any backend path that calls `session({ identity, ... })` must have auth issuer
+resolution through `authUrl`, `STARCITE_AUTH_URL`, or the API key JWT `iss`.
 
 Backend must use lifecycle events for session discovery:
 
@@ -167,7 +171,7 @@ async function attachOwnedSession(sessionId: string): Promise<void> {
   });
 
   session.on("event", (event, context) => {
-    if (context.replayed || event.type !== "chat.user.message") {
+    if (context.phase === "replay" || event.type !== "chat.user.message") {
       return;
     }
 
@@ -279,6 +283,7 @@ The migration should use these public APIs:
 - `session.on("event", ...)`
 - `session.events()`
 - `session.append(...)`
+- `useStarciteSession({ session, id? })` when you want raw durable events in React
 - `useStarciteChat({ session, id? })`
 
 ## 12. References
@@ -289,10 +294,12 @@ Starcite server code:
 
 Client SDK code in this repo:
 
+- `packages/typescript-sdk/src/index.ts`
 - `packages/typescript-sdk/src/client.ts`
-- `packages/typescript-sdk/src/lifecycle-runtime.ts`
 - `packages/typescript-sdk/src/session.ts`
+- `packages/typescript-sdk/src/socket-manager.ts`
 - `packages/starcite-react/src/use-starcite-chat.ts`
+- `packages/starcite-react/src/use-starcite-session.ts`
 - `packages/starcite-react/src/chat-protocol.ts`
 
 Reference implementation in this repo:

@@ -5,13 +5,12 @@
 ### Added
 
 - Session catalog command: `sessions list` with pagination and metadata filters
-- Local setup commands: `up` and `down` with Docker checks and interactive prompts
-- `config` command with `set` and `show` subcommands for endpoint, producer id, and API key
+- `config` command with `set` and `show` subcommands for endpoint and API key
 - Core session lifecycle commands: `create`, `append`, and `tail`
 - Local CLI state store under `~/.starcite` (override via `--config-dir`)
-- Producer identity generation and per-context producer sequence rehydration
-- Global `--token` flag for one-shot auth override (API key or session token) without persisted state
-- `tail` requests batched replay frames with tuned default batch size (`256`)
+- SDK-backed append queue persistence and producer sequence rehydration in `state.json`
+- Global `--token` flag for one-shot credential override without persisted state
+- Global `--base-url` and `--json` flags
 
 ### Changed
 

@@ -19,11 +19,11 @@
 - `session.append()` is now the single append API; callers can still provide explicit `actor`, `payload`, `type`, and metadata fields through `SessionAppendInput`
 - BREAKING: session streaming is now emitter-only through `session.on(...)`; `.tail()` and `.tailBatches(...)` were removed
 - BREAKING: tail transport now uses the shared channel-based `/v1/socket` transport with one shared socket and per-session `tail:<session_id>` channels instead of the legacy raw `/v1/sessions/:id/tail` WebSocket transport
-- BREAKING: `session.log.cursor` is now the full tail resume cursor `{ epoch, seq }`, while `session.log.lastSeq` remains the numeric log sequence
-- BREAKING: session stores now persist `{ lastSeq, cursor }` instead of overloading numeric `cursor` plus `tailCursor`
+- BREAKING: `session.log.cursor` is now the numeric tail resume cursor, while `session.log.lastSeq` remains the numeric log sequence
+- BREAKING: session stores now persist canonical session snapshots including `{ lastSeq, cursor, events, append? }`
 - Event listeners now replay retained `session.log.events` synchronously by default, then continue from the live channel
 - Chat protocol helpers were removed from `@starcite/sdk` and moved to `@starcite/react/chat-protocol`
 - BREAKING: removed `session.consume(...)` and cursor-store APIs (`SessionCursorStore`, `InMemoryCursorStore`, `WebStorageCursorStore`, `LocalStorageCursorStore`)
-- BREAKING: removed `StarciteOptions.websocketFactory`, `StarciteRetryLimitError`, and `StarciteBackpressureError`
+- BREAKING: removed legacy WebSocket customization and obsolete tail error classes
 - BREAKING: `Starcite` no longer defaults to an implicit in-memory store when `store` is omitted
 - Tail gap payloads are now validated against the explicit server shape instead of being treated as passthrough objects
