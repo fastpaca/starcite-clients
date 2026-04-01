@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Starcite Swarm Atelier</title>
+    <meta
+      name="description"
+      content="A live multi-agent research swarm UI running on FastAPI and Starcite."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Rosarivo:ital@0;1&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=20260401f" />
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/phoenix@1.8.5/priv/static/phoenix.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/marked@16.4.1/lib/marked.umd.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/purify.min.js"
+    ></script>
+    <script type="module" src="/static/app.js?v=20260401e"></script>
+  </head>
+  <body>
+    <div class="noise"></div>
+    <div class="glow glow-left"></div>
+    <div class="glow glow-right"></div>
+
+    <div class="shell">
+      <header class="mast">
+        <p class="runtime-tag">LangChain swarm runtime / direct Starcite tail</p>
+        <div class="mast-grid">
+          <div class="mast-identity">
+            <span class="status-label">session</span>
+            <strong id="session-id">booting</strong>
+          </div>
+
+          <div class="status-ribbon">
+            <div class="status-cell">
+              <span class="status-label">stream</span>
+              <strong id="stream-status">connecting</strong>
+            </div>
+            <div class="status-cell">
+              <span class="status-label">run</span>
+              <strong id="run-status">idle</strong>
+            </div>
+            <div class="status-cell">
+              <span class="status-label">events</span>
+              <strong id="event-count">0</strong>
+            </div>
+            <div class="status-cell">
+              <span class="status-label">workers</span>
+              <strong id="worker-count">0</strong>
+            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <button class="utility-button" id="new-session" type="button">
+              New Session
+            </button>
+            <button class="utility-button" id="copy-link" type="button">
+              Copy Link
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main class="stage">
+        <div class="stage-mark" aria-hidden="true">signal wall</div>
+
+        <section class="notice" id="notice" hidden></section>
+
+        <section class="feed-stage">
+          <div class="feed-titleline">
+            <div class="title-stack">
+              <p class="signal-kicker">Canonical Tail</p>
+              <div class="title-meta">
+                <span class="stream-count" id="live-count">0 active streams</span>
+                <div class="legend" id="worker-legend"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="transmission-strip">
+            <div class="stream-grid" id="stream-grid">
+              <div class="empty-live" id="empty-live">No active transmissions.</div>
+            </div>
+          </div>
+
+          <div class="feed" id="feed">
+            <div class="empty-feed" id="empty-feed">Awaiting signal.</div>
+          </div>
+        </section>
+
+        <section class="composer-shell">
+          <form id="composer" class="composer">
+            <div class="composer-bar">
+              <label class="composer-label" for="prompt">Dispatch</label>
+              <button class="submit-button" id="submit-button" type="submit">
+                Dispatch Prompt
+              </button>
+            </div>
+
+            <textarea
+              id="prompt"
+              name="prompt"
+              rows="3"
+              maxlength="8000"
+              placeholder="Try: Compare MCP, traditional RPC, and event logs for multi-agent orchestration."
+            ></textarea>
+          </form>
+        </section>
+
+        <div class="sr-only">
+          <span id="api-base-url">pending</span>
+          <span id="websocket-url">pending</span>
+          <div id="assignment-stack"></div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

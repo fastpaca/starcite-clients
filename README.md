@@ -13,6 +13,7 @@ Clients for building and operating multi-agent systems on one ordered session ti
 
 - Next.js chat UI (`examples/nextjs-chat-ui`) for minimal durable chat streaming with `useStarciteChat`
 - Multi-agent viewer (`examples/multi-agent-viewer`) for a shared-session research swarm with a coordinator and specialist agents
+- LangChain + FastAPI multi-agent app (`examples/langchain-fastapi-multi-agent`) for an async Python research swarm with a browser UI that tails Starcite directly
 
 Detailed docs:
 - SDK guide: `packages/typescript-sdk/README.md`
@@ -21,6 +22,7 @@ Detailed docs:
 - CLI guide: `packages/starcite-cli/README.md`
 - AI SDK migration guide: `docs/ai-sdk-migration.md`
 - Next.js chat UI example: `examples/nextjs-chat-ui/README.md`
+- LangChain + FastAPI example: `examples/langchain-fastapi-multi-agent/README.md`
 
 ## Public SDK Surface
 
