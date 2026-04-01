@@ -5,6 +5,7 @@ Clients for building and operating multi-agent systems on one ordered session ti
 ## Packages
 
 - `@starcite/sdk` (`packages/typescript-sdk`) for app and browser integration
+- `starcite-sdk` (`packages/python-sdk`) for Python backend integration
 - `@starcite/react` (`packages/starcite-react`) for durable session chat hooks
 - `starcite` (`packages/starcite-cli`) for terminal workflows
 
@@ -15,6 +16,7 @@ Clients for building and operating multi-agent systems on one ordered session ti
 
 Detailed docs:
 - SDK guide: `packages/typescript-sdk/README.md`
+- Python SDK guide: `packages/python-sdk/README.md`
 - React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
 - AI SDK migration guide: `docs/ai-sdk-migration.md`
@@ -147,6 +149,7 @@ bun run check
 bun run --cwd packages/typescript-sdk check
 bun run --cwd packages/starcite-cli check
 bun run --cwd packages/starcite-react check
+uv run --directory packages/python-sdk pytest
 
 ## Example app checks
 bun run --cwd examples/nextjs-chat-ui check
