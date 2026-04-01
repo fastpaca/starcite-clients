@@ -1,0 +1,31 @@
+[project]
+name = "starcite-sdk"
+version = "0.0.14"
+description = "Python SDK for Starcite"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+keywords = ["starcite", "ai", "sessions", "event-log", "sdk", "python"]
+dependencies = [
+    "httpx>=0.28.1",
+    "phoenix-channels-python-client>=0.2.0",
+    "websockets>=16.0",
+]
+
+[project.urls]
+Homepage = "https://starcite.ai"
+Repository = "https://github.com/fastpaca/starcite-clients/tree/main/packages/python-sdk"
+Issues = "https://github.com/fastpaca/starcite-clients/issues"
+
+[build-system]
+requires = ["uv_build>=0.10.12,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
