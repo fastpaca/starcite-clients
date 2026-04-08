@@ -558,6 +558,18 @@ export const LifecycleEventEnvelopeSchema = z
   })
   .passthrough();
 
+export const SessionLifecycleEventNames = [
+  "session.created",
+  "session.hydrating",
+  "session.activated",
+  "session.freezing",
+  "session.frozen",
+] as const;
+
+export const SessionLifecycleEventNameSchema = z.enum(
+  SessionLifecycleEventNames
+);
+
 const SessionLifecycleBaseSchema = z.object({
   session_id: z.string().min(1),
   tenant_id: z.string().min(1),
@@ -601,7 +613,18 @@ export const SessionLifecycleEventSchema = z.discriminatedUnion("kind", [
 
 export type SessionLifecycleEvent = z.infer<typeof SessionLifecycleEventSchema>;
 
-export type SessionLifecycleEventName = SessionLifecycleEvent["kind"];
+export type SessionLifecycleEventName = z.infer<
+  typeof SessionLifecycleEventNameSchema
+>;
+
+export type SessionLifecycleEventFor<K extends SessionLifecycleEventName> =
+  Extract<SessionLifecycleEvent, { kind: K }>;
+
+export type SessionLifecycleEventListeners = {
+  [K in SessionLifecycleEventName]: (
+    event: SessionLifecycleEventFor<K>
+  ) => void;
+};
 
 export type SessionCreatedLifecycleEvent = z.infer<
   typeof SessionCreatedLifecycleEventSchema

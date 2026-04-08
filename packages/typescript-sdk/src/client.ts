@@ -22,14 +22,11 @@ import {
   IssueSessionTokenResponseSchema,
   LifecycleEventEnvelopeSchema,
   type RequestOptions,
-  type SessionActivatedLifecycleEvent,
   type SessionAppendOptions,
-  type SessionCreatedLifecycleEvent,
-  type SessionFreezingLifecycleEvent,
-  type SessionFrozenLifecycleEvent,
-  type SessionHydratingLifecycleEvent,
-  type SessionLifecycleEvent,
+  type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
+  SessionLifecycleEventNameSchema,
+  SessionLifecycleEventNames,
   SessionLifecycleEventSchema,
   type SessionListOptions,
   type SessionListPage,
@@ -81,24 +78,7 @@ function mergeAppendOptions(
   };
 }
 
-const LIFECYCLE_EVENT_NAMES = [
-  "session.created",
-  "session.hydrating",
-  "session.activated",
-  "session.freezing",
-  "session.frozen",
-] as const satisfies readonly SessionLifecycleEventName[];
-
-function isLifecycleEventName(kind: string): kind is SessionLifecycleEventName {
-  return LIFECYCLE_EVENT_NAMES.includes(kind as SessionLifecycleEventName);
-}
-
-interface StarciteLifecycleEvents {
-  "session.created": (event: SessionCreatedLifecycleEvent) => void;
-  "session.hydrating": (event: SessionHydratingLifecycleEvent) => void;
-  "session.activated": (event: SessionActivatedLifecycleEvent) => void;
-  "session.freezing": (event: SessionFreezingLifecycleEvent) => void;
-  "session.frozen": (event: SessionFrozenLifecycleEvent) => void;
+interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
   error: (error: Error) => void;
 }
 
@@ -184,7 +164,9 @@ export class Starcite {
 
     // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
     this.lifecycle.on(eventName, listener as any);
-    this.ensureLifecycleChannelAttached();
+    if (eventName !== "error") {
+      this.ensureLifecycleChannelAttached();
+    }
 
     return () => {
       // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
@@ -205,7 +187,9 @@ export class Starcite {
   ): void {
     // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
     this.lifecycle.off(eventName, listener as any);
-    this.detachLifecycleChannelIfIdle();
+    if (eventName !== "error") {
+      this.detachLifecycleChannelIfIdle();
+    }
   }
 
   /**
@@ -454,7 +438,7 @@ export class Starcite {
   }
 
   private ensureLifecycleChannelAttached(): void {
-    if (this.lifecycleChannel || !this.hasLifecycleListeners()) {
+    if (this.lifecycleChannel) {
       return;
     }
 
@@ -494,7 +478,10 @@ export class Starcite {
       return;
     }
 
-    if (!isLifecycleEventName(envelope.data.kind)) {
+    const lifecycleKind = SessionLifecycleEventNameSchema.safeParse(
+      envelope.data.kind
+    );
+    if (!lifecycleKind.success) {
       return;
     }
 
@@ -508,11 +495,16 @@ export class Starcite {
       return;
     }
 
-    this.emitLifecycleEvent(parsed.data);
+    // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
+    this.lifecycle.emit(parsed.data.kind, parsed.data as any);
   }
 
   private detachLifecycleChannelIfIdle(): void {
-    if (this.hasLifecycleListeners()) {
+    if (
+      SessionLifecycleEventNames.some((eventName) => {
+        return this.lifecycle.listenerCount(eventName) > 0;
+      })
+    ) {
       return;
     }
 
@@ -524,38 +516,6 @@ export class Starcite {
     this.lifecycleBindingRef = 0;
     this.closeLifecycleChannel?.();
     this.closeLifecycleChannel = undefined;
-  }
-
-  private hasLifecycleListeners(): boolean {
-    for (const eventName of LIFECYCLE_EVENT_NAMES) {
-      if (this.lifecycle.listenerCount(eventName) > 0) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private emitLifecycleEvent(event: SessionLifecycleEvent): void {
-    switch (event.kind) {
-      case "session.created":
-        this.lifecycle.emit("session.created", event);
-        return;
-      case "session.hydrating":
-        this.lifecycle.emit("session.hydrating", event);
-        return;
-      case "session.activated":
-        this.lifecycle.emit("session.activated", event);
-        return;
-      case "session.freezing":
-        this.lifecycle.emit("session.freezing", event);
-        return;
-      case "session.frozen":
-        this.lifecycle.emit("session.frozen", event);
-        return;
-      default:
-        return;
-    }
   }
 
   private emitLifecycleError(error: Error): void {
