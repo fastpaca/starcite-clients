@@ -102,7 +102,18 @@ const { token } = await fetch("/api/chat/session", {
   method: "POST",
 }).then((res) => res.json());
 
-const session = starcite.session({ token });
+const session = starcite.session({
+  token,
+  refreshToken: async ({ sessionId }) => {
+    const refreshed = await fetch("/api/chat/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    }).then((res) => res.json());
+
+    return refreshed.token;
+  },
+});
 
 const stopEvents = session.on("event", (event) => {
   // Replay + live events from canonical ordered session log.
@@ -254,7 +265,17 @@ const botSession = await starcite.session({
 });
 
 // Client-side: wraps existing JWT (sync, no network calls)
-const session = starcite.session({ token: "<jwt>" });
+const session = starcite.session({
+  token: "<jwt>",
+  refreshToken: async ({ sessionId }) => {
+    return await fetch("/api/chat/session", {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    })
+      .then((response) => response.json())
+      .then((response) => response.token as string);
+  },
+});
 
 // ── Session properties ──────────────────────────────────────────────────────
 
@@ -290,6 +311,7 @@ session.on("append", (event) => {
 
 session.resumeAppendQueue(); // retry a paused or restored queue
 session.resetAppendQueue(); // drop queued appends and rotate managed producer identity
+await session.refreshAuth(); // manually retry the configured refreshToken callback after a failed automatic refresh
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
@@ -336,11 +358,13 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
+- When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
+- If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
 ## Session Stores
 
 `new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
-and the append outbox across session rebinds.
+and the append outbox across session reconnects.
 
 - No default store is configured. When omitted, startup catch-up replays from
   channel cursor `0`.

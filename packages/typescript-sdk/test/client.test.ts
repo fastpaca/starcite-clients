@@ -1255,6 +1255,273 @@ describe("Starcite", () => {
     expect(session.id).toBe("ses_sync");
   });
 
+  it("refreshes expired session tokens before retrying queued appends", async () => {
+    const sessionToken = makeTailSessionToken("ses_refresh_append", "writer");
+    const refreshedToken = makeTailSessionToken(
+      "ses_refresh_append",
+      "writer-refreshed"
+    );
+    const authHeaders: Array<string | null> = [];
+    const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
+
+    fetchMock
+      .mockImplementationOnce((_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: "token_expired",
+              message: "session token expired",
+            }),
+            { status: 401, statusText: "Unauthorized" }
+          )
+        );
+      })
+      .mockImplementationOnce((_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ seq: 1, last_seq: 1, deduped: false }),
+            { status: 201 }
+          )
+        );
+      });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({
+      token: sessionToken,
+      refreshToken,
+    });
+
+    await expect(
+      session.append({ text: "retry after reauth" })
+    ).resolves.toEqual({
+      deduped: false,
+      seq: 1,
+    });
+
+    expect(refreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "unauthorized",
+        sessionId: "ses_refresh_append",
+        token: sessionToken,
+      })
+    );
+    expect(authHeaders).toEqual([
+      `Bearer ${sessionToken}`,
+      `Bearer ${refreshedToken}`,
+    ]);
+    expect(session.appendState()).toEqual(
+      expect.objectContaining({
+        pending: [],
+        status: "idle",
+      })
+    );
+    expect(session.token).toBe(refreshedToken);
+    expect(session.identity.id).toBe("writer-refreshed");
+  });
+
+  it("rebinds future appends after a manual refreshAuth call", async () => {
+    const sessionToken = makeTailSessionToken("ses_manual_refresh", "writer");
+    const refreshedToken = tokenFromClaims({
+      refreshed: true,
+      session_id: "ses_manual_refresh",
+      tenant_id: "test-tenant",
+      principal_id: "writer",
+      principal_type: "agent",
+    });
+    const authHeaders: Array<string | null> = [];
+    const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
+
+    fetchMock.mockImplementationOnce((_url, init) => {
+      authHeaders.push(new Headers(init?.headers).get("authorization"));
+      return Promise.resolve(
+        new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
+          status: 201,
+        })
+      );
+    });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({
+      token: sessionToken,
+      refreshToken,
+    });
+
+    await expect(session.refreshAuth()).resolves.toBeUndefined();
+    await expect(
+      session.append({ text: "after manual refresh" })
+    ).resolves.toEqual({
+      deduped: false,
+      seq: 1,
+    });
+
+    expect(refreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "manual",
+        sessionId: "ses_manual_refresh",
+        token: sessionToken,
+      })
+    );
+    expect(authHeaders).toEqual([`Bearer ${refreshedToken}`]);
+    expect(session.token).toBe(refreshedToken);
+  });
+
+  it("shares one token refresh across queued appends behind an auth failure", async () => {
+    const sessionToken = makeTailSessionToken("ses_shared_refresh", "writer");
+    const refreshedToken = makeTailSessionToken(
+      "ses_shared_refresh",
+      "writer-refreshed"
+    );
+    const authHeaders: Array<string | null> = [];
+    const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
+
+    fetchMock
+      .mockImplementationOnce((_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: "token_expired",
+              message: "session token expired",
+            }),
+            { status: 401, statusText: "Unauthorized" }
+          )
+        );
+      })
+      .mockImplementationOnce((_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ seq: 1, last_seq: 1, deduped: false }),
+            { status: 201 }
+          )
+        );
+      })
+      .mockImplementationOnce((_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ seq: 2, last_seq: 2, deduped: false }),
+            { status: 201 }
+          )
+        );
+      });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({
+      token: sessionToken,
+      refreshToken,
+    });
+
+    const firstAppend = session.append({ text: "first after refresh" });
+    const secondAppend = session.append({ text: "second after refresh" });
+
+    await expect(firstAppend).resolves.toEqual({
+      deduped: false,
+      seq: 1,
+    });
+    await expect(secondAppend).resolves.toEqual({
+      deduped: false,
+      seq: 2,
+    });
+
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(authHeaders).toEqual([
+      `Bearer ${sessionToken}`,
+      `Bearer ${refreshedToken}`,
+      `Bearer ${refreshedToken}`,
+    ]);
+    expect(session.appendState()).toEqual(
+      expect.objectContaining({
+        pending: [],
+        status: "idle",
+      })
+    );
+  });
+
+  it("uses the default identity-backed refresh handler for manual refreshAuth", async () => {
+    const apiKey = makeApiKey({
+      iss: "https://starcite.ai",
+      tenant_id: "tenant-a",
+    });
+    const initialToken = tokenFromClaims({
+      session_id: "ses_identity_refresh",
+      tenant_id: "tenant-a",
+      principal_id: "planner",
+      principal_type: "agent",
+    });
+    const refreshedToken = tokenFromClaims({
+      refreshed: true,
+      session_id: "ses_identity_refresh",
+      tenant_id: "tenant-a",
+      principal_id: "planner",
+      principal_type: "agent",
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_identity_refresh",
+            title: null,
+            metadata: {},
+            last_seq: 0,
+            created_at: "2026-02-11T00:00:00Z",
+            updated_at: "2026-02-11T00:00:00Z",
+          }),
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: initialToken, expires_in: 3600 }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: refreshedToken, expires_in: 3600 }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "https://tenant-a.starcite.io",
+      fetch: fetchMock,
+      apiKey,
+    });
+    const session = await starcite.session({
+      identity: starcite.agent({ id: "planner" }),
+      id: "ses_identity_refresh",
+    });
+
+    await expect(session.refreshAuth()).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://starcite.ai/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://starcite.ai/api/v1/session-tokens",
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+    expect(session.token).toBe(refreshedToken);
+    expect(session.identity.id).toBe("planner");
+  });
+
   it("wraps malformed JSON success responses as connection errors", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response("not json", {

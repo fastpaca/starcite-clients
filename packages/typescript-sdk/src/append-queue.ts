@@ -146,6 +146,7 @@ export interface AppendQueueOptions {
   transport: TransportConfig;
   appendOptions?: SessionAppendOptions;
   persist: boolean;
+  onUnauthorized?: (error: StarciteApiError) => Promise<void>;
   onStateChange: () => void;
   onError: (error: Error) => void;
   onLifecycle: (event: SessionAppendLifecycleEvent) => void;
@@ -159,6 +160,9 @@ export class AppendQueue {
   private readonly sessionId: string;
   private readonly transport: TransportConfig;
   private readonly options: ResolvedSessionAppendOptions;
+  private readonly onUnauthorized:
+    | ((error: StarciteApiError) => Promise<void>)
+    | undefined;
   private readonly onStateChange: () => void;
   private readonly onError: (error: Error) => void;
   private readonly onLifecycle: (event: SessionAppendLifecycleEvent) => void;
@@ -178,6 +182,7 @@ export class AppendQueue {
   constructor(opts: AppendQueueOptions) {
     this.sessionId = opts.sessionId;
     this.transport = opts.transport;
+    this.onUnauthorized = opts.onUnauthorized;
     this.onStateChange = opts.onStateChange;
     this.onError = opts.onError;
     this.onLifecycle = opts.onLifecycle;
@@ -619,13 +624,27 @@ export class AppendQueue {
         return false;
       }
 
-      const retryable = this.isRetryableAppendError(error);
+      const authRecoveryError = await this.recoverUnauthorizedAppend(
+        error,
+        item,
+        runId,
+        runSignal
+      );
+      if (authRecoveryError === undefined) {
+        return true;
+      }
+
+      const retryable = this.isRetryableAppendError(authRecoveryError);
       const nextRetryAttempt = item.retryAttempt + 1;
       if (
         retryable &&
         nextRetryAttempt <= this.options.retryPolicy.maxAttempts
       ) {
-        const failure = this.snapshotAppendFailure(error, true, false);
+        const failure = this.snapshotAppendFailure(
+          authRecoveryError,
+          true,
+          false
+        );
         item.retryAttempt = nextRetryAttempt;
         this.appendQueueStatus = "retrying";
         this.appendRetryAttempt = item.retryAttempt;
@@ -651,13 +670,13 @@ export class AppendQueue {
       }
 
       const terminalFailure = this.snapshotAppendFailure(
-        error,
+        authRecoveryError,
         retryable,
         true
       );
       this.handleTerminalAppendFailure(
         item,
-        this.toError(error),
+        this.toError(authRecoveryError),
         terminalFailure
       );
       return false;
@@ -876,6 +895,50 @@ export class AppendQueue {
       error instanceof StarciteApiError &&
       RETRYABLE_APPEND_STATUS_CODES.has(error.status)
     );
+  }
+
+  private isSessionAuthError(error: unknown): error is StarciteApiError {
+    return (
+      error instanceof StarciteApiError &&
+      (error.status === 401 ||
+        error.status === 403 ||
+        error.code === "token_expired")
+    );
+  }
+
+  private async recoverUnauthorizedAppend(
+    error: unknown,
+    item: RuntimeAppendQueueItem,
+    runId: number,
+    runSignal: AbortSignal
+  ): Promise<unknown> {
+    if (!(this.isSessionAuthError(error) && this.onUnauthorized)) {
+      return error;
+    }
+
+    try {
+      await this.onUnauthorized(error);
+    } catch (refreshError) {
+      return refreshError;
+    }
+
+    if (
+      runSignal.aborted ||
+      runId !== this.appendQueueVersion ||
+      this.appendQueue[0]?.id !== item.id
+    ) {
+      return new StarciteError(
+        `append queue changed while reauthenticating session '${this.sessionId}'`
+      );
+    }
+
+    this.appendQueueStatus = "idle";
+    this.appendInFlightItemId = undefined;
+    this.appendRetryAttempt = 0;
+    this.appendNextRetryAtMs = undefined;
+    this.appendLastFailure = undefined;
+    this.onStateChange();
+    return undefined;
   }
 
   private waitForAppendRetry(

@@ -35,7 +35,18 @@ const starcite = new Starcite({
 });
 
 export function Timeline({ token }: { token: string }) {
-  const session = starcite.session({ token });
+  const session = starcite.session({
+    token,
+    refreshToken: async ({ sessionId }) => {
+      return await fetch("/api/starcite/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      })
+        .then((response) => response.json())
+        .then((response) => response.token as string);
+    },
+  });
 
   const { events, append } = useStarciteSession({
     session,
@@ -74,7 +85,18 @@ const starcite = new Starcite({
 });
 
 export function Chat({ token }: { token: string }) {
-  const session = starcite.session({ token });
+  const session = starcite.session({
+    token,
+    refreshToken: async ({ sessionId }) => {
+      return await fetch("/api/starcite/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      })
+        .then((response) => response.json())
+        .then((response) => response.token as string);
+    },
+  });
 
   const { messages, sendMessage, status } = useStarciteChat({
     session,
@@ -113,6 +135,7 @@ after the session is bound.
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `onError` (optional): callback for surfaced session `error` events
+- Returns `{ events, append }`
 
 `useStarciteChat`:
 
@@ -120,6 +143,7 @@ after the session is bound.
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `userMessageSource` (optional, default `"use-chat"`): source string for user append events
 - `onError` (optional): callback for append, projection, or surfaced session `error` events
+- Returns `{ messages, sendMessage, status }`
 
 ## Behavior
 
@@ -131,6 +155,7 @@ after the session is bound.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Terminal append failures pause the SDK outbox by default; inspect `session.appendState()` and use `session.resumeAppendQueue()` or `session.resetAppendQueue()` for operational recovery.
+- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and retained events remain the source of truth.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
 
 ## Exports

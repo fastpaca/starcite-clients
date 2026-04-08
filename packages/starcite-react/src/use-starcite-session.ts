@@ -150,7 +150,10 @@ export function useStarciteSession(
   );
 
   return useMemo(
-    () => ({ events: session ? events : EMPTY_EVENTS, append }),
+    () => ({
+      events: session ? events : EMPTY_EVENTS,
+      append,
+    }),
     [session, events, append]
   );
 }

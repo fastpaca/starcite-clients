@@ -11,6 +11,11 @@ interface SessionLogEvents {
   event: (event: TailEvent, context: SessionLogSubscriptionContext) => void;
 }
 
+type SessionLogSnapshot = Pick<
+  SessionSnapshot,
+  "cursor" | "events" | "lastSeq" | "syncing"
+>;
+
 export interface SessionLogSubscriptionContext {
   replayed: boolean;
 }
@@ -96,7 +101,7 @@ export class SessionLog {
     };
   }
 
-  state(syncing: boolean): SessionSnapshot {
+  state(syncing: boolean): SessionLogSnapshot {
     return {
       events: this.orderedEvents(),
       lastSeq: this.appliedSeq,

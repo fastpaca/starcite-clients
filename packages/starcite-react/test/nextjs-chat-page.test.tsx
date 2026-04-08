@@ -160,6 +160,7 @@ describe("nextjs chat example page", () => {
     ]);
     expect(mockState.sessionFactory).toHaveBeenCalledWith({
       token: "jwt_refresh_token",
+      refreshToken: expect.any(Function),
     });
     expect(mockState.useStarciteChat).toHaveBeenCalledWith(
       expect.objectContaining({

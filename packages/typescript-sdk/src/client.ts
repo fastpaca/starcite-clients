@@ -35,6 +35,7 @@ import {
   type SessionRecord,
   SessionRecordSchema,
   type SessionStore,
+  type SessionTokenRefreshHandler,
   type StarciteOptions,
 } from "./types";
 
@@ -241,6 +242,7 @@ export class Starcite {
   session(input: {
     token: string;
     appendOptions?: SessionAppendOptions;
+    refreshToken?: SessionTokenRefreshHandler;
   }): StarciteSession;
   session(input: {
     identity: StarciteIdentity;
@@ -248,12 +250,14 @@ export class Starcite {
     title?: string;
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
+    refreshToken?: SessionTokenRefreshHandler;
   }): Promise<StarciteSession>;
   session(
     input:
       | {
           token: string;
           appendOptions?: SessionAppendOptions;
+          refreshToken?: SessionTokenRefreshHandler;
         }
       | {
           identity: StarciteIdentity;
@@ -261,10 +265,15 @@ export class Starcite {
           title?: string;
           metadata?: Record<string, unknown>;
           appendOptions?: SessionAppendOptions;
+          refreshToken?: SessionTokenRefreshHandler;
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
-      return this.sessionFromToken(input.token, input.appendOptions);
+      return this.sessionFromToken(
+        input.token,
+        input.appendOptions,
+        input.refreshToken
+      );
     }
 
     return this.sessionFromIdentity(input);
@@ -312,6 +321,7 @@ export class Starcite {
     title?: string;
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
+    refreshToken?: SessionTokenRefreshHandler;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
@@ -355,12 +365,21 @@ export class Starcite {
         this.appendOptions,
         input.appendOptions
       ),
+      refreshToken:
+        input.refreshToken ??
+        (() =>
+          this.issueSessionToken({
+            session_id: sessionId,
+            principal: input.identity.toTokenPrincipal(),
+            scopes: ["session:read", "session:append"],
+          }).then((response) => response.token)),
     });
   }
 
   private sessionFromToken(
     token: string,
-    appendOptions?: SessionAppendOptions
+    appendOptions?: SessionAppendOptions,
+    refreshToken?: SessionTokenRefreshHandler
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
     const sessionId = decoded.sessionId;
@@ -378,6 +397,7 @@ export class Starcite {
       transport: this.buildSessionTransport(token),
       store: this.store,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
+      refreshToken,
     });
   }
 

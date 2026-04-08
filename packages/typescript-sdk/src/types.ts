@@ -233,6 +233,34 @@ export interface SessionSnapshot {
   append?: SessionAppendQueueState;
 }
 
+export type SessionTokenRefreshReason =
+  | "manual"
+  | "token_expired"
+  | "unauthorized";
+
+export interface SessionTokenRefreshContext {
+  /**
+   * Session being reauthenticated.
+   */
+  sessionId: string;
+  /**
+   * The currently bound session token when refresh started.
+   */
+  token: string;
+  /**
+   * Why the SDK is asking for a new token.
+   */
+  reason: SessionTokenRefreshReason;
+  /**
+   * Optional triggering error when refresh was caused by a failed operation.
+   */
+  error?: Error;
+}
+
+export type SessionTokenRefreshHandler = (
+  context: SessionTokenRefreshContext
+) => string | Promise<string>;
+
 export type SessionAppendQueueStatus =
   | "idle"
   | "flushing"

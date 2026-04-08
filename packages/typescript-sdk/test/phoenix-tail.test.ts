@@ -1397,6 +1397,213 @@ describe("Phoenix Tail Transport", () => {
     stopEvents();
   });
 
+  it("refreshes expired session tokens and reconnects from the retained cursor without replaying retained events again", async () => {
+    const refreshedToken = makeSessionToken(
+      "ses_refresh_tail",
+      "planner-refreshed"
+    );
+    const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({
+      token: makeSessionToken("ses_refresh_tail"),
+      refreshToken,
+    });
+
+    const errors: Error[] = [];
+    const seen: Array<{ phase: string; seq: number }> = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
+    });
+    const stopEvents = session.on("event", (event, context) => {
+      seen.push({ phase: context.phase, seq: event.seq });
+    });
+
+    await waitForSocketCount(1);
+    const initialSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const initialChannel = await waitForChannel("tail:ses_refresh_tail");
+    initialSocket?.emitOpen();
+    initialChannel.emitJoinOk({});
+    initialChannel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    initialChannel.emit("token_expired", { reason: "token_expired" });
+    await waitForSocketCount(2);
+
+    const reboundSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [, reboundChannel] = await waitForChannels(
+      "tail:ses_refresh_tail",
+      2
+    );
+    expect(initialChannel.leaveCalls).toBe(1);
+    expect(reboundSocket?.currentParams()).toEqual({
+      token: refreshedToken,
+    });
+    expect(reboundChannel.joinCalls[0]).toEqual({ cursor: 1 });
+    expect(errors).toEqual([]);
+
+    reboundSocket?.emitOpen();
+    reboundChannel.emitJoinOk({});
+    reboundChannel.emit("events", {
+      events: [makeEvent(2, "agent:planner-refreshed", 2)],
+    });
+    await flush();
+
+    expect(refreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "token_expired",
+        sessionId: "ses_refresh_tail",
+      })
+    );
+    expect(seen).toEqual([
+      { phase: "live", seq: 1 },
+      { phase: "live", seq: 2 },
+    ]);
+    expect(session.identity.id).toBe("planner-refreshed");
+    expect(session.events().map((event) => event.seq)).toEqual([1, 2]);
+
+    stopError();
+    stopEvents();
+    session.disconnect();
+  });
+
+  it("manual refreshAuth reconnects the tail from the current cursor without duplicating retained replay", async () => {
+    const refreshedToken = makeSessionToken(
+      "ses_manual_refresh_tail",
+      "planner-refreshed"
+    );
+    const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({
+      token: makeSessionToken("ses_manual_refresh_tail"),
+      refreshToken,
+    });
+
+    const seen: Array<{ phase: string; seq: number }> = [];
+    const stopEvents = session.on("event", (event, context) => {
+      seen.push({ phase: context.phase, seq: event.seq });
+    });
+
+    await waitForSocketCount(1);
+    const initialSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const initialChannel = await waitForChannel("tail:ses_manual_refresh_tail");
+    initialSocket?.emitOpen();
+    initialChannel.emitJoinOk({});
+    initialChannel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    await expect(session.refreshAuth()).resolves.toBeUndefined();
+    await waitForSocketCount(2);
+
+    const reboundSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [, reboundChannel] = await waitForChannels(
+      "tail:ses_manual_refresh_tail",
+      2
+    );
+    expect(initialChannel.leaveCalls).toBe(1);
+    expect(reboundSocket?.currentParams()).toEqual({
+      token: refreshedToken,
+    });
+    expect(reboundChannel.joinCalls[0]).toEqual({ cursor: 1 });
+
+    reboundSocket?.emitOpen();
+    reboundChannel.emitJoinOk({});
+    reboundChannel.emit("events", {
+      events: [makeEvent(2, "agent:planner-refreshed", 2)],
+    });
+    await flush();
+
+    expect(refreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "manual",
+        sessionId: "ses_manual_refresh_tail",
+      })
+    );
+    expect(seen).toEqual([
+      { phase: "live", seq: 1 },
+      { phase: "live", seq: 2 },
+    ]);
+
+    stopEvents();
+    session.disconnect();
+  });
+
+  it("surfaces refresh failures and allows manual refresh retry recovery", async () => {
+    const refreshToken = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("reauth denied"))
+      .mockResolvedValueOnce(
+        makeSessionToken("ses_refresh_retry_tail", "planner-recovered")
+      );
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({
+      token: makeSessionToken("ses_refresh_retry_tail"),
+      refreshToken,
+    });
+
+    const errors: Error[] = [];
+    const seen: number[] = [];
+    const stopError = session.on("error", (error) => {
+      errors.push(error);
+    });
+    const stopEvents = session.on("event", (event) => {
+      seen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const initialSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const initialChannel = await waitForChannel("tail:ses_refresh_retry_tail");
+    initialSocket?.emitOpen();
+    initialChannel.emitJoinOk({});
+    initialChannel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    initialChannel.emit("token_expired", { reason: "token_expired" });
+    await flush();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("reauth denied");
+
+    await expect(session.refreshAuth()).resolves.toBeUndefined();
+    await waitForSocketCount(2);
+
+    const reboundSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [, reboundChannel] = await waitForChannels(
+      "tail:ses_refresh_retry_tail",
+      2
+    );
+    expect(reboundSocket?.currentParams()).toEqual({
+      token: makeSessionToken("ses_refresh_retry_tail", "planner-recovered"),
+    });
+    expect(reboundChannel.joinCalls[0]).toEqual({ cursor: 1 });
+
+    reboundSocket?.emitOpen();
+    reboundChannel.emitJoinOk({});
+    reboundChannel.emit("events", {
+      events: [makeEvent(2, "agent:planner-recovered", 2)],
+    });
+    await flush();
+
+    expect(seen).toEqual([1, 2]);
+    expect(refreshToken).toHaveBeenCalledTimes(2);
+    expect(session.identity.id).toBe("planner-recovered");
+
+    stopError();
+    stopEvents();
+    session.disconnect();
+  });
+
   it("retries tail joins after a timeout without surfacing an error", async () => {
     const session = new Starcite({
       baseUrl: "http://localhost:4000",

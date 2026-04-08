@@ -42,7 +42,7 @@ export function readJoinFailureReason(payload: unknown): string {
 export class SocketManager {
   private activeChannelCount = 0;
   private readonly socketUrl: string;
-  private readonly token: string | undefined;
+  private token: string | undefined;
   private socket: Socket | undefined;
 
   constructor(input: { socketUrl: string; token: string | undefined }) {
@@ -76,6 +76,10 @@ export class SocketManager {
         this.releaseChannel();
       },
     };
+  }
+
+  setToken(token: string | undefined): void {
+    this.token = token;
   }
 
   private ensureSocket(): Socket {

@@ -26,6 +26,20 @@ import {
   PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
 
+async function fetchToken(sessionId?: string) {
+  const response = await fetch("/api/starcite/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Session token request failed (${response.status}).`);
+  }
+
+  return (await response.json()) as { token: string; sessionId: string };
+}
+
 export default function Page() {
   const [starcite] = useState(
     () =>
@@ -49,24 +63,20 @@ export default function Page() {
       const fromQuery = new URLSearchParams(window.location.search).get(
         "sessionId"
       );
-
-      const response = await fetch("/api/starcite/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(fromQuery ? { sessionId: fromQuery } : {}),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Session token request failed (${response.status}).`);
-      }
-
-      const next = (await response.json()) as { token: string; sessionId: string };
+      const next = await fetchToken(fromQuery ?? undefined);
       if (cancelled) {
         return;
       }
 
       setError(undefined);
-      setSession(starcite.session({ token: next.token }));
+      setSession(
+        starcite.session({
+          token: next.token,
+          refreshToken: async ({ sessionId }) => {
+            return (await fetchToken(sessionId)).token;
+          },
+        })
+      );
 
       const url = new URL(window.location.href);
       url.searchParams.set("sessionId", next.sessionId);
