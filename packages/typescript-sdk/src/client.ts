@@ -20,11 +20,15 @@ import {
 import {
   type IssueSessionTokenInput,
   IssueSessionTokenResponseSchema,
+  type LifecycleEventEnvelope,
   LifecycleEventEnvelopeSchema,
   type RequestOptions,
   type SessionAppendOptions,
-  type SessionCreatedLifecycleEvent,
-  SessionCreatedLifecycleEventSchema,
+  type SessionLifecycleEventListeners,
+  type SessionLifecycleEventName,
+  SessionLifecycleEventNameSchema,
+  SessionLifecycleEventNames,
+  SessionLifecycleEventSchema,
   type SessionListOptions,
   type SessionListPage,
   SessionListPageSchema,
@@ -75,8 +79,8 @@ function mergeAppendOptions(
   };
 }
 
-interface StarciteLifecycleEvents {
-  "session.created": (event: SessionCreatedLifecycleEvent) => void;
+interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
+  lifecycle: (event: LifecycleEventEnvelope) => void;
   error: (error: Error) => void;
 }
 
@@ -141,18 +145,25 @@ export class Starcite {
   /**
    * Subscribes to tenant-scoped Starcite lifecycle events.
    *
-   * Today the SDK supports only live `session.created` notifications.
-   * Backend/service auth is required by the server.
+   * `lifecycle` forwards every backend lifecycle payload as-is. Typed named
+   * listeners such as `session.created` are convenience helpers for the
+   * currently modeled lifecycle kinds. Lifecycle subscriptions are live-only
+   * and require backend/service auth.
    */
   on(
-    eventName: "session.created",
-    listener: (event: SessionCreatedLifecycleEvent) => void
+    eventName: "lifecycle",
+    listener: (event: LifecycleEventEnvelope) => void
+  ): () => void;
+  on<K extends SessionLifecycleEventName>(
+    eventName: K,
+    listener: StarciteLifecycleEvents[K]
   ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "session.created" | "error",
+    eventName: "lifecycle" | SessionLifecycleEventName | "error",
     listener:
-      | ((event: SessionCreatedLifecycleEvent) => void)
+      | ((event: LifecycleEventEnvelope) => void)
+      | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): () => void {
     if (!this.apiKey) {
@@ -163,7 +174,9 @@ export class Starcite {
 
     // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
     this.lifecycle.on(eventName, listener as any);
-    this.ensureLifecycleChannelAttached();
+    if (eventName !== "error") {
+      this.ensureLifecycleChannelAttached();
+    }
 
     return () => {
       // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
@@ -171,20 +184,27 @@ export class Starcite {
     };
   }
 
+  off<K extends SessionLifecycleEventName>(
+    eventName: K,
+    listener: StarciteLifecycleEvents[K]
+  ): void;
   off(
-    eventName: "session.created",
-    listener: (event: SessionCreatedLifecycleEvent) => void
+    eventName: "lifecycle",
+    listener: (event: LifecycleEventEnvelope) => void
   ): void;
   off(eventName: "error", listener: (error: Error) => void): void;
   off(
-    eventName: "session.created" | "error",
+    eventName: "lifecycle" | SessionLifecycleEventName | "error",
     listener:
-      | ((event: SessionCreatedLifecycleEvent) => void)
+      | ((event: LifecycleEventEnvelope) => void)
+      | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): void {
     // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
     this.lifecycle.off(eventName, listener as any);
-    this.detachLifecycleChannelIfIdle();
+    if (eventName !== "error") {
+      this.detachLifecycleChannelIfIdle();
+    }
   }
 
   /**
@@ -433,10 +453,7 @@ export class Starcite {
   }
 
   private ensureLifecycleChannelAttached(): void {
-    if (
-      this.lifecycleChannel ||
-      this.lifecycle.listenerCount("session.created") === 0
-    ) {
+    if (this.lifecycleChannel) {
       return;
     }
 
@@ -476,25 +493,36 @@ export class Starcite {
       return;
     }
 
-    if (envelope.data.kind !== "session.created") {
+    this.lifecycle.emit("lifecycle", envelope.data);
+
+    const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
+    if (parsed.success) {
+      // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
+      this.lifecycle.emit(parsed.data.kind, parsed.data as any);
       return;
     }
 
-    const parsed = SessionCreatedLifecycleEventSchema.safeParse(envelope.data);
-    if (!parsed.success) {
-      this.emitLifecycleError(
-        new StarciteError(
-          `Invalid session.created payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
-        )
-      );
+    const lifecycleKind = SessionLifecycleEventNameSchema.safeParse(
+      envelope.data.kind
+    );
+    if (!lifecycleKind.success) {
       return;
     }
 
-    this.lifecycle.emit("session.created", parsed.data);
+    this.emitLifecycleError(
+      new StarciteError(
+        `Invalid ${envelope.data.kind} payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
+      )
+    );
   }
 
   private detachLifecycleChannelIfIdle(): void {
-    if (this.lifecycle.listenerCount("session.created") > 0) {
+    if (
+      this.lifecycle.listenerCount("lifecycle") > 0 ||
+      SessionLifecycleEventNames.some((eventName) => {
+        return this.lifecycle.listenerCount(eventName) > 0;
+      })
+    ) {
       return;
     }
 

@@ -229,11 +229,20 @@ const starcite = new Starcite({
 const alice = starcite.user({ id: "u_123" });
 const bot = starcite.agent({ id: "planner" });
 
-// ── Lifecycle (backend-only, live-only for now) ────────────────────────────
+// ── Lifecycle (backend-only, live-only) ────────────────────────────────────
 
+const stopLifecycle = starcite.on("lifecycle", (event) => {
+  console.log("lifecycle", event.kind, event);
+});
 const stopCreated = starcite.on("session.created", (event) => {
   console.log("new session", event.session_id);
 });
+const stopActivated = starcite.on("session.activated", (event) => {
+  console.log("session activated", event.session_id);
+});
+// `lifecycle` forwards every backend lifecycle payload as-is.
+// Typed named listeners currently cover:
+// session.created | session.hydrating | session.activated | session.freezing | session.frozen
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 

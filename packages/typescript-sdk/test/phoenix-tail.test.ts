@@ -312,6 +312,8 @@ const phoenixMock = vi.hoisted(() => {
   return { MockPhoenixChannel, MockPhoenixSocket };
 });
 
+const INVALID_FROZEN_PAYLOAD_MESSAGE = /^Invalid session\.frozen payload:/;
+
 vi.mock("phoenix", () => {
   return {
     Channel: phoenixMock.MockPhoenixChannel,
@@ -448,16 +450,32 @@ describe("Phoenix Tail Transport", () => {
     vi.useRealTimers();
   });
 
-  it("subscribes to lifecycle over Phoenix and emits session.created", async () => {
+  it("subscribes to lifecycle over Phoenix and emits raw and typed lifecycle events", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     });
 
-    const seen: string[] = [];
-    const stop = client.on("session.created", (event) => {
-      seen.push(event.session_id);
+    const rawSeen: string[] = [];
+    const typedSeen: string[] = [];
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
+    const stopCreated = client.on("session.created", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopHydrating = client.on("session.hydrating", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopActivated = client.on("session.activated", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopFreezing = client.on("session.freezing", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopFrozen = client.on("session.frozen", (event) => {
+      typedSeen.push(event.kind);
     });
 
     await waitForSocketCount(1);
@@ -480,25 +498,100 @@ describe("Phoenix Tail Transport", () => {
         created_at: "2026-03-27T12:00:00Z",
       },
     });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.hydrating",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.activated",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.freezing",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.frozen",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
     await flush();
 
-    expect(seen).toEqual(["ses_lifecycle"]);
+    expect(rawSeen).toEqual([
+      "session.created",
+      "session.hydrating",
+      "session.activated",
+      "session.freezing",
+      "session.frozen",
+    ]);
+    expect(typedSeen).toEqual([
+      "session.created",
+      "session.hydrating",
+      "session.activated",
+      "session.freezing",
+      "session.frozen",
+    ]);
 
-    stop();
+    stopLifecycle();
+    stopCreated();
+    stopHydrating();
+    stopActivated();
+    stopFreezing();
+    stopFrozen();
     await flush();
     expect(channel.leaveCalls).toBe(1);
     expect(socket?.disconnectCalls).toHaveLength(1);
   });
 
-  it("ignores unsupported lifecycle event kinds without surfacing an error", async () => {
+  it("keeps the lifecycle channel attached until the last lifecycle listener is removed", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     });
 
+    const stopLifecycle = client.on("lifecycle", () => undefined);
+    const stopFrozen = client.on("session.frozen", () => undefined);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+
+    stopFrozen();
+    await flush();
+    expect(channel.leaveCalls).toBe(0);
+
+    stopLifecycle();
+    await flush();
+    expect(channel.leaveCalls).toBe(1);
+  });
+
+  it("forwards unsupported lifecycle event kinds through raw listeners without surfacing an error", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const rawSeen: string[] = [];
     const seen: string[] = [];
     const errors: Error[] = [];
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
     const stopCreated = client.on("session.created", (event) => {
       seen.push(event.session_id);
     });
@@ -519,10 +612,55 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
+    expect(rawSeen).toEqual(["session.archived"]);
     expect(seen).toEqual([]);
     expect(errors).toEqual([]);
 
+    stopLifecycle();
     stopCreated();
+    stopError();
+  });
+
+  it("surfaces invalid supported lifecycle payloads as errors", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const rawSeen: string[] = [];
+    const typedSeen: string[] = [];
+    const errors: Error[] = [];
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
+    const stopFrozen = client.on("session.frozen", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopError = client.on("error", (error) => {
+      errors.push(error);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.frozen",
+        session_id: "ses_invalid",
+      },
+    });
+    await flush();
+
+    expect(rawSeen).toEqual(["session.frozen"]);
+    expect(typedSeen).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toMatch(INVALID_FROZEN_PAYLOAD_MESSAGE);
+
+    stopLifecycle();
+    stopFrozen();
     stopError();
   });
 

@@ -558,15 +558,98 @@ export const LifecycleEventEnvelopeSchema = z
   })
   .passthrough();
 
-export const SessionCreatedLifecycleEventSchema = z.object({
-  kind: z.literal("session.created"),
+export type LifecycleEventEnvelope = z.infer<
+  typeof LifecycleEventEnvelopeSchema
+>;
+
+export const SessionLifecycleEventNames = [
+  "session.created",
+  "session.hydrating",
+  "session.activated",
+  "session.freezing",
+  "session.frozen",
+] as const;
+
+export const SessionLifecycleEventNameSchema = z.enum(
+  SessionLifecycleEventNames
+);
+
+const SessionLifecycleBaseSchema = z.object({
   session_id: z.string().min(1),
   tenant_id: z.string().min(1),
-  title: z.string().nullable().optional(),
-  metadata: ArbitraryObjectSchema,
-  created_at: z.string().min(1),
 });
+
+export const SessionCreatedLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.created"),
+    title: z.string().nullable().optional(),
+    metadata: ArbitraryObjectSchema,
+    created_at: z.string().min(1),
+  });
+
+export const SessionHydratingLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.hydrating"),
+  });
+
+export const SessionActivatedLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.activated"),
+  });
+
+export const SessionFreezingLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.freezing"),
+  });
+
+export const SessionFrozenLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.frozen"),
+  });
+
+export const SessionLifecycleEventSchema = z.discriminatedUnion("kind", [
+  SessionCreatedLifecycleEventSchema,
+  SessionHydratingLifecycleEventSchema,
+  SessionActivatedLifecycleEventSchema,
+  SessionFreezingLifecycleEventSchema,
+  SessionFrozenLifecycleEventSchema,
+]);
+
+/**
+ * Currently modeled lifecycle payloads surfaced through typed named listeners
+ * such as `starcite.on("session.created", ...)`.
+ */
+export type SessionLifecycleEvent = z.infer<typeof SessionLifecycleEventSchema>;
+
+export type SessionLifecycleEventName = z.infer<
+  typeof SessionLifecycleEventNameSchema
+>;
+
+export type SessionLifecycleEventFor<K extends SessionLifecycleEventName> =
+  Extract<SessionLifecycleEvent, { kind: K }>;
+
+export type SessionLifecycleEventListeners = {
+  [K in SessionLifecycleEventName]: (
+    event: SessionLifecycleEventFor<K>
+  ) => void;
+};
 
 export type SessionCreatedLifecycleEvent = z.infer<
   typeof SessionCreatedLifecycleEventSchema
+>;
+
+export type SessionHydratingLifecycleEvent = z.infer<
+  typeof SessionHydratingLifecycleEventSchema
+>;
+
+export type SessionActivatedLifecycleEvent = z.infer<
+  typeof SessionActivatedLifecycleEventSchema
+>;
+
+export type SessionFreezingLifecycleEvent = z.infer<
+  typeof SessionFreezingLifecycleEventSchema
+>;
+
+export type SessionFrozenLifecycleEvent = z.infer<
+  typeof SessionFrozenLifecycleEventSchema
 >;
