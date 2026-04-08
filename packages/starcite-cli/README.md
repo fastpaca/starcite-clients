@@ -1,7 +1,7 @@
 # [starcite](https://starcite.ai) CLI
 
-CLI for creating sessions, appending events, tailing session timelines, and
-listing sessions from a terminal.
+CLI for creating sessions, inspecting and mutating session headers, appending
+events, tailing session timelines, and listing sessions from a terminal.
 
 - Install globally: `npm install -g starcite`
 - Run once with npm: `npx starcite`
@@ -31,8 +31,9 @@ bunx starcite --help
 - An API key JWT with tenant context for the backend-oriented CLI flows
 
 The current published CLI resolves a credential from `--token` / env / config,
-then passes that value into the SDK as the client `apiKey`. In practice,
-`create`, `append`, `tail`, and `sessions list` are API-key-driven commands.
+then passes that value into the SDK as the client `apiKey`. In practice, the
+mutating commands (`create`, `append`, `sessions update`, `sessions archive`,
+`sessions unarchive`) are API-key-driven commands.
 
 ## Resolution Order
 
@@ -57,6 +58,10 @@ starcite config set endpoint https://<your-instance>.starcite.io
 starcite config set api-key <YOUR_API_KEY>
 starcite create --id ses_demo --title "Draft contract"
 starcite sessions list --limit 5
+starcite sessions get ses_demo
+starcite sessions update ses_demo --title "Filed contract" --metadata '{"workflow":"legal"}'
+starcite sessions archive ses_demo
+starcite sessions unarchive ses_demo
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite tail ses_demo --limit 1
 ```
@@ -175,27 +180,52 @@ Behavior:
 - Without `--no-follow`, the command keeps following live events until interrupted.
 - With `--no-follow`, the command exits after replay and a short idle window.
 
-### `sessions list`
+### `sessions <subcommand>`
 
-List sessions from the API catalog.
+Inspect or mutate session headers from the API catalog.
 
 ```bash
 starcite sessions list
 starcite sessions list --limit 20
 starcite sessions list --cursor next_page_token
+starcite sessions list --archived all
 starcite sessions list --metadata '{"workflow":"planner"}'
+starcite sessions get ses_demo
+starcite sessions update ses_demo --title "Filed contract"
+starcite sessions patch ses_demo --clear-title
+starcite sessions update ses_demo --metadata '{"workflow":"planner"}' --expected-version 3
+starcite sessions archive ses_demo
+starcite sessions unarchive ses_demo
 ```
 
-Flags:
+Subcommands:
+
+- `list`
+- `get <sessionId>`
+- `update <sessionId>`
+- `patch <sessionId>`: alias for `update`
+- `archive <sessionId>`
+- `unarchive <sessionId>`
+
+`sessions list` flags:
 
 - `--limit <positive integer>`
 - `--cursor <cursor>`
+- `--archived <active|archived|all>`
 - `--metadata <json object of string values>`
+
+`sessions update` / `sessions patch` flags:
+
+- `--title <title>`
+- `--clear-title`
+- `--metadata <json object>`
+- `--expected-version <positive integer>`
 
 Notes:
 
-- The command requires the literal subcommand `list`.
 - The CLI prints a warning because `sessions list` is not recommended as a production hot path.
+- `sessions get`, `sessions update`, `sessions archive`, and `sessions unarchive` print the session record by default.
+- `sessions update` requires at least one of `--title`, `--clear-title`, or `--metadata`.
 
 ## Config and State Files
 

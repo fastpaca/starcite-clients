@@ -371,8 +371,10 @@ function makeSessionRecord(sessionId: string) {
       title: null,
       metadata: {},
       last_seq: 0,
+      archived: false,
       created_at: "2026-03-24T00:00:00Z",
       updated_at: "2026-03-24T00:00:00Z",
+      version: 1,
     }),
     { status: 201 }
   );
@@ -465,6 +467,15 @@ describe("Phoenix Tail Transport", () => {
     const stopCreated = client.on("session.created", (event) => {
       typedSeen.push(event.kind);
     });
+    const stopUpdated = client.on("session.updated", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopArchived = client.on("session.archived", (event) => {
+      typedSeen.push(event.kind);
+    });
+    const stopUnarchived = client.on("session.unarchived", (event) => {
+      typedSeen.push(event.kind);
+    });
     const stopHydrating = client.on("session.hydrating", (event) => {
       typedSeen.push(event.kind);
     });
@@ -496,6 +507,34 @@ describe("Phoenix Tail Transport", () => {
         title: "Lifecycle Demo",
         metadata: {},
         created_at: "2026-03-27T12:00:00Z",
+        version: 1,
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.updated",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+        title: "Lifecycle Demo v2",
+        metadata: { workflow: "planner" },
+        updated_at: "2026-03-27T12:05:00Z",
+        version: 2,
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.archived",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+        archived: true,
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.unarchived",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+        archived: false,
       },
     });
     channel.emit("lifecycle", {
@@ -530,6 +569,9 @@ describe("Phoenix Tail Transport", () => {
 
     expect(rawSeen).toEqual([
       "session.created",
+      "session.updated",
+      "session.archived",
+      "session.unarchived",
       "session.hydrating",
       "session.activated",
       "session.freezing",
@@ -537,6 +579,9 @@ describe("Phoenix Tail Transport", () => {
     ]);
     expect(typedSeen).toEqual([
       "session.created",
+      "session.updated",
+      "session.archived",
+      "session.unarchived",
       "session.hydrating",
       "session.activated",
       "session.freezing",
@@ -545,6 +590,9 @@ describe("Phoenix Tail Transport", () => {
 
     stopLifecycle();
     stopCreated();
+    stopUpdated();
+    stopArchived();
+    stopUnarchived();
     stopHydrating();
     stopActivated();
     stopFreezing();
@@ -579,7 +627,7 @@ describe("Phoenix Tail Transport", () => {
     expect(channel.leaveCalls).toBe(1);
   });
 
-  it("forwards unsupported lifecycle event kinds through raw listeners without surfacing an error", async () => {
+  it("forwards unmodeled lifecycle event kinds through raw listeners without surfacing an error", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
@@ -606,13 +654,13 @@ describe("Phoenix Tail Transport", () => {
     channel.emitJoinOk({});
     channel.emit("lifecycle", {
       event: {
-        kind: "session.archived",
-        session_id: "ses_archived",
+        kind: "session.deleted",
+        session_id: "ses_deleted",
       },
     });
     await flush();
 
-    expect(rawSeen).toEqual(["session.archived"]);
+    expect(rawSeen).toEqual(["session.deleted"]);
     expect(seen).toEqual([]);
     expect(errors).toEqual([]);
 

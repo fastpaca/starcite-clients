@@ -157,6 +157,20 @@ export async function listSessionsForAdmin() {
   return await starcite.listSessions({ limit: 50 });
 }
 
+export async function updateSessionHeaderForAdmin(sessionId: string) {
+  const current = await starcite.getSession(sessionId);
+
+  return await starcite.updateSession(sessionId, {
+    title: "Reviewed conversation",
+    metadata: { reviewed_by: "admin:dashboard" },
+    expectedVersion: current.version,
+  });
+}
+
+export async function archiveSessionForAdmin(sessionId: string) {
+  return await starcite.archiveSession(sessionId);
+}
+
 export async function mintAdminViewerToken(sessionId: string) {
   const response = await fetch(
     `${process.env.STARCITE_AUTH_URL}/api/v1/session-tokens`,
@@ -248,12 +262,16 @@ const stopLifecycle = starcite.on("lifecycle", (event) => {
 const stopCreated = starcite.on("session.created", (event) => {
   console.log("new session", event.session_id);
 });
+const stopUpdated = starcite.on("session.updated", (event) => {
+  console.log("session renamed", event.session_id, event.version);
+});
 const stopActivated = starcite.on("session.activated", (event) => {
   console.log("session activated", event.session_id);
 });
 // `lifecycle` forwards every backend lifecycle payload as-is.
 // Typed named listeners currently cover:
-// session.created | session.hydrating | session.activated | session.freezing | session.frozen
+// session.created | session.updated | session.archived | session.unarchived
+// | session.hydrating | session.activated | session.freezing | session.frozen
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
@@ -263,6 +281,17 @@ const botSession = await starcite.session({
   identity: bot,
   id: aliceSession.id,
 });
+
+// Catalog reads + mutations (server-side/admin flows)
+await starcite.listSessions({ limit: 50, archived: "all" });
+await starcite.getSession(aliceSession.id);
+await starcite.updateSession(aliceSession.id, {
+  title: "Renamed session",
+  metadata: { workflow: "planner" },
+  expectedVersion: aliceSession.record?.version,
+});
+await starcite.archiveSession(aliceSession.id);
+await starcite.unarchiveSession(aliceSession.id);
 
 // Client-side: wraps existing JWT (sync, no network calls)
 const session = starcite.session({

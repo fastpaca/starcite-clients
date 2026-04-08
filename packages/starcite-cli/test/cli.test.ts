@@ -109,6 +109,10 @@ describe("starcite CLI", () => {
   const user = vi.fn();
   const session = vi.fn();
   const listSessions = vi.fn();
+  const getSession = vi.fn();
+  const updateSession = vi.fn();
+  const archiveSession = vi.fn();
+  const unarchiveSession = vi.fn();
   let configDir = "";
   let previousApiKey: string | undefined;
   const serviceToken = encodeJwt({
@@ -140,7 +144,16 @@ describe("starcite CLI", () => {
   };
 
   function createFakeClient() {
-    return { agent, user, session, listSessions } as never;
+    return {
+      agent,
+      user,
+      session,
+      listSessions,
+      getSession,
+      updateSession,
+      archiveSession,
+      unarchiveSession,
+    } as never;
   }
 
   beforeEach(() => {
@@ -151,6 +164,10 @@ describe("starcite CLI", () => {
     user.mockReset();
     session.mockReset();
     listSessions.mockReset();
+    getSession.mockReset();
+    updateSession.mockReset();
+    archiveSession.mockReset();
+    unarchiveSession.mockReset();
     fakeSession.append.mockReset();
     fakeSession.on.mockReset();
     fakeSession.disconnect.mockReset();
@@ -190,10 +207,56 @@ describe("starcite CLI", () => {
           id: "ses_123",
           title: "Draft contract",
           metadata: { tenant_id: "acme" },
+          archived: false,
           created_at: "2026-02-13T00:00:00Z",
         },
       ],
       next_cursor: null,
+    });
+    getSession.mockResolvedValue({
+      id: "ses_123",
+      title: "Draft contract",
+      metadata: { tenant_id: "acme" },
+      archived: false,
+      tenant_id: "acme",
+      creator_principal: {
+        tenant_id: "acme",
+        id: "system",
+        type: "service",
+      },
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:10:00Z",
+      version: 2,
+    });
+    updateSession.mockResolvedValue({
+      id: "ses_123",
+      title: "Retitled contract",
+      metadata: { tenant_id: "acme", workflow: "planner" },
+      last_seq: 4,
+      archived: false,
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:20:00Z",
+      version: 3,
+    });
+    archiveSession.mockResolvedValue({
+      id: "ses_123",
+      title: "Draft contract",
+      metadata: { tenant_id: "acme" },
+      last_seq: 4,
+      archived: true,
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:30:00Z",
+      version: 4,
+    });
+    unarchiveSession.mockResolvedValue({
+      id: "ses_123",
+      title: "Draft contract",
+      metadata: { tenant_id: "acme" },
+      last_seq: 4,
+      archived: false,
+      created_at: "2026-02-13T00:00:00Z",
+      updated_at: "2026-02-13T00:35:00Z",
+      version: 5,
     });
     fakeSession.append.mockResolvedValue({
       seq: 1,
@@ -1102,12 +1165,14 @@ describe("starcite CLI", () => {
           id: "ses_101",
           title: "Alpha",
           metadata: { tenant_id: "acme" },
+          archived: false,
           created_at: "2026-02-13T01:00:00Z",
         },
         {
           id: "ses_102",
           title: null,
           metadata: { tenant_id: "acme" },
+          archived: true,
           created_at: "2026-02-13T01:05:00Z",
         },
       ],
@@ -1146,11 +1211,34 @@ describe("starcite CLI", () => {
       "Warning: `sessions list` is a bad call to use in production.",
     ]);
     expect(info).toEqual([
-      "id\ttitle\tcreated_at",
-      "ses_101\tAlpha\t2026-02-13T01:00:00Z",
-      "ses_102\t\t2026-02-13T01:05:00Z",
+      "id\ttitle\tarchived\tcreated_at",
+      "ses_101\tAlpha\tfalse\t2026-02-13T01:00:00Z",
+      "ses_102\t\ttrue\t2026-02-13T01:05:00Z",
       "next_cursor=ses_102",
     ]);
+  });
+
+  it("sessions list forwards archived filters", async () => {
+    const { logger } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "sessions", "list", "--archived", "all"],
+      {
+        from: "user",
+      }
+    );
+
+    expect(listSessions).toHaveBeenCalledWith({
+      limit: undefined,
+      cursor: undefined,
+      archived: "all",
+      metadata: undefined,
+    });
   });
 
   it("sessions list outputs JSON with --json", async () => {
@@ -1181,6 +1269,130 @@ describe("starcite CLI", () => {
     expect(error).toEqual([
       "Warning: `sessions list` is a bad call to use in production.",
     ]);
+  });
+
+  it("sessions get prints the session header", async () => {
+    const { logger, info } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      ["--config-dir", configDir, "sessions", "get", "ses_123"],
+      {
+        from: "user",
+      }
+    );
+
+    expect(getSession).toHaveBeenCalledWith("ses_123");
+    expect(info).toEqual([
+      "id=ses_123",
+      'title="Draft contract"',
+      "archived=false",
+      "version=2",
+      "tenant_id=acme",
+      "created_at=2026-02-13T00:00:00Z",
+      "updated_at=2026-02-13T00:10:00Z",
+      'creator_principal={"tenant_id":"acme","id":"system","type":"service"}',
+      'metadata={"tenant_id":"acme"}',
+    ]);
+  });
+
+  it("sessions update patches title, metadata, and expected version", async () => {
+    const { logger, info } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "sessions",
+        "update",
+        "ses_123",
+        "--title",
+        "Retitled contract",
+        "--metadata",
+        '{"workflow":"planner"}',
+        "--expected-version",
+        "2",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(updateSession).toHaveBeenCalledWith("ses_123", {
+      title: "Retitled contract",
+      metadata: { workflow: "planner" },
+      expectedVersion: 2,
+    });
+    expect(info).toContain("version=3");
+  });
+
+  it("sessions patch clears the title when requested", async () => {
+    const { logger } = makeLogger();
+
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "sessions",
+        "patch",
+        "ses_123",
+        "--clear-title",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(updateSession).toHaveBeenCalledWith("ses_123", {
+      title: null,
+      metadata: undefined,
+      expectedVersion: undefined,
+    });
+  });
+
+  it("sessions archive and unarchive call the corresponding SDK methods", async () => {
+    const { logger: archiveLogger } = makeLogger();
+    const archiveProgram = buildProgram({
+      logger: archiveLogger,
+      createClient: () => createFakeClient(),
+    });
+
+    await archiveProgram.parseAsync(
+      ["--config-dir", configDir, "sessions", "archive", "ses_123"],
+      {
+        from: "user",
+      }
+    );
+
+    const { logger: unarchiveLogger } = makeLogger();
+    const unarchiveProgram = buildProgram({
+      logger: unarchiveLogger,
+      createClient: () => createFakeClient(),
+    });
+
+    await unarchiveProgram.parseAsync(
+      ["--config-dir", configDir, "sessions", "unarchive", "ses_123"],
+      {
+        from: "user",
+      }
+    );
+
+    expect(archiveSession).toHaveBeenCalledWith("ses_123");
+    expect(unarchiveSession).toHaveBeenCalledWith("ses_123");
   });
 
   it("tails events and formats output", async () => {
