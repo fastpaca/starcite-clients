@@ -1,6 +1,7 @@
 import {
   getStarciteConfig,
   Starcite,
+  type StarciteConfig,
   type TailEvent,
 } from "@starcite/sdk";
 import arg from "arg";
@@ -12,6 +13,7 @@ import {
 import { StarciteCliStore } from "./store";
 
 const DEFAULT_API_PORT = 45_187;
+const DEFAULT_API_BASE_URL = `http://localhost:${DEFAULT_API_PORT}`;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -36,11 +38,7 @@ export interface GlobalOptions {
 }
 
 export interface CliDependencies {
-  createClient?: (
-    baseUrl: string,
-    apiKey: string | undefined,
-    store: StarciteCliStore
-  ) => Starcite;
+  createClient?: (config: StarciteConfig, store: StarciteCliStore) => Starcite;
   logger?: LoggerLike;
   stdout?: StdoutLike;
 }
@@ -96,16 +94,23 @@ export function parseArgs(
   }
 }
 
-export function resolveConfiguredBaseUrl(
+export function resolveCliStarciteConfig(
   config: StarciteCliConfig,
-  options: GlobalOptions
-): string {
-  return (
-    trimString(options.baseUrl) ??
-    getStarciteConfig().baseUrl ??
-    trimString(config.baseUrl) ??
-    `http://localhost:${DEFAULT_API_PORT}`
-  );
+  options: GlobalOptions,
+  envConfig = getStarciteConfig()
+): StarciteConfig {
+  return {
+    apiKey:
+      trimString(options.token) ??
+      envConfig.apiKey ??
+      trimString(config.apiKey),
+    authUrl: envConfig.authUrl,
+    baseUrl:
+      trimString(options.baseUrl) ??
+      envConfig.baseUrl ??
+      trimString(config.baseUrl) ??
+      DEFAULT_API_BASE_URL,
+  };
 }
 
 export function parseNonNegativeInteger(
@@ -227,21 +232,21 @@ export class CliRuntime {
       resolveConfigDir(options.configDir)
     );
     const store = new StarciteCliStore(config.directory);
-    const baseUrl = resolveConfiguredBaseUrl(
-      await config.readConfig(),
-      options
-    );
-    const apiKey = trimString(options.token) ?? (await config.readApiKey());
+    const fileConfig = await config.readConfig();
+    const envConfig = getStarciteConfig();
+    const clientConfig = {
+      ...resolveCliStarciteConfig(fileConfig, options, envConfig),
+      apiKey:
+        trimString(options.token) ?? envConfig.apiKey ?? (await config.readApiKey()),
+    };
     const client =
-      this.createClient?.(baseUrl, apiKey, store) ??
-      new Starcite({
-        baseUrl,
-        apiKey,
-        store: store.sessionStore(baseUrl),
+      this.createClient?.(clientConfig, store) ??
+      new Starcite(clientConfig, {
+        store: store.sessionStore(clientConfig.baseUrl),
       });
 
     return {
-      baseUrl,
+      baseUrl: clientConfig.baseUrl,
       json: options.json,
       config,
       store,

@@ -23,12 +23,9 @@ Detailed docs:
 ## Public SDK Surface
 
 ```ts
-import { MemoryStore, Starcite } from "@starcite/sdk";
+import { createStarcite, MemoryStore } from "@starcite/sdk";
 
-const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY, // required for user()/agent() and session({ identity })
-  baseUrl: process.env.STARCITE_BASE_URL ?? process.env.STARCITE_API_URL, // default: STARCITE_BASE_URL, STARCITE_API_URL, or http://localhost:4000
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
+const starcite = createStarcite({
   fetch: globalThis.fetch,
   store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
@@ -73,9 +70,7 @@ session.disconnect();
 import { Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  baseUrl: process.env.STARCITE_BASE_URL ?? process.env.STARCITE_API_URL,
-  apiKey: process.env.STARCITE_API_KEY,
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT iss already resolves the issuer
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
 });
 
 const planner = starcite.agent({ id: "planner" });
@@ -104,11 +99,9 @@ const stop = session.on("event", (event) => {
 ### C) Admin Panel
 
 ```ts
-import { Starcite } from "@starcite/sdk";
+import { createStarcite } from "@starcite/sdk";
 
-const starcite = new Starcite({
-  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
-});
+const starcite = createStarcite();
 
 const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
   (res) => res.json()

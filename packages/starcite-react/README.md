@@ -27,12 +27,10 @@ Use this when you want raw session events and a durable `append(...)` helper
 without the chat projection layer.
 
 ```tsx
-import { Starcite } from "@starcite/sdk";
+import { createStarcite } from "@starcite/sdk";
 import { useStarciteSession } from "@starcite/react";
 
-const starcite = new Starcite({
-  baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL,
-});
+const starcite = createStarcite();
 
 export function Timeline({ token }: { token: string }) {
   const session = starcite.session({
@@ -77,12 +75,10 @@ stays the source of truth.
 ## `useStarciteChat`
 
 ```tsx
-import { Starcite } from "@starcite/sdk";
+import { createStarcite } from "@starcite/sdk";
 import { useStarciteChat } from "@starcite/react";
 
-const starcite = new Starcite({
-  baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL,
-});
+const starcite = createStarcite();
 
 export function Chat({ token }: { token: string }) {
   const session = starcite.session({

@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getStarciteConfig } from "@starcite/sdk";
 import Conf from "conf";
 import { parse as parseToml } from "toml";
 import { z } from "zod";
@@ -113,11 +112,6 @@ export class StarciteCliConfigStore {
   }
 
   async readApiKey(): Promise<string | undefined> {
-    const fromEnv = getStarciteConfig().apiKey;
-    if (fromEnv) {
-      return fromEnv;
-    }
-
     const fromCredentials = trimString(this.readCredentials().apiKey);
     if (fromCredentials) {
       return fromCredentials;

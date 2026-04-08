@@ -1,4 +1,4 @@
-import { Starcite } from "@starcite/sdk";
+import { createStarcite } from "@starcite/sdk";
 
 /** One server-side client for lifecycle listeners and session minting. */
-export const starcite = new Starcite();
+export const starcite = createStarcite();

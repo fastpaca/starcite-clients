@@ -2,8 +2,8 @@
 
 import { useStarciteChat } from "@starcite/react";
 import {
+  createStarcite,
   LocalStorageSessionStore,
-  Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
 import { useEffect, useState } from "react";
@@ -42,7 +42,7 @@ async function fetchToken(sessionId?: string) {
 export default function Page() {
   const [starcite] = useState(
     () =>
-      new Starcite({
+      createStarcite({
         store:
           typeof window === "undefined"
             ? undefined

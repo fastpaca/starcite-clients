@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getStarciteConfig } from "../src/config";
+import {
+  getStarciteConfig,
+  resolveStarciteConfig,
+} from "../src/config";
 
 describe("getStarciteConfig", () => {
   it("reads canonical server env vars", () => {
@@ -13,7 +16,6 @@ describe("getStarciteConfig", () => {
       apiKey: "service-token",
       authUrl: "https://auth.starcite.io",
       baseUrl: "https://tenant-a.starcite.io",
-      publicBaseUrl: "https://tenant-a.starcite.io",
     });
   });
 
@@ -28,23 +30,31 @@ describe("getStarciteConfig", () => {
       apiKey: "service-token",
       authUrl: "https://auth.starcite.io",
       baseUrl: "https://tenant-a.starcite.io/v1",
-      publicBaseUrl: "https://tenant-a.starcite.io/v1",
     });
   });
 
-  it("prefers public env vars for browser-facing base URLs", () => {
+  it("falls back to public env vars for base URL resolution", () => {
     expect(
       getStarciteConfig({
         NEXT_PUBLIC_STARCITE_BASE_URL: "https://public.starcite.io",
         STARCITE_BASE_URL: "https://server.starcite.io",
-      }).publicBaseUrl
-    ).toBe("https://public.starcite.io");
+      }).baseUrl
+    ).toBe("https://server.starcite.io");
 
     expect(
       getStarciteConfig({
         VITE_STARCITE_API_URL: "https://vite.starcite.io/v1",
-        STARCITE_API_URL: "https://server.starcite.io/v1",
-      }).publicBaseUrl
+      }).baseUrl
     ).toBe("https://vite.starcite.io/v1");
+  });
+});
+
+describe("resolveStarciteConfig", () => {
+  it("fills in the default base URL", () => {
+    expect(resolveStarciteConfig({})).toEqual({
+      apiKey: undefined,
+      authUrl: undefined,
+      baseUrl: "http://localhost:4000",
+    });
   });
 });

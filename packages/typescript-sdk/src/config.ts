@@ -1,8 +1,13 @@
-export interface StarciteConfig {
+const DEFAULT_STARCITE_BASE_URL = "http://localhost:4000";
+
+export interface StarciteConfigInput {
   readonly apiKey?: string;
   readonly authUrl?: string;
   readonly baseUrl?: string;
-  readonly publicBaseUrl?: string;
+}
+
+export interface StarciteConfig extends StarciteConfigInput {
+  readonly baseUrl: string;
 }
 
 interface StarciteEnvSource {
@@ -45,18 +50,27 @@ function readProcessEnv(): StarciteEnvSource | undefined {
 
 export function getStarciteConfig(
   env: StarciteEnvSource | undefined = readProcessEnv()
-): StarciteConfig {
+): StarciteConfigInput {
   return {
     apiKey: firstEnvValue(env?.STARCITE_API_KEY),
     authUrl: firstEnvValue(env?.STARCITE_AUTH_URL),
-    baseUrl: firstEnvValue(env?.STARCITE_BASE_URL, env?.STARCITE_API_URL),
-    publicBaseUrl: firstEnvValue(
+    baseUrl: firstEnvValue(
+      env?.STARCITE_BASE_URL,
+      env?.STARCITE_API_URL,
       env?.NEXT_PUBLIC_STARCITE_BASE_URL,
       env?.NEXT_PUBLIC_STARCITE_API_URL,
       env?.VITE_STARCITE_BASE_URL,
-      env?.VITE_STARCITE_API_URL,
-      env?.STARCITE_BASE_URL,
-      env?.STARCITE_API_URL
+      env?.VITE_STARCITE_API_URL
     ),
+  };
+}
+
+export function resolveStarciteConfig(
+  input: StarciteConfigInput = {}
+): StarciteConfig {
+  return {
+    apiKey: trimEnvValue(input.apiKey),
+    authUrl: trimEnvValue(input.authUrl),
+    baseUrl: trimEnvValue(input.baseUrl) ?? DEFAULT_STARCITE_BASE_URL,
   };
 }

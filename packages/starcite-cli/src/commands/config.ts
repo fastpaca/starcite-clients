@@ -6,7 +6,7 @@ import {
   type GlobalOptions,
   parseConfigSetKey,
   parseEndpoint,
-  resolveConfiguredBaseUrl,
+  resolveCliStarciteConfig,
   trimString,
 } from "../runtime";
 
@@ -54,7 +54,7 @@ export async function runConfigCommand(
     }
 
     const output = {
-      endpoint: resolveConfiguredBaseUrl(fileConfig, globalOptions),
+      endpoint: resolveCliStarciteConfig(fileConfig, globalOptions).baseUrl,
       apiKey: apiKey ? "***" : null,
       apiKeySource,
       configDir: config.directory,
