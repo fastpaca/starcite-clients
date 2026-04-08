@@ -1071,6 +1071,47 @@ describe("Starcite", () => {
     ).toThrowError(StarciteError);
   });
 
+  it("uses STARCITE_API_URL when STARCITE_BASE_URL is unset and normalizes to /v1", async () => {
+    const previousBaseUrl = process.env.STARCITE_BASE_URL;
+    const previousApiUrl = process.env.STARCITE_API_URL;
+    Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    process.env.STARCITE_API_URL = "https://tenant-a.starcite.io";
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessions: [], next_cursor: null }), {
+        status: 200,
+      })
+    );
+
+    try {
+      const starcite = new Starcite({
+        fetch: fetchMock,
+      });
+
+      await starcite.listSessions();
+
+      expect(starcite.baseUrl).toBe("https://tenant-a.starcite.io/v1");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://tenant-a.starcite.io/v1/sessions",
+        expect.objectContaining({
+          method: "GET",
+        })
+      );
+    } finally {
+      if (previousBaseUrl === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+      } else {
+        process.env.STARCITE_BASE_URL = previousBaseUrl;
+      }
+
+      if (previousApiUrl === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_API_URL");
+      } else {
+        process.env.STARCITE_API_URL = previousApiUrl;
+      }
+    }
+  });
+
   it("session({ identity, id }) creates missing sessions before minting a token", async () => {
     const apiKey = makeApiKey({
       iss: "https://starcite.ai",

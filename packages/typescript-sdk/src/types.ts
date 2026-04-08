@@ -549,7 +549,11 @@ export interface RequestOptions {
  */
 export interface StarciteOptions {
   /**
-   * Base API URL. Defaults to `process.env.STARCITE_BASE_URL` or `http://localhost:4000`.
+   * Base API URL. Defaults to `process.env.STARCITE_BASE_URL`,
+   * `process.env.STARCITE_API_URL`, or `http://localhost:4000`.
+   *
+   * Pass either the origin (`https://tenant.starcite.io`) or the `/v1` API root
+   * (`https://tenant.starcite.io/v1`). The SDK normalizes both to `/v1`.
    */
   baseUrl?: string;
   /**

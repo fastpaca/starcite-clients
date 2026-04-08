@@ -111,6 +111,8 @@ describe("starcite CLI", () => {
   const listSessions = vi.fn();
   let configDir = "";
   let previousApiKey: string | undefined;
+  let previousBaseUrl: string | undefined;
+  let previousApiUrl: string | undefined;
   const serviceToken = encodeJwt({
     tenant_id: "acme",
     scopes: ["session:create", "session:read", "session:append"],
@@ -146,7 +148,11 @@ describe("starcite CLI", () => {
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
     previousApiKey = process.env.STARCITE_API_KEY;
+    previousBaseUrl = process.env.STARCITE_BASE_URL;
+    previousApiUrl = process.env.STARCITE_API_URL;
     Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
+    Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    Reflect.deleteProperty(process.env, "STARCITE_API_URL");
     agent.mockReset();
     user.mockReset();
     session.mockReset();
@@ -222,6 +228,19 @@ describe("starcite CLI", () => {
     } else {
       process.env.STARCITE_API_KEY = previousApiKey;
     }
+
+    if (previousBaseUrl === undefined) {
+      Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    } else {
+      process.env.STARCITE_BASE_URL = previousBaseUrl;
+    }
+
+    if (previousApiUrl === undefined) {
+      Reflect.deleteProperty(process.env, "STARCITE_API_URL");
+    } else {
+      process.env.STARCITE_API_URL = previousApiUrl;
+    }
+
     rmSync(configDir, { recursive: true, force: true });
   });
 
@@ -698,6 +717,45 @@ describe("starcite CLI", () => {
 
     expect(createClient).toHaveBeenCalledWith(
       "http://config-toml.local:4200",
+      serviceToken,
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
+    );
+  });
+
+  it("reads base URL from STARCITE_API_URL when STARCITE_BASE_URL is unset", async () => {
+    const { logger } = makeLogger();
+    const createClient = vi.fn((baseUrl: string) => {
+      expect(baseUrl).toBe("https://tenant-a.starcite.io");
+      return createFakeClient();
+    });
+
+    process.env.STARCITE_API_URL = "https://tenant-a.starcite.io";
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        serviceToken,
+        "create",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(createClient).toHaveBeenCalledWith(
+      "https://tenant-a.starcite.io",
       serviceToken,
       expect.objectContaining({
         load: expect.any(Function),

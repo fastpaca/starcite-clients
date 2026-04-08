@@ -35,7 +35,11 @@ function readRequiredApiKey(): string {
 }
 
 function readBaseUrl(): string {
-  return process.env.STARCITE_BASE_URL?.trim() || DEFAULT_BASE_URL;
+  return (
+    process.env.STARCITE_BASE_URL?.trim() ||
+    process.env.STARCITE_API_URL?.trim() ||
+    DEFAULT_BASE_URL
+  );
 }
 
 function readTailTimeoutMs(): number {

@@ -111,6 +111,7 @@ export class Starcite {
     const baseUrl = toApiBaseUrl(
       options.baseUrl ??
         globalThis.process?.env?.STARCITE_BASE_URL ??
+        globalThis.process?.env?.STARCITE_API_URL ??
         "http://localhost:4000"
     );
     this.baseUrl = baseUrl;

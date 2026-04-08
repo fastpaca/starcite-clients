@@ -99,6 +99,7 @@ export function resolveConfiguredBaseUrl(
   return (
     trimString(options.baseUrl) ??
     trimString(process.env.STARCITE_BASE_URL) ??
+    trimString(process.env.STARCITE_API_URL) ??
     trimString(config.baseUrl) ??
     `http://localhost:${DEFAULT_API_PORT}`
   );

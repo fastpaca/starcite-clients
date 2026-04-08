@@ -139,7 +139,10 @@ Backend must use one long-lived `Starcite` client:
 ```ts
 const starcite = new Starcite({
   apiKey: process.env.STARCITE_API_KEY!,
-  baseUrl: process.env.STARCITE_BASE_URL || "https://api.starcite.io",
+  baseUrl:
+    process.env.STARCITE_BASE_URL ??
+    process.env.STARCITE_API_URL ??
+    "https://api.starcite.io",
   authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT iss already resolves the issuer
 });
 ```
