@@ -8,6 +8,8 @@ JsonValue: TypeAlias = JsonPrimitive | dict[str, "JsonValue"] | list["JsonValue"
 JsonObject: TypeAlias = dict[str, JsonValue]
 TailCursor: TypeAlias = int
 SessionAppendQueueStatus: TypeAlias = Literal["idle", "flushing", "retrying", "paused"]
+VALID_TAIL_GAP_REASONS = {"cursor_expired", "resume_invalidated"}
+VALID_APPEND_QUEUE_STATUSES = {"idle", "flushing", "retrying", "paused"}
 
 
 def _require_mapping(value: object, context: str) -> dict[str, object]:
@@ -34,7 +36,7 @@ def _optional_string(mapping: dict[str, object], key: str) -> str | None:
 
 def _require_int(mapping: dict[str, object], key: str, *, minimum: int = 0) -> int:
     value = mapping.get(key)
-    if not isinstance(value, int) or value < minimum:
+    if type(value) is not int or value < minimum:
         raise TypeError(f"{key} must be an integer >= {minimum}")
     return value
 
@@ -43,8 +45,15 @@ def _optional_int(mapping: dict[str, object], key: str, *, minimum: int = 0) -> 
     value = mapping.get(key)
     if value is None:
         return None
-    if not isinstance(value, int) or value < minimum:
+    if type(value) is not int or value < minimum:
         raise TypeError(f"{key} must be an integer >= {minimum} when provided")
+    return value
+
+
+def _require_list(mapping: dict[str, object], key: str) -> list[object]:
+    value = mapping.get(key)
+    if not isinstance(value, list):
+        raise TypeError(f"{key} must be a list")
     return value
 
 
@@ -62,18 +71,6 @@ def _optional_object_field(mapping: dict[str, object], key: str) -> JsonObject |
     if not isinstance(value, dict):
         raise TypeError(f"{key} must be an object when provided")
     return cast(JsonObject, value)
-
-
-def _optional_string_list(
-    mapping: dict[str, object],
-    key: str,
-) -> list[str] | None:
-    value = mapping.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise TypeError(f"{key} must be a list of strings when provided")
-    return cast(list[str], value)
 
 
 @dataclass(frozen=True)
@@ -156,11 +153,8 @@ class SessionListPage:
 
 def parse_session_list_page(value: object) -> SessionListPage:
     mapping = _require_mapping(value, "SessionListPage")
-    sessions_raw = mapping.get("sessions")
-    if not isinstance(sessions_raw, list):
-        raise TypeError("sessions must be a list")
     return SessionListPage(
-        sessions=[parse_session_list_item(item) for item in sessions_raw],
+        sessions=[parse_session_list_item(item) for item in _require_list(mapping, "sessions")],
         next_cursor=_optional_string(mapping, "next_cursor"),
     )
 
@@ -271,11 +265,10 @@ class TailGap:
 
 def parse_tail_gap(value: object) -> TailGap:
     mapping = _require_mapping(value, "TailGap")
-    gap_type = mapping.get("type")
-    if gap_type != "gap":
+    if mapping.get("type") != "gap":
         raise TypeError("type must equal 'gap'")
     reason = mapping.get("reason")
-    if reason not in {"cursor_expired", "resume_invalidated"}:
+    if reason not in VALID_TAIL_GAP_REASONS:
         raise TypeError("reason must be 'cursor_expired' or 'resume_invalidated'")
     return TailGap(
         type="gap",
@@ -332,19 +325,13 @@ class SessionStoreState:
 
 def parse_session_store_state(value: object) -> SessionStoreState:
     mapping = _require_mapping(value, "SessionStoreState")
-    events_raw = mapping.get("events")
-    if not isinstance(events_raw, list):
-        raise TypeError("events must be a list")
     append = mapping.get("append")
     append_state: SessionAppendQueueState | None = None
     if append is not None:
         append_mapping = _require_mapping(append, "SessionAppendQueueState")
         status = append_mapping.get("status")
-        if status not in {"idle", "flushing", "retrying", "paused"}:
+        if status not in VALID_APPEND_QUEUE_STATUSES:
             raise TypeError("append.status must be a valid queue status")
-        pending_raw = append_mapping.get("pending")
-        if not isinstance(pending_raw, list):
-            raise TypeError("append.pending must be a list")
         append_state = SessionAppendQueueState(
             status=status,
             producer_id=_require_string(append_mapping, "producer_id"),
@@ -353,12 +340,15 @@ def parse_session_store_state(value: object) -> SessionStoreState:
                 "last_acknowledged_producer_seq",
                 minimum=0,
             ),
-            pending=[parse_append_event_request(item) for item in pending_raw],
+            pending=[
+                parse_append_event_request(item)
+                for item in _require_list(append_mapping, "pending")
+            ],
         )
     return SessionStoreState(
         last_seq=_require_int(mapping, "last_seq", minimum=0),
         cursor=_optional_int(mapping, "cursor", minimum=0),
-        events=[parse_tail_event(item) for item in events_raw],
+        events=[parse_tail_event(item) for item in _require_list(mapping, "events")],
         append=append_state,
         metadata=_optional_object_field(mapping, "metadata"),
     )

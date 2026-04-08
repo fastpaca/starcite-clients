@@ -13,6 +13,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from starcite_sdk import MemoryStore, SessionStoreState, Starcite, StarciteError, TailEvent
 from starcite_sdk.transport import HttpRequest, HttpResponse
+from starcite_sdk.types import parse_append_event_response, parse_tail_event
 
 
 def token_from_claims(claims: Mapping[str, object]) -> str:
@@ -367,3 +368,23 @@ async def test_stream_events_is_canonical_and_recovers_from_gap() -> None:
     assert session.events[-1].seq == 4
     assert session.state().cursor == 4
     assert scenario.received_queries[0]["token"] == [session_token]
+
+
+def test_parse_append_event_response_rejects_bool_for_int_fields() -> None:
+    with pytest.raises(TypeError, match="seq must be an integer >= 0"):
+        parse_append_event_response({"seq": True, "last_seq": 1, "deduped": False})
+
+
+def test_parse_tail_event_rejects_bool_for_optional_cursor() -> None:
+    with pytest.raises(TypeError, match="cursor must be an integer >= 0 when provided"):
+        parse_tail_event(
+            {
+                "seq": 1,
+                "cursor": False,
+                "type": "content",
+                "payload": {"text": "invalid"},
+                "actor": "agent:planner",
+                "producer_id": "producer_1",
+                "producer_seq": 1,
+            }
+        )
