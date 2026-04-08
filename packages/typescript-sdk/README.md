@@ -229,11 +229,16 @@ const starcite = new Starcite({
 const alice = starcite.user({ id: "u_123" });
 const bot = starcite.agent({ id: "planner" });
 
-// ── Lifecycle (backend-only, live-only for now) ────────────────────────────
+// ── Lifecycle (backend-only, live-only) ────────────────────────────────────
 
 const stopCreated = starcite.on("session.created", (event) => {
   console.log("new session", event.session_id);
 });
+const stopActivated = starcite.on("session.activated", (event) => {
+  console.log("session activated", event.session_id);
+});
+// Supported lifecycle events:
+// session.created | session.hydrating | session.activated | session.freezing | session.frozen
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 

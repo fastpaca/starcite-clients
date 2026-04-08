@@ -312,6 +312,8 @@ const phoenixMock = vi.hoisted(() => {
   return { MockPhoenixChannel, MockPhoenixSocket };
 });
 
+const INVALID_FROZEN_PAYLOAD_MESSAGE = /^Invalid session\.frozen payload:/;
+
 vi.mock("phoenix", () => {
   return {
     Channel: phoenixMock.MockPhoenixChannel,
@@ -448,7 +450,7 @@ describe("Phoenix Tail Transport", () => {
     vi.useRealTimers();
   });
 
-  it("subscribes to lifecycle over Phoenix and emits session.created", async () => {
+  it("subscribes to lifecycle over Phoenix and emits all supported lifecycle events", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
@@ -456,8 +458,20 @@ describe("Phoenix Tail Transport", () => {
     });
 
     const seen: string[] = [];
-    const stop = client.on("session.created", (event) => {
-      seen.push(event.session_id);
+    const stopCreated = client.on("session.created", (event) => {
+      seen.push(event.kind);
+    });
+    const stopHydrating = client.on("session.hydrating", (event) => {
+      seen.push(event.kind);
+    });
+    const stopActivated = client.on("session.activated", (event) => {
+      seen.push(event.kind);
+    });
+    const stopFreezing = client.on("session.freezing", (event) => {
+      seen.push(event.kind);
+    });
+    const stopFrozen = client.on("session.frozen", (event) => {
+      seen.push(event.kind);
     });
 
     await waitForSocketCount(1);
@@ -480,14 +494,77 @@ describe("Phoenix Tail Transport", () => {
         created_at: "2026-03-27T12:00:00Z",
       },
     });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.hydrating",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.activated",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.freezing",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.frozen",
+        session_id: "ses_lifecycle",
+        tenant_id: "tenant-alpha",
+      },
+    });
     await flush();
 
-    expect(seen).toEqual(["ses_lifecycle"]);
+    expect(seen).toEqual([
+      "session.created",
+      "session.hydrating",
+      "session.activated",
+      "session.freezing",
+      "session.frozen",
+    ]);
 
-    stop();
+    stopCreated();
+    stopHydrating();
+    stopActivated();
+    stopFreezing();
+    stopFrozen();
     await flush();
     expect(channel.leaveCalls).toBe(1);
     expect(socket?.disconnectCalls).toHaveLength(1);
+  });
+
+  it("keeps the lifecycle channel attached until the last lifecycle listener is removed", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const stopCreated = client.on("session.created", () => undefined);
+    const stopFrozen = client.on("session.frozen", () => undefined);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+
+    stopCreated();
+    await flush();
+    expect(channel.leaveCalls).toBe(0);
+
+    stopFrozen();
+    await flush();
+    expect(channel.leaveCalls).toBe(1);
   });
 
   it("ignores unsupported lifecycle event kinds without surfacing an error", async () => {
@@ -523,6 +600,39 @@ describe("Phoenix Tail Transport", () => {
     expect(errors).toEqual([]);
 
     stopCreated();
+    stopError();
+  });
+
+  it("surfaces invalid supported lifecycle payloads as errors", async () => {
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const errors: Error[] = [];
+    const stopFrozen = client.on("session.frozen", () => undefined);
+    const stopError = client.on("error", (error) => {
+      errors.push(error);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("lifecycle");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("lifecycle", {
+      event: {
+        kind: "session.frozen",
+        session_id: "ses_invalid",
+      },
+    });
+    await flush();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toMatch(INVALID_FROZEN_PAYLOAD_MESSAGE);
+
+    stopFrozen();
     stopError();
   });
 

@@ -44,6 +44,124 @@ function tenantIdFromApiKey(token: string): string {
 }
 
 describeLive("Starcite live API integration", () => {
+  it("receives session.created and session.activated lifecycle events against the live API", async () => {
+    const apiKey = LIVE_API_KEY;
+    if (!apiKey) {
+      throw new Error("missing STARCITE_LIVE_API_KEY");
+    }
+
+    const tenantId = tenantIdFromApiKey(apiKey);
+    const marker = `sdk-live-lifecycle-${Date.now()}`;
+    const client = new Starcite({
+      baseUrl: LIVE_API_BASE_URL,
+      apiKey,
+    });
+
+    const createdEvents: Array<{
+      metadata: Record<string, unknown>;
+      session_id: string;
+      tenant_id: string;
+    }> = [];
+    const activatedSessionIds = new Set<string>();
+    let createdSessionId: string | undefined;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `Timed out waiting for lifecycle events; created=${createdEvents.map((event) => event.session_id).join(",")} activated=${[...activatedSessionIds].join(",")}`
+          )
+        );
+      }, 20_000);
+
+      const cleanup = () => {
+        stopCreated();
+        stopActivated();
+        stopError();
+        clearTimeout(timeout);
+      };
+
+      const settle = (callback: () => void) => {
+        cleanup();
+        callback();
+      };
+
+      const maybeResolve = () => {
+        if (!createdSessionId) {
+          return;
+        }
+
+        const created = createdEvents.find((event) => {
+          return event.session_id === createdSessionId;
+        });
+        if (created && activatedSessionIds.has(createdSessionId)) {
+          settle(resolve);
+        }
+      };
+
+      const stopCreated = client.on("session.created", (event) => {
+        if (event.metadata.integration !== marker) {
+          return;
+        }
+
+        createdEvents.push(event);
+        maybeResolve();
+      });
+      const stopActivated = client.on("session.activated", (event) => {
+        activatedSessionIds.add(event.session_id);
+        maybeResolve();
+      });
+      const stopError = client.on("error", (error) => {
+        settle(() => {
+          reject(error);
+        });
+      });
+
+      const createSession = async () => {
+        try {
+          await new Promise((resolveJoin) => {
+            setTimeout(resolveJoin, 1000);
+          });
+
+          const session = await client.session({
+            identity: new StarciteIdentity({
+              tenantId,
+              id: `sdk-live-agent-${Date.now()}`,
+              type: "agent",
+            }),
+            title: "SDK live lifecycle integration",
+            metadata: {
+              integration: marker,
+            },
+          });
+
+          createdSessionId = session.id;
+          maybeResolve();
+        } catch (error) {
+          settle(() => {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          });
+        }
+      };
+
+      createSession().catch((error) => {
+        settle(() => {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+      });
+    });
+
+    const created = createdEvents.find((event) => {
+      return event.session_id === createdSessionId;
+    });
+
+    expect(createdSessionId).toMatch(SESSION_ID_PATTERN);
+    expect(created?.tenant_id).toBe(tenantId);
+    expect(created?.metadata.integration).toBe(marker);
+    expect(activatedSessionIds.has(createdSessionId ?? "")).toBe(true);
+  }, 45_000);
+
   it("creates, appends, tails, and lists sessions against the live API", async () => {
     const apiKey = LIVE_API_KEY;
     if (!apiKey) {
