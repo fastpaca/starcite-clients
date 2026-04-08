@@ -45,6 +45,20 @@ const WORKER_COLORS: AgentColor[] = [
   { bg: "bg-cyan-50", text: "text-cyan-700", accent: "border-cyan-200" },
 ];
 
+async function fetchToken(sessionId?: string) {
+  const response = await fetch("/api/starcite/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Session token request failed (${response.status}).`);
+  }
+
+  return (await response.json()) as { sessionId: string; token: string };
+}
+
 export default function Page() {
   const { sessionId, session, error, retry, setError } = useViewerSession();
   const { events, append } = useStarciteSession({
@@ -116,15 +130,16 @@ function useViewerSession() {
     async (existingId?: string) => {
       try {
         setError(undefined);
-        const { sessionId: nextSessionId, token } =
-          await requestViewerSession(existingId);
+        const { sessionId: nextSessionId, token } = await fetchToken(
+          existingId
+        );
 
         setSessionId(nextSessionId);
         setSession(
           starcite.session({
             token,
             refreshToken: async ({ sessionId }) => {
-              return (await requestViewerSession(sessionId)).token;
+              return (await fetchToken(sessionId)).token;
             },
           })
         );
@@ -171,23 +186,6 @@ function createBrowserClient() {
 
 function currentSessionIdFromUrl(): string | undefined {
   return new URLSearchParams(window.location.search).get("sessionId")?.trim();
-}
-
-async function requestViewerSession(sessionId?: string) {
-  const response = await fetch("/api/starcite/session", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(sessionId ? { sessionId } : {}),
-  });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(
-      typeof body.error === "string" ? body.error : `Failed (${response.status})`
-    );
-  }
-
-  return (await response.json()) as { sessionId: string; token: string };
 }
 
 function Feed({

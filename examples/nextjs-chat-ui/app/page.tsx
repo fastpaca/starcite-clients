@@ -6,7 +6,7 @@ import {
   Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -26,6 +26,20 @@ import {
   PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
 
+async function fetchToken(sessionId?: string) {
+  const response = await fetch("/api/starcite/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Session token request failed (${response.status}).`);
+  }
+
+  return (await response.json()) as { token: string; sessionId: string };
+}
+
 export default function Page() {
   const [starcite] = useState(
     () =>
@@ -42,20 +56,6 @@ export default function Page() {
   const [session, setSession] = useState<StarciteSession>();
   const [error, setError] = useState<string>();
 
-  const requestSessionBinding = useCallback(async (sessionId?: string) => {
-    const response = await fetch("/api/starcite/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(sessionId ? { sessionId } : {}),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Session token request failed (${response.status}).`);
-    }
-
-    return (await response.json()) as { token: string; sessionId: string };
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -63,7 +63,7 @@ export default function Page() {
       const fromQuery = new URLSearchParams(window.location.search).get(
         "sessionId"
       );
-      const next = await requestSessionBinding(fromQuery ?? undefined);
+      const next = await fetchToken(fromQuery ?? undefined);
       if (cancelled) {
         return;
       }
@@ -73,7 +73,7 @@ export default function Page() {
         starcite.session({
           token: next.token,
           refreshToken: async ({ sessionId }) => {
-            return (await requestSessionBinding(sessionId)).token;
+            return (await fetchToken(sessionId)).token;
           },
         })
       );
@@ -96,7 +96,7 @@ export default function Page() {
     return () => {
       cancelled = true;
     };
-  }, [requestSessionBinding, starcite]);
+  }, [starcite]);
 
   return (
     <main className="mx-auto flex h-dvh w-full max-w-4xl flex-col gap-3 p-4">
