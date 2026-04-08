@@ -2,7 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StarciteIdentity, type TailEvent } from "@starcite/sdk";
+import {
+  type StarciteConfig,
+  StarciteIdentity,
+  type TailEvent,
+} from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
 import { StarciteCliStore } from "../src/store";
@@ -104,6 +108,19 @@ function writeCredentials(configDir: string, apiKey: string): void {
   );
 }
 
+function expectStarciteConfig(
+  config: StarciteConfig,
+  expected: { apiKey?: string; baseUrl: string }
+): void {
+  for (const [key, value] of Object.entries(expected)) {
+    if (config[key as keyof StarciteConfig] !== value) {
+      throw new Error(
+        `Expected config.${key} to equal ${JSON.stringify(value)}, received ${JSON.stringify(config[key as keyof StarciteConfig])}`
+      );
+    }
+  }
+}
+
 describe("starcite CLI", () => {
   const agent = vi.fn();
   const user = vi.fn();
@@ -111,6 +128,8 @@ describe("starcite CLI", () => {
   const listSessions = vi.fn();
   let configDir = "";
   let previousApiKey: string | undefined;
+  let previousBaseUrl: string | undefined;
+  let previousApiUrl: string | undefined;
   const serviceToken = encodeJwt({
     tenant_id: "acme",
     scopes: ["session:create", "session:read", "session:append"],
@@ -146,7 +165,11 @@ describe("starcite CLI", () => {
   beforeEach(() => {
     configDir = mkdtempSync(join(tmpdir(), "starcite-cli-test-"));
     previousApiKey = process.env.STARCITE_API_KEY;
+    previousBaseUrl = process.env.STARCITE_BASE_URL;
+    previousApiUrl = process.env.STARCITE_API_URL;
     Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
+    Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    Reflect.deleteProperty(process.env, "STARCITE_API_URL");
     agent.mockReset();
     user.mockReset();
     session.mockReset();
@@ -222,6 +245,19 @@ describe("starcite CLI", () => {
     } else {
       process.env.STARCITE_API_KEY = previousApiKey;
     }
+
+    if (previousBaseUrl === undefined) {
+      Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    } else {
+      process.env.STARCITE_BASE_URL = previousBaseUrl;
+    }
+
+    if (previousApiUrl === undefined) {
+      Reflect.deleteProperty(process.env, "STARCITE_API_URL");
+    } else {
+      process.env.STARCITE_API_URL = previousApiUrl;
+    }
+
     rmSync(configDir, { recursive: true, force: true });
   });
 
@@ -589,7 +625,7 @@ describe("starcite CLI", () => {
   it("passes the CLI store into the SDK client for high-level appends", async () => {
     const { logger } = makeLogger();
     const createClient = vi.fn(
-      (_baseUrl: string, _apiKey?: string, store?: StarciteCliStore) => {
+      (_config: StarciteConfig, store?: StarciteCliStore) => {
         expect(store).toBeDefined();
         const sessionStore = store?.sessionStore("http://localhost:45187/v1");
         expect(typeof sessionStore?.load).toBe("function");
@@ -624,8 +660,11 @@ describe("starcite CLI", () => {
 
   it("reads base URL from config file", async () => {
     const { logger } = makeLogger();
-    const createClient = vi.fn((baseUrl: string) => {
-      expect(baseUrl).toBe("http://config.local:4100");
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://config.local:4100",
+      });
       return createFakeClient();
     });
 
@@ -655,8 +694,10 @@ describe("starcite CLI", () => {
     );
 
     expect(createClient).toHaveBeenCalledWith(
-      "http://config.local:4100",
-      serviceToken,
+      expect.objectContaining({
+        apiKey: serviceToken,
+        baseUrl: "http://config.local:4100",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -666,8 +707,11 @@ describe("starcite CLI", () => {
 
   it("reads base URL from toml config file", async () => {
     const { logger } = makeLogger();
-    const createClient = vi.fn((baseUrl: string) => {
-      expect(baseUrl).toBe("http://config-toml.local:4200");
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://config-toml.local:4200",
+      });
       return createFakeClient();
     });
 
@@ -697,8 +741,54 @@ describe("starcite CLI", () => {
     );
 
     expect(createClient).toHaveBeenCalledWith(
-      "http://config-toml.local:4200",
-      serviceToken,
+      expect.objectContaining({
+        apiKey: serviceToken,
+        baseUrl: "http://config-toml.local:4200",
+      }),
+      expect.objectContaining({
+        load: expect.any(Function),
+        save: expect.any(Function),
+      })
+    );
+  });
+
+  it("reads base URL from STARCITE_API_URL when STARCITE_BASE_URL is unset", async () => {
+    const { logger } = makeLogger();
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "https://tenant-a.starcite.io",
+      });
+      return createFakeClient();
+    });
+
+    process.env.STARCITE_API_URL = "https://tenant-a.starcite.io";
+
+    const program = buildProgram({
+      logger,
+      createClient,
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        serviceToken,
+        "create",
+        "--title",
+        "Draft contract",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(createClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: serviceToken,
+        baseUrl: "https://tenant-a.starcite.io",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -712,9 +802,11 @@ describe("starcite CLI", () => {
       tenant_id: "acme",
       scopes: ["session:create", "session:read", "session:append"],
     });
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(authToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: authToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -733,8 +825,10 @@ describe("starcite CLI", () => {
     );
 
     expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      authToken,
+      expect.objectContaining({
+        apiKey: authToken,
+        baseUrl: "http://localhost:45187",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -744,9 +838,11 @@ describe("starcite CLI", () => {
 
   it("append binds an agent identity through client.session", async () => {
     const { logger, info } = makeLogger();
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(serviceToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -788,8 +884,10 @@ describe("starcite CLI", () => {
       expectedSeq: undefined,
     });
     expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      serviceToken,
+      expect.objectContaining({
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -800,9 +898,11 @@ describe("starcite CLI", () => {
 
   it("append binds user identities through client.session", async () => {
     const { logger, info } = makeLogger();
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(serviceToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -910,9 +1010,11 @@ describe("starcite CLI", () => {
 
   it("append always binds the same agent identity through client.session", async () => {
     const { logger } = makeLogger();
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(serviceToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -968,9 +1070,11 @@ describe("starcite CLI", () => {
   it("append does not inspect token shape before binding a session", async () => {
     const { logger, info } = makeLogger();
     const opaqueToken = "sk_service_opaque_token";
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(opaqueToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: opaqueToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -1002,8 +1106,10 @@ describe("starcite CLI", () => {
       identity: expect.any(StarciteIdentity),
     });
     expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      opaqueToken,
+      expect.objectContaining({
+        apiKey: opaqueToken,
+        baseUrl: "http://localhost:45187",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -1014,9 +1120,11 @@ describe("starcite CLI", () => {
 
   it("tail binds the default CLI identity through client.session", async () => {
     const { logger, info } = makeLogger();
-    const createClient = vi.fn((baseUrl: string, apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
-      expect(apiKey).toBe(serviceToken);
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -1040,8 +1148,10 @@ describe("starcite CLI", () => {
     expect(tailSessionInput?.identity.toActor()).toBe("agent:starcite-cli");
     expect(tailSessionInput?.id).toBe("ses_123");
     expect(createClient).toHaveBeenCalledWith(
-      "http://localhost:45187",
-      serviceToken,
+      expect.objectContaining({
+        apiKey: serviceToken,
+        baseUrl: "http://localhost:45187",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -1056,8 +1166,11 @@ describe("starcite CLI", () => {
       tenant_id: "override-tenant",
       scopes: ["session:create", "session:read", "session:append"],
     });
-    const createClient = vi.fn((baseUrl: string, _apiKey?: string) => {
-      expect(baseUrl).toBe("http://localhost:45187");
+    const createClient = vi.fn((config: StarciteConfig) => {
+      expectStarciteConfig(config, {
+        apiKey: overrideToken,
+        baseUrl: "http://localhost:45187",
+      });
       return createFakeClient();
     });
 
@@ -1084,8 +1197,10 @@ describe("starcite CLI", () => {
     );
 
     expect(createClient).toHaveBeenLastCalledWith(
-      "http://localhost:45187",
-      overrideToken,
+      expect.objectContaining({
+        apiKey: overrideToken,
+        baseUrl: "http://localhost:45187",
+      }),
       expect.objectContaining({
         load: expect.any(Function),
         save: expect.any(Function),
@@ -1231,7 +1346,7 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: (_baseUrl, _apiKey, store) => {
+      createClient: (_config, store) => {
         capturedStore = store;
         store.sessionStore("http://localhost:45187").save("ses_123", {
           cursor: 1,
@@ -1653,5 +1768,41 @@ describe("starcite CLI", () => {
     expect(output.apiKey).toBe("***");
     expect(output.apiKeySource).toBe("stored");
     expect(info).toEqual(["API key saved."]);
+  });
+
+  it("config show reports CLI token overrides as the active source", async () => {
+    const { logger } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => {
+        throw new Error("config commands should not create a client");
+      },
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        "sk_cli_override",
+        "--json",
+        "config",
+        "show",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const output = JSON.parse(messages.join("")) as {
+      apiKey?: string | null;
+      apiKeySource?: string;
+    };
+
+    expect(output.apiKey).toBe("***");
+    expect(output.apiKeySource).toBe("option");
   });
 });

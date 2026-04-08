@@ -30,9 +30,7 @@ without the chat projection layer.
 import { Starcite } from "@starcite/sdk";
 import { useStarciteSession } from "@starcite/react";
 
-const starcite = new Starcite({
-  baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL,
-});
+const starcite = new Starcite();
 
 export function Timeline({ token }: { token: string }) {
   const session = starcite.session({
@@ -80,9 +78,7 @@ stays the source of truth.
 import { Starcite } from "@starcite/sdk";
 import { useStarciteChat } from "@starcite/react";
 
-const starcite = new Starcite({
-  baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL,
-});
+const starcite = new Starcite();
 
 export function Chat({ token }: { token: string }) {
   const session = starcite.session({

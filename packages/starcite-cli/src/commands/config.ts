@@ -5,8 +5,7 @@ import {
   type GlobalOptions,
   parseConfigSetKey,
   parseEndpoint,
-  resolveConfiguredBaseUrl,
-  trimString,
+  resolveCliStarciteConfig,
 } from "../runtime";
 
 export async function runConfigCommand(
@@ -42,20 +41,17 @@ export async function runConfigCommand(
 
   if (action === "show") {
     const fileConfig = await config.readConfig();
-    const apiKey = await config.readApiKey();
-    const fromEnv = trimString(process.env.STARCITE_API_KEY);
-    let apiKeySource = "unset";
-
-    if (fromEnv) {
-      apiKeySource = "env";
-    } else if (apiKey) {
-      apiKeySource = "stored";
-    }
+    const storedApiKey = await config.readApiKey();
+    const resolved = resolveCliStarciteConfig(
+      fileConfig,
+      globalOptions,
+      storedApiKey
+    );
 
     const output = {
-      endpoint: resolveConfiguredBaseUrl(fileConfig, globalOptions),
-      apiKey: apiKey ? "***" : null,
-      apiKeySource,
+      endpoint: resolved.config.baseUrl,
+      apiKey: resolved.config.apiKey ? "***" : null,
+      apiKeySource: resolved.apiKeySource,
       configDir: config.directory,
     };
 

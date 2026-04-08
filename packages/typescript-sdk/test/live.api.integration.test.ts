@@ -194,8 +194,8 @@ describeLive("Starcite live API integration", () => {
     const tenantId = tenantIdFromApiKey(apiKey);
     const marker = `sdk-live-${Date.now()}`;
     const client = new Starcite({
-      baseUrl: LIVE_API_BASE_URL,
       apiKey,
+      baseUrl: LIVE_API_BASE_URL,
     });
 
     const session = await client.session({

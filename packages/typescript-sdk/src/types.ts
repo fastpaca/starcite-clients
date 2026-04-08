@@ -545,39 +545,6 @@ export interface RequestOptions {
 }
 
 /**
- * Client construction options.
- */
-export interface StarciteOptions {
-  /**
-   * Base API URL. Defaults to `process.env.STARCITE_BASE_URL` or `http://localhost:4000`.
-   */
-  baseUrl?: string;
-  /**
-   * Custom fetch implementation for non-standard runtimes.
-   */
-  fetch?: typeof fetch;
-  /**
-   * Service key / JWT token used for authenticated backend requests.
-   */
-  apiKey?: string;
-  /**
-   * Auth issuer URL used to mint session tokens. When omitted, the SDK derives
-   * this from API key JWT `iss` (issuer authority) or `STARCITE_AUTH_URL`.
-   */
-  authUrl?: string;
-  /**
-   * Optional session store used for resume state + retained event persistence.
-   *
-   * When omitted, fresh attaches replay from the start of the server tail.
-   */
-  store?: SessionStore;
-  /**
-   * Default append queue behavior for sessions created by this client.
-   */
-  appendOptions?: SessionAppendOptions;
-}
-
-/**
  * Live tenant-scoped lifecycle event emitted by `starcite.on(...)`.
  */
 export const LifecycleEventEnvelopeSchema = z

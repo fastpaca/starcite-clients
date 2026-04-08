@@ -1,9 +1,9 @@
 import {
+  getStarciteConfig,
+  resolveStarciteConfig,
   Starcite,
   StarciteApiError,
 } from "../packages/typescript-sdk/src/index.ts";
-
-const DEFAULT_BASE_URL = "https://api.starcite.io";
 const DEFAULT_TAIL_TIMEOUT_MS = 15_000;
 const DEFAULT_SETTLE_MS = 1000;
 
@@ -23,19 +23,23 @@ interface LiveSmokeResult {
   };
 }
 
-function readRequiredApiKey(): string {
-  const apiKey = process.env.STARCITE_API_KEY?.trim();
+function readStarciteRuntimeConfig(): {
+  readonly apiKey: string;
+  readonly authUrl?: string;
+  readonly baseUrl: string;
+} {
+  const config = resolveStarciteConfig(getStarciteConfig());
+  const apiKey = config.apiKey;
   if (!apiKey) {
     throw new Error(
       "STARCITE_API_KEY is required (set it in your shell before running bun run smoke:live)"
     );
   }
 
-  return apiKey;
-}
-
-function readBaseUrl(): string {
-  return process.env.STARCITE_BASE_URL?.trim() || DEFAULT_BASE_URL;
+  return {
+    ...config,
+    apiKey,
+  };
 }
 
 function readTailTimeoutMs(): number {
@@ -71,11 +75,10 @@ function isArchiveReadUnavailable(error: unknown): boolean {
 }
 
 async function main(): Promise<void> {
-  const apiKey = readRequiredApiKey();
-  const baseUrl = readBaseUrl();
+  const config = readStarciteRuntimeConfig();
   const tailTimeoutMs = readTailTimeoutMs();
   const requireListSessions = shouldRequireListSessions();
-  const client = new Starcite({ baseUrl, apiKey });
+  const client = new Starcite(config);
   const session = await client.session({
     identity: client.agent({ id: "live-smoke" }),
     title: `live-smoke-${new Date().toISOString()}`,
@@ -85,7 +88,7 @@ async function main(): Promise<void> {
   });
 
   const result: LiveSmokeResult = {
-    baseUrl,
+    baseUrl: config.baseUrl,
     sessionId: session.id,
     listSessions: {
       ok: false,

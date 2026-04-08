@@ -26,9 +26,6 @@ Detailed docs:
 import { MemoryStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY, // required for user()/agent() and session({ identity })
-  baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
   store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
@@ -73,9 +70,7 @@ session.disconnect();
 import { Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  baseUrl: process.env.STARCITE_BASE_URL,
-  apiKey: process.env.STARCITE_API_KEY,
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT iss already resolves the issuer
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
 });
 
 const planner = starcite.agent({ id: "planner" });
@@ -106,9 +101,7 @@ const stop = session.on("event", (event) => {
 ```ts
 import { Starcite } from "@starcite/sdk";
 
-const starcite = new Starcite({
-  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
-});
+const starcite = new Starcite();
 
 const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
   (res) => res.json()
@@ -130,6 +123,10 @@ starcite sessions list --limit 5
 starcite append ses_demo --agent researcher --text "Found 8 relevant cases..."
 starcite tail ses_demo --limit 1
 ```
+
+`baseUrl` accepts either the instance origin (`https://tenant.starcite.io`) or
+the explicit API root (`https://tenant.starcite.io/v1`). The SDK normalizes the
+origin form to `/v1` automatically.
 
 ## Development Commands
 

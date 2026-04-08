@@ -40,8 +40,9 @@ Base URL:
 
 1. `--base-url`
 2. `STARCITE_BASE_URL`
-3. `baseUrl` in `config.json` or `config.toml`
-4. `http://localhost:45187`
+3. `STARCITE_API_URL`
+4. `baseUrl` in `config.json` or `config.toml`
+5. `http://localhost:45187`
 
 Credential:
 
@@ -92,7 +93,7 @@ Supported `config set` keys:
 
 - resolved endpoint
 - whether an API key is present
-- whether that API key came from env or local storage
+- whether that API key came from a CLI flag, env, or local storage
 - the active config directory
 
 ### `create`
@@ -204,6 +205,9 @@ By default the CLI uses `~/.starcite`:
 - `config.json` or `config.toml`: optional defaults such as `baseUrl` and `apiKey`
 - `credentials.json`: saved API key
 - `state.json`: SDK session-store state keyed by base URL and session id
+
+The CLI forwards the resolved base URL into the SDK, so either
+`https://tenant.starcite.io` or `https://tenant.starcite.io/v1` works.
 
 `state.json` is where retained events, numeric tail cursor, and append queue
 state are cached. It does not cache session tokens.

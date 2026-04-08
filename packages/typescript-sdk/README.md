@@ -49,9 +49,6 @@ Use the identity flow. This creates or binds a session and mints a session token
 import { MemoryStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  baseUrl: process.env.STARCITE_BASE_URL,
-  apiKey: process.env.STARCITE_API_KEY,
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT already has iss
   // Use a durable SessionStore in production.
   store: new MemoryStore(),
 });
@@ -148,9 +145,7 @@ Backend:
 import { Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
-  baseUrl: process.env.STARCITE_BASE_URL,
-  apiKey: process.env.STARCITE_API_KEY,
-  authUrl: process.env.STARCITE_AUTH_URL,
+  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
 });
 
 export async function listSessionsForAdmin() {
@@ -187,9 +182,7 @@ Frontend admin inspector:
 ```ts
 import { Starcite } from "@starcite/sdk";
 
-const starcite = new Starcite({
-  baseUrl: import.meta.env.VITE_STARCITE_BASE_URL,
-});
+const starcite = new Starcite();
 
 export async function inspectSession(sessionId: string) {
   const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
@@ -228,9 +221,6 @@ import {
 // ── Construction ────────────────────────────────────────────────────────────
 
 const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY, // required for user()/agent() and session({ identity })
-  baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
-  authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
   store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });

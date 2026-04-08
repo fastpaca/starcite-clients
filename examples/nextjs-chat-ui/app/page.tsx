@@ -39,18 +39,16 @@ async function fetchToken(sessionId?: string) {
 
   return (await response.json()) as { token: string; sessionId: string };
 }
-
 export default function Page() {
   const [starcite] = useState(
     () =>
       new Starcite({
-        baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL || "https://api.starcite.io",
         store:
           typeof window === "undefined"
             ? undefined
             : new LocalStorageSessionStore({
-              keyPrefix: "starcite:nextjs-chat-ui",
-            }),
+                keyPrefix: "starcite:nextjs-chat-ui",
+              }),
       })
   );
   const [session, setSession] = useState<StarciteSession>();

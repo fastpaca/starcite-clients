@@ -1,4 +1,9 @@
-import { Starcite, type TailEvent } from "@starcite/sdk";
+import {
+  getStarciteConfig,
+  Starcite,
+  type StarciteConfig,
+  type TailEvent,
+} from "@starcite/sdk";
 import arg from "arg";
 import {
   resolveConfigDir,
@@ -8,6 +13,7 @@ import {
 import { StarciteCliStore } from "./store";
 
 const DEFAULT_API_PORT = 45_187;
+const DEFAULT_API_BASE_URL = `http://localhost:${DEFAULT_API_PORT}`;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
 const TRAILING_SLASHES_REGEX = /\/+$/;
 
@@ -33,8 +39,7 @@ export interface GlobalOptions {
 
 export interface CliDependencies {
   createClient?: (
-    baseUrl: string,
-    apiKey: string | undefined,
+    config: StarciteConfig & { readonly baseUrl: string },
     store: StarciteCliStore
   ) => Starcite;
   logger?: LoggerLike;
@@ -92,16 +97,39 @@ export function parseArgs(
   }
 }
 
-export function resolveConfiguredBaseUrl(
-  config: StarciteCliConfig,
-  options: GlobalOptions
-): string {
-  return (
-    trimString(options.baseUrl) ??
-    trimString(process.env.STARCITE_BASE_URL) ??
-    trimString(config.baseUrl) ??
-    `http://localhost:${DEFAULT_API_PORT}`
-  );
+export function resolveCliStarciteConfig(
+  fileConfig: StarciteCliConfig,
+  options: GlobalOptions,
+  storedApiKey?: string,
+  envConfig = getStarciteConfig()
+): {
+  readonly apiKeySource: "option" | "env" | "stored" | "unset";
+  readonly config: StarciteConfig & { readonly baseUrl: string };
+} {
+  const optionToken = trimString(options.token);
+  const localApiKey = trimString(storedApiKey);
+  let apiKeySource: "option" | "env" | "stored" | "unset" = "unset";
+
+  if (optionToken) {
+    apiKeySource = "option";
+  } else if (envConfig.apiKey) {
+    apiKeySource = "env";
+  } else if (localApiKey) {
+    apiKeySource = "stored";
+  }
+
+  return {
+    apiKeySource,
+    config: {
+      apiKey: optionToken ?? envConfig.apiKey ?? localApiKey,
+      authUrl: envConfig.authUrl,
+      baseUrl:
+        trimString(options.baseUrl) ??
+        envConfig.baseUrl ??
+        trimString(fileConfig.baseUrl) ??
+        DEFAULT_API_BASE_URL,
+    },
+  };
 }
 
 export function parseNonNegativeInteger(
@@ -223,21 +251,22 @@ export class CliRuntime {
       resolveConfigDir(options.configDir)
     );
     const store = new StarciteCliStore(config.directory);
-    const baseUrl = resolveConfiguredBaseUrl(
-      await config.readConfig(),
-      options
+    const fileConfig = await config.readConfig();
+    const storedApiKey = await config.readApiKey();
+    const { config: clientConfig } = resolveCliStarciteConfig(
+      fileConfig,
+      options,
+      storedApiKey
     );
-    const apiKey = trimString(options.token) ?? (await config.readApiKey());
     const client =
-      this.createClient?.(baseUrl, apiKey, store) ??
+      this.createClient?.(clientConfig, store) ??
       new Starcite({
-        baseUrl,
-        apiKey,
-        store: store.sessionStore(baseUrl),
+        ...clientConfig,
+        store: store.sessionStore(clientConfig.baseUrl),
       });
 
     return {
-      baseUrl,
+      baseUrl: clientConfig.baseUrl,
       json: options.json,
       config,
       store,

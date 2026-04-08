@@ -112,11 +112,6 @@ export class StarciteCliConfigStore {
   }
 
   async readApiKey(): Promise<string | undefined> {
-    const fromEnv = trimString(process.env.STARCITE_API_KEY);
-    if (fromEnv) {
-      return fromEnv;
-    }
-
     const fromCredentials = trimString(this.readCredentials().apiKey);
     if (fromCredentials) {
       return fromCredentials;

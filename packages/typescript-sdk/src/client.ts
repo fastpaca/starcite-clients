@@ -1,5 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { decodeApiKeyContext, decodeSessionToken } from "./auth";
+import { resolveStarciteConfig, type StarciteConfig } from "./config";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
@@ -36,21 +37,17 @@ import {
   SessionRecordSchema,
   type SessionStore,
   type SessionTokenRefreshHandler,
-  type StarciteOptions,
 } from "./types";
 
 /**
  * Resolves auth issuer base URL in this order:
- * explicit option -> env -> API key JWT issuer authority.
+ * explicit config -> API key JWT issuer authority.
  */
 function resolveAuthBaseUrl(
-  explicitAuthUrl: string | undefined,
+  configuredAuthUrl: string | undefined,
   issuerAuthority: string | undefined
 ): string | undefined {
-  const value =
-    explicitAuthUrl ??
-    globalThis.process?.env?.STARCITE_AUTH_URL ??
-    issuerAuthority;
+  const value = configuredAuthUrl ?? issuerAuthority;
   if (!value) {
     return undefined;
   }
@@ -95,6 +92,7 @@ export class Starcite {
   /** Normalized API base URL ending with `/v1`. */
   readonly baseUrl: string;
 
+  private readonly config: StarciteConfig & { readonly baseUrl: string };
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredTenantId?: string;
@@ -107,18 +105,21 @@ export class Starcite {
   private closeLifecycleChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
 
-  constructor(options: StarciteOptions = {}) {
-    const baseUrl = toApiBaseUrl(
-      options.baseUrl ??
-        globalThis.process?.env?.STARCITE_BASE_URL ??
-        "http://localhost:4000"
-    );
+  constructor(
+    options: StarciteConfig & {
+      fetch?: typeof fetch;
+      store?: SessionStore;
+      appendOptions?: SessionAppendOptions;
+    } = {}
+  ) {
+    this.config = resolveStarciteConfig(options);
+    const baseUrl = toApiBaseUrl(this.config.baseUrl);
     this.baseUrl = baseUrl;
 
     const fetchFn =
       options.fetch ??
       ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
-    const apiKey = options.apiKey;
+    const apiKey = this.config.apiKey;
     let issuerAuthority: string | undefined;
 
     if (apiKey) {
@@ -127,7 +128,7 @@ export class Starcite {
       this.inferredTenantId = apiKeyContext.tenantId;
     }
 
-    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
+    this.authBaseUrl = resolveAuthBaseUrl(this.config.authUrl, issuerAuthority);
     this.apiKey = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;
@@ -169,7 +170,7 @@ export class Starcite {
   ): () => void {
     if (!this.apiKey) {
       throw new StarciteError(
-        "starcite.on() requires StarciteOptions.apiKey. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token."
+        "starcite.on() requires apiKey in the Starcite config. Lifecycle events are backend-only and authenticate with the server API key, not a minted session token."
       );
     }
 
@@ -439,13 +440,13 @@ export class Starcite {
   ): Promise<{ token: string; expires_in: number }> {
     if (!this.transport.bearerToken) {
       throw new StarciteError(
-        "session() with identity requires apiKey. Set StarciteOptions.apiKey."
+        "session() with identity requires apiKey. Set apiKey in the Starcite config."
       );
     }
 
     if (!this.authBaseUrl) {
       throw new StarciteError(
-        "session() could not resolve auth issuer URL. Set StarciteOptions.authUrl, STARCITE_AUTH_URL, or use an API key JWT with an 'iss' claim."
+        "session() could not resolve auth issuer URL. Set authUrl in the Starcite config, set STARCITE_AUTH_URL, or use an API key JWT with an 'iss' claim."
       );
     }
 
