@@ -1,4 +1,5 @@
 import {
+  getStarciteConfig,
   Starcite,
   StarciteApiError,
 } from "../packages/typescript-sdk/src/index.ts";
@@ -24,7 +25,7 @@ interface LiveSmokeResult {
 }
 
 function readRequiredApiKey(): string {
-  const apiKey = process.env.STARCITE_API_KEY?.trim();
+  const apiKey = getStarciteConfig().apiKey;
   if (!apiKey) {
     throw new Error(
       "STARCITE_API_KEY is required (set it in your shell before running bun run smoke:live)"
@@ -35,11 +36,7 @@ function readRequiredApiKey(): string {
 }
 
 function readBaseUrl(): string {
-  return (
-    process.env.STARCITE_BASE_URL?.trim() ||
-    process.env.STARCITE_API_URL?.trim() ||
-    DEFAULT_BASE_URL
-  );
+  return getStarciteConfig().baseUrl ?? DEFAULT_BASE_URL;
 }
 
 function readTailTimeoutMs(): number {

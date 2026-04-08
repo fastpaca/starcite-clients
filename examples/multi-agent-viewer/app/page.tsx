@@ -4,8 +4,8 @@ import { useStarciteSession } from "@starcite/react";
 import {
   LocalStorageSessionStore,
   Starcite,
-  type TailEvent,
   type StarciteSession,
+  type TailEvent,
 } from "@starcite/sdk";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
@@ -173,8 +173,6 @@ function useViewerSession() {
 
 function createBrowserClient() {
   return new Starcite({
-    baseUrl:
-      process.env.NEXT_PUBLIC_STARCITE_BASE_URL ?? "https://api.starcite.io",
     store:
       typeof window === "undefined"
         ? undefined

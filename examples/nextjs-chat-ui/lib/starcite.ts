@@ -1,10 +1,9 @@
-import { Starcite } from "@starcite/sdk";
+import { getStarciteConfig, Starcite } from "@starcite/sdk";
+
+const config = getStarciteConfig();
 
 /** One client for the whole server: lifecycle listeners and session mint must share this. */
 export const starcite = new Starcite({
-  apiKey: process.env.STARCITE_API_KEY!,
-  baseUrl:
-    process.env.STARCITE_BASE_URL ??
-    process.env.STARCITE_API_URL ??
-    "https://api.starcite.io",
+  apiKey: config.apiKey!,
+  baseUrl: config.baseUrl ?? "https://api.starcite.io",
 });

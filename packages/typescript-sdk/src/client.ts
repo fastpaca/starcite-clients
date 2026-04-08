@@ -1,5 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { decodeApiKeyContext, decodeSessionToken } from "./auth";
+import { getStarciteConfig } from "./config";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
@@ -45,12 +46,10 @@ import {
  */
 function resolveAuthBaseUrl(
   explicitAuthUrl: string | undefined,
+  envAuthUrl: string | undefined,
   issuerAuthority: string | undefined
 ): string | undefined {
-  const value =
-    explicitAuthUrl ??
-    globalThis.process?.env?.STARCITE_AUTH_URL ??
-    issuerAuthority;
+  const value = explicitAuthUrl ?? envAuthUrl ?? issuerAuthority;
   if (!value) {
     return undefined;
   }
@@ -108,11 +107,9 @@ export class Starcite {
   private lifecycleBindingRef = 0;
 
   constructor(options: StarciteOptions = {}) {
+    const config = getStarciteConfig();
     const baseUrl = toApiBaseUrl(
-      options.baseUrl ??
-        globalThis.process?.env?.STARCITE_BASE_URL ??
-        globalThis.process?.env?.STARCITE_API_URL ??
-        "http://localhost:4000"
+      options.baseUrl ?? config.baseUrl ?? "http://localhost:4000"
     );
     this.baseUrl = baseUrl;
 
@@ -128,7 +125,11 @@ export class Starcite {
       this.inferredTenantId = apiKeyContext.tenantId;
     }
 
-    this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
+    this.authBaseUrl = resolveAuthBaseUrl(
+      options.authUrl,
+      config.authUrl,
+      issuerAuthority
+    );
     this.apiKey = apiKey;
     this.store = options.store;
     this.appendOptions = options.appendOptions;

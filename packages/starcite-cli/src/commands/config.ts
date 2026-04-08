@@ -1,3 +1,4 @@
+import { getStarciteConfig } from "@starcite/sdk";
 import { resolveConfigDir, StarciteCliConfigStore } from "../config";
 import {
   type CliRuntime,
@@ -43,7 +44,7 @@ export async function runConfigCommand(
   if (action === "show") {
     const fileConfig = await config.readConfig();
     const apiKey = await config.readApiKey();
-    const fromEnv = trimString(process.env.STARCITE_API_KEY);
+    const fromEnv = getStarciteConfig().apiKey;
     let apiKeySource = "unset";
 
     if (fromEnv) {

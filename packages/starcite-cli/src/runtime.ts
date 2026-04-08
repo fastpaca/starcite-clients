@@ -1,4 +1,8 @@
-import { Starcite, type TailEvent } from "@starcite/sdk";
+import {
+  getStarciteConfig,
+  Starcite,
+  type TailEvent,
+} from "@starcite/sdk";
 import arg from "arg";
 import {
   resolveConfigDir,
@@ -98,8 +102,7 @@ export function resolveConfiguredBaseUrl(
 ): string {
   return (
     trimString(options.baseUrl) ??
-    trimString(process.env.STARCITE_BASE_URL) ??
-    trimString(process.env.STARCITE_API_URL) ??
+    getStarciteConfig().baseUrl ??
     trimString(config.baseUrl) ??
     `http://localhost:${DEFAULT_API_PORT}`
   );
