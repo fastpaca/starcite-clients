@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
 import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
-import { MemoryStore } from "../src/session-store";
+import { MemorySessionCache } from "../src/session-cache";
 
 const phoenixMock = vi.hoisted(() => {
   class MockPush {
@@ -758,11 +758,13 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("uses session-scoped Phoenix sockets for identity-backed sessions and rejoins each topic from its own cursor", async () => {
-    const store = new MemoryStore();
-    store.save("ses_beta", {
-      cursor: 6,
-      events: [],
-      lastSeq: 6,
+    const cache = new MemorySessionCache();
+    cache.write("ses_beta", {
+      log: {
+        cursor: 6,
+        events: [],
+        lastSeq: 6,
+      },
     });
 
     const fetchMock = vi
@@ -776,7 +778,7 @@ describe("Phoenix Tail Transport", () => {
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const identity = client.agent({ id: "planner" });
     const alpha = await client.session({ identity, id: "ses_alpha" });
@@ -1114,17 +1116,19 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("joins from the stored cursor and replays retained events to late listeners", async () => {
-    const store = new MemoryStore();
-    store.save("ses_replay", {
-      cursor: 4,
-      events: [],
-      lastSeq: 4,
+    const cache = new MemorySessionCache();
+    cache.write("ses_replay", {
+      log: {
+        cursor: 4,
+        events: [],
+        lastSeq: 4,
+      },
     });
 
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      store,
+      cache,
     }).session({ token: makeSessionToken("ses_replay") });
 
     const firstSeen: number[] = [];
@@ -1162,20 +1166,22 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("classifies server corrections for retained events as live updates", async () => {
-    const store = new MemoryStore();
-    store.save("ses_updates", {
-      cursor: 6,
-      events: [
-        makeEvent(5, "agent:planner", 5),
-        makeEvent(6, "agent:planner", 6),
-      ],
-      lastSeq: 6,
+    const cache = new MemorySessionCache();
+    cache.write("ses_updates", {
+      log: {
+        cursor: 6,
+        events: [
+          makeEvent(5, "agent:planner", 5),
+          makeEvent(6, "agent:planner", 6),
+        ],
+        lastSeq: 6,
+      },
     });
 
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      store,
+      cache,
     }).session({ token: makeSessionToken("ses_updates") });
 
     const seen: Array<{ phase: string; seq: number; text: string }> = [];

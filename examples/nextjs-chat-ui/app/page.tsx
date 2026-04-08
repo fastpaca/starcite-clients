@@ -2,7 +2,7 @@
 
 import { useStarciteChat } from "@starcite/react";
 import {
-  LocalStorageSessionStore,
+  LocalStorageSessionCache,
   Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
@@ -44,13 +44,15 @@ export default function Page() {
   const [starcite] = useState(
     () =>
       new Starcite({
-        baseUrl: process.env.NEXT_PUBLIC_STARCITE_BASE_URL || "https://api.starcite.io",
-        store:
+        baseUrl:
+          process.env.NEXT_PUBLIC_STARCITE_BASE_URL ||
+          "https://api.starcite.io",
+        cache:
           typeof window === "undefined"
             ? undefined
-            : new LocalStorageSessionStore({
-              keyPrefix: "starcite:nextjs-chat-ui",
-            }),
+            : new LocalStorageSessionCache({
+                keyPrefix: "starcite:nextjs-chat-ui",
+              }),
       })
   );
   const [session, setSession] = useState<StarciteSession>();
@@ -104,7 +106,9 @@ export default function Page() {
         <h1 className="font-semibold text-lg">
           sessionId: {session?.id ?? "creating..."}
         </h1>
-        {error ? <p className="mt-2 text-destructive text-sm">{error}</p> : null}
+        {error ? (
+          <p className="mt-2 text-destructive text-sm">{error}</p>
+        ) : null}
       </section>
 
       {session ? (
@@ -133,10 +137,11 @@ function ChatPane({ session }: { session: StarciteSession }) {
     <>
       <section className="rounded-lg border bg-card px-4 py-2 text-muted-foreground text-xs uppercase tracking-wide">
         <p>
-          status: {status} | streaming right now: {status === "streaming" ? "yes" : "no"}
+          status: {status} | streaming right now:{" "}
+          {status === "streaming" ? "yes" : "no"}
         </p>
         {chatError ? (
-          <p className="mt-1 normal-case tracking-normal text-destructive">
+          <p className="mt-1 text-destructive normal-case tracking-normal">
             last error: {chatError}
           </p>
         ) : null}
@@ -182,9 +187,7 @@ function ChatPane({ session }: { session: StarciteSession }) {
             await sendMessage({ text: next });
           } catch (error) {
             const err =
-              error instanceof Error
-                ? error
-                : new Error("Chat append failed.");
+              error instanceof Error ? error : new Error("Chat append failed.");
             setChatError(err.message);
           }
         }}

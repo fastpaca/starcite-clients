@@ -22,14 +22,14 @@ import {
   type SessionAppendListener,
   type SessionAppendOptions,
   type SessionAppendQueueState,
+  type SessionCache,
+  type SessionCacheEntry,
   type SessionEventContext,
   type SessionEventListener,
   type SessionGapListener,
   type SessionOnEventOptions,
   type SessionRecord,
   type SessionSnapshot,
-  type SessionStore,
-  type SessionStoreState,
   type SessionTokenRefreshHandler,
   type SessionTokenRefreshReason,
   type TailEvent,
@@ -51,7 +51,7 @@ export interface StarciteSessionOptions {
   token: string;
   identity: StarciteIdentity;
   transport: TransportConfig;
-  store?: SessionStore;
+  cache?: SessionCache;
   record?: SessionRecord;
   appendOptions?: SessionAppendOptions;
   refreshToken?: SessionTokenRefreshHandler;
@@ -82,7 +82,7 @@ export class StarciteSession {
   private authRefreshTask: Promise<void> | undefined;
 
   readonly log: SessionLog;
-  private readonly store: SessionStore | undefined;
+  private readonly cache: SessionCache | undefined;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
   private readonly eventSubscriptions = new Map<
     SessionEventListener,
@@ -101,7 +101,7 @@ export class StarciteSession {
     this.currentIdentity = options.identity;
     this.transport = options.transport;
     this.record = options.record;
-    this.store = options.store;
+    this.cache = options.cache;
     this.refreshTokenHandler = options.refreshToken;
     this.log = new SessionLog();
 
@@ -109,13 +109,13 @@ export class StarciteSession {
       sessionId: options.id,
       transport: options.transport,
       appendOptions: options.appendOptions,
-      persist: this.store !== undefined,
+      persist: this.cache !== undefined,
       onUnauthorized: async (error) => {
         await this.refreshAuthInternal("unauthorized", error, {
           emitFailure: true,
         });
       },
-      onStateChange: () => this.persistLogState(),
+      onStateChange: () => this.persistCacheEntry(),
       onError: (error) => this.emitStreamError(error),
       onLifecycle: (event) => {
         for (const listener of this.lifecycle.listeners(
@@ -130,10 +130,10 @@ export class StarciteSession {
       },
     });
 
-    const storedState = this.loadPersistedState();
-    if (this.restorePersistedLogState(storedState)) {
-      if (storedState?.append) {
-        this.outbox.restoreState(storedState.append);
+    const cachedEntry = this.readCachedEntry();
+    if (this.restoreCachedState(cachedEntry)) {
+      if (cachedEntry?.outbox) {
+        this.outbox.restoreState(cachedEntry.outbox);
       }
       const pendingBefore = this.outbox.pendingCount;
       this.outbox.reconcileWithCommittedEvents(
@@ -141,7 +141,7 @@ export class StarciteSession {
         this.log.lastSeq
       );
       if (this.outbox.pendingCount !== pendingBefore) {
-        this.persistLogState();
+        this.persistCacheEntry();
       }
     }
 
@@ -450,7 +450,7 @@ export class StarciteSession {
             appliedEvents,
             this.log.lastSeq
           );
-          this.persistLogState();
+          this.persistCacheEntry();
         }
       } catch (error) {
         this.emitStreamError(error);
@@ -464,7 +464,7 @@ export class StarciteSession {
       }
 
       this.log.advanceCursor(result.data.next_cursor);
-      this.persistLogState();
+      this.persistCacheEntry();
 
       if (this.lifecycle.listenerCount("gap") > 0) {
         this.lifecycle.emit("gap", result.data);
@@ -615,64 +615,64 @@ export class StarciteSession {
     return new StarciteError(String(error));
   }
 
-  private loadPersistedState(): SessionStoreState | undefined {
-    if (!this.store) {
+  private readCachedEntry(): SessionCacheEntry | undefined {
+    if (!this.cache) {
       return undefined;
     }
 
     try {
-      return this.store.load(this.id);
+      return this.cache.read(this.id);
     } catch {
       return undefined;
     }
   }
 
-  private restorePersistedLogState(
-    storedState: SessionStoreState | undefined
+  private restoreCachedState(
+    cachedEntry: SessionCacheEntry | undefined
   ): boolean {
-    if (storedState === undefined) {
+    if (cachedEntry === undefined) {
       return true;
     }
 
     try {
-      this.log.hydrate(storedState);
+      if (cachedEntry.log) {
+        this.log.restore(cachedEntry.log);
+      }
       return true;
     } catch {
-      this.clearPersistedLogState();
+      this.clearCachedState();
       return false;
     }
   }
 
-  private persistLogState(): void {
-    if (!this.store) {
+  private persistCacheEntry(): void {
+    if (!this.cache) {
       return;
     }
 
     try {
-      this.store.save(this.id, {
-        cursor: this.log.cursor,
-        lastSeq: this.log.lastSeq,
-        events: [...this.log.events],
-        append: this.outbox.serializeState(),
+      this.cache.write(this.id, {
+        log: this.log.checkpoint(),
+        outbox: this.outbox.serializeState(),
         metadata: {
-          schemaVersion: 4,
-          updatedAtMs: Date.now(),
+          schemaVersion: 5,
+          cachedAtMs: Date.now(),
         },
       });
     } catch (error) {
-      const storeError = new StarciteError(
-        `Session store save failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
+      const cacheError = new StarciteError(
+        `Session cache write failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
       );
 
       if (this.lifecycle.listenerCount("error") > 0) {
-        this.lifecycle.emit("error", storeError);
+        this.lifecycle.emit("error", cacheError);
       }
     }
   }
 
-  private clearPersistedLogState(): void {
+  private clearCachedState(): void {
     try {
-      this.store?.clear?.(this.id);
+      this.cache?.clear?.(this.id);
     } catch {
       // Ignore cache-clear failures; the live stream can still recover state.
     }

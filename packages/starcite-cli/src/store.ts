@@ -1,24 +1,25 @@
 import {
-  type SessionStore,
-  type SessionStoreState,
+  type SessionCache,
+  type SessionCacheEntry,
   type TailEvent,
-  WebStorageSessionStore,
+  WebStorageSessionCache,
 } from "@starcite/sdk";
 import Conf from "conf";
 
 const STATE_FILENAME = "state";
 const TRAILING_SLASHES_REGEX = /\/+$/;
-const STORE_VERSION_KEY = "__starciteCliStoreVersion";
-const CURRENT_STORE_VERSION = "2";
+const CACHE_VERSION_KEY = "__starciteCliCacheVersion";
+const LEGACY_STORE_VERSION_KEY = "__starciteCliStoreVersion";
+const CURRENT_CACHE_VERSION = "3";
 
-export function buildSessionStoreContextKey(
+export function buildSessionCacheContextKey(
   baseUrl: string,
   sessionId: string
 ): string {
   return `${baseUrl}::${sessionId}`;
 }
 
-function normalizeStoreBaseUrl(baseUrl: string): string {
+function normalizeCacheBaseUrl(baseUrl: string): string {
   if (baseUrl.length === 0) {
     return "";
   }
@@ -27,7 +28,7 @@ function normalizeStoreBaseUrl(baseUrl: string): string {
   return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
-export class StarciteCliStore implements SessionStore<TailEvent> {
+export class StarciteCliCache implements SessionCache<TailEvent> {
   private readonly storage: Conf<Record<string, string>>;
 
   constructor(directory: string) {
@@ -39,30 +40,30 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
       defaults: {},
     });
 
-    this.resetOnStoreVersionMismatch();
+    this.resetOnCacheVersionMismatch();
   }
 
-  sessionStore(baseUrl: string): SessionStore<TailEvent> {
-    return new WebStorageSessionStore<TailEvent>(this.storageAdapter(), {
+  sessionCache(baseUrl: string): SessionCache<TailEvent> {
+    return new WebStorageSessionCache<TailEvent>(this.storageAdapter(), {
       keyForSession: (sessionId) =>
-        buildSessionStoreContextKey(normalizeStoreBaseUrl(baseUrl), sessionId),
+        buildSessionCacheContextKey(normalizeCacheBaseUrl(baseUrl), sessionId),
     });
   }
 
-  load(sessionId: string): SessionStoreState<TailEvent> | undefined {
-    return this.sessionStore("").load(sessionId);
+  read(sessionId: string): SessionCacheEntry<TailEvent> | undefined {
+    return this.sessionCache("").read(sessionId);
   }
 
-  save(sessionId: string, state: SessionStoreState<TailEvent>): void {
-    this.sessionStore("").save(sessionId, state);
+  write(sessionId: string, entry: SessionCacheEntry<TailEvent>): void {
+    this.sessionCache("").write(sessionId, entry);
   }
 
   clear(sessionId: string): void {
-    this.sessionStore("").clear?.(sessionId);
+    this.sessionCache("").clear?.(sessionId);
   }
 
   clearSession(baseUrl: string, sessionId: string): void {
-    this.sessionStore(baseUrl).clear?.(sessionId);
+    this.sessionCache(baseUrl).clear?.(sessionId);
   }
 
   private storageAdapter() {
@@ -77,13 +78,15 @@ export class StarciteCliStore implements SessionStore<TailEvent> {
     };
   }
 
-  private resetOnStoreVersionMismatch(): void {
-    const storedVersion = this.storage.get(STORE_VERSION_KEY);
-    if (storedVersion === CURRENT_STORE_VERSION) {
+  private resetOnCacheVersionMismatch(): void {
+    const storedVersion =
+      this.storage.get(CACHE_VERSION_KEY) ??
+      this.storage.get(LEGACY_STORE_VERSION_KEY);
+    if (storedVersion === CURRENT_CACHE_VERSION) {
       return;
     }
 
     this.storage.clear();
-    this.storage.set(STORE_VERSION_KEY, CURRENT_STORE_VERSION);
+    this.storage.set(CACHE_VERSION_KEY, CURRENT_CACHE_VERSION);
   }
 }

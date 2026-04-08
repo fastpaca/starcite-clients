@@ -1,8 +1,8 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
 import type {
+  SessionLogCheckpoint,
   SessionSnapshot,
-  SessionStoreState,
   TailCursor,
   TailEvent,
 } from "./types";
@@ -49,20 +49,20 @@ export class SessionLog {
     return applied;
   }
 
-  hydrate(state: SessionStoreState): void {
-    if (!Number.isInteger(state.lastSeq) || state.lastSeq < 0) {
+  restore(checkpoint: SessionLogCheckpoint): void {
+    if (!Number.isInteger(checkpoint.lastSeq) || checkpoint.lastSeq < 0) {
       throw new StarciteError(
-        "Session store lastSeq must be a non-negative integer"
+        "Session cache checkpoint lastSeq must be a non-negative integer"
       );
     }
 
     let latestEvent: TailEvent | undefined;
     const nextEventsBySeq = new Map<number, TailEvent>();
 
-    for (const event of state.events) {
-      if (event.seq > state.lastSeq) {
+    for (const event of checkpoint.events) {
+      if (event.seq > checkpoint.lastSeq) {
         throw new StarciteError(
-          `Session store contains event seq ${event.seq} above lastSeq ${state.lastSeq}`
+          `Session cache checkpoint contains event seq ${event.seq} above lastSeq ${checkpoint.lastSeq}`
         );
       }
 
@@ -78,8 +78,16 @@ export class SessionLog {
       this.eventBySeq.set(seq, event);
     }
 
-    this.appliedSeq = state.lastSeq;
-    this.appliedCursor = state.cursor ?? latestEvent?.cursor;
+    this.appliedSeq = checkpoint.lastSeq;
+    this.appliedCursor = checkpoint.cursor ?? latestEvent?.cursor;
+  }
+
+  checkpoint(): SessionLogCheckpoint {
+    return {
+      lastSeq: this.appliedSeq,
+      cursor: this.appliedCursor,
+      events: this.orderedEvents(),
+    };
   }
 
   subscribe(

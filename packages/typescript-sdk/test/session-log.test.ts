@@ -105,10 +105,10 @@ describe("SessionLog", () => {
     ]);
   });
 
-  it("hydrates sparse persisted state without requiring contiguous retained events", () => {
+  it("restores sparse cached checkpoints without requiring contiguous retained events", () => {
     const log = new SessionLog();
 
-    log.hydrate({
+    log.restore({
       cursor: 6,
       events: [makeEvent(6, "frame-6", 6)],
       lastSeq: 6,
@@ -158,11 +158,11 @@ describe("SessionLog", () => {
     expect(observedSeqs).toEqual([3]);
   });
 
-  it("does not retain partial state when hydrate validation fails", () => {
+  it("does not retain partial state when checkpoint validation fails", () => {
     const log = new SessionLog();
 
     expect(() => {
-      log.hydrate({
+      log.restore({
         lastSeq: 1,
         events: [makeEvent(2, "invalid cached event")],
       });
@@ -172,11 +172,11 @@ describe("SessionLog", () => {
     expect(log.events).toEqual([]);
   });
 
-  it("does not retain partial state when hydrated payload has any invalid seq", () => {
+  it("does not retain partial state when a restored checkpoint has any invalid seq", () => {
     const log = new SessionLog();
 
     expect(() => {
-      log.hydrate({
+      log.restore({
         lastSeq: 2,
         events: [makeEvent(1), makeEvent(3), makeEvent(4)],
       });
