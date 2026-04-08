@@ -303,6 +303,7 @@ class SessionAppendQueueState:
     producer_id: str
     last_acknowledged_producer_seq: int
     pending: list[AppendEventRequest] = field(default_factory=list)
+    next_producer_seq: int | None = None
 
 
 @dataclass(frozen=True)
@@ -344,6 +345,11 @@ def parse_session_store_state(value: object) -> SessionStoreState:
                 parse_append_event_request(item)
                 for item in _require_list(append_mapping, "pending")
             ],
+            next_producer_seq=_optional_int(
+                append_mapping,
+                "next_producer_seq",
+                minimum=1,
+            ),
         )
     return SessionStoreState(
         last_seq=_require_int(mapping, "last_seq", minimum=0),

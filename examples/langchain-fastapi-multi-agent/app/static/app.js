@@ -91,8 +91,17 @@ async function bootstrap() {
   startStatusPolling();
 }
 
+function clearSessionBinding() {
+  state.sessionId = null;
+  state.token = null;
+  state.apiBaseUrl = null;
+  state.websocketUrl = null;
+  state.runStatus = "idle";
+}
+
 async function startNewSession() {
   disconnectTail();
+  clearSessionBinding();
   state.eventsBySeq.clear();
   state.cursor = 0;
   resetPresentationCache();
@@ -103,21 +112,30 @@ async function startNewSession() {
 async function bindSession(sessionId) {
   setStreamStatus("minting");
   els.submitButton.disabled = true;
+  state.runStatus = "idle";
 
-  const response = await fetch("/sessions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId || undefined,
-      title: "LangChain Research Swarm",
-    }),
-  });
+  let response;
+  try {
+    response = await fetch("/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId || undefined,
+        title: "LangChain Research Swarm",
+      }),
+    });
+  } catch {
+    setNotice("Could not reach the FastAPI session endpoint.");
+    setStreamStatus("offline");
+    els.submitButton.disabled = !state.sessionId;
+    return;
+  }
 
   if (!response.ok) {
     const message = await readError(response);
     setNotice(message);
     setStreamStatus("offline");
-    els.submitButton.disabled = false;
+    els.submitButton.disabled = !state.sessionId;
     return;
   }
 

@@ -11,7 +11,14 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
-from starcite_sdk import MemoryStore, SessionStoreState, Starcite, StarciteError, TailEvent
+from starcite_sdk import (
+    MemoryStore,
+    SessionStoreState,
+    Starcite,
+    StarciteConnectionError,
+    StarciteError,
+    TailEvent,
+)
 from starcite_sdk.transport import HttpRequest, HttpResponse
 from starcite_sdk.types import parse_append_event_response, parse_tail_event
 
@@ -48,7 +55,7 @@ def make_session_token(
 
 
 class Recorder:
-    def __init__(self, responses: list[HttpResponse]) -> None:
+    def __init__(self, responses: list[HttpResponse | Exception]) -> None:
         self._responses = list(responses)
         self.requests: list[HttpRequest] = []
 
@@ -56,7 +63,10 @@ class Recorder:
         self.requests.append(request)
         if not self._responses:
             raise AssertionError("Unexpected extra HTTP request")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def json_response(status_code: int, payload: Mapping[str, object], *, reason: str = "") -> HttpResponse:
@@ -256,6 +266,68 @@ async def test_preserves_explicit_actor_override_when_appending() -> None:
     assert append_payload["actor"] == "agent:researcher"
     assert append_payload["type"] == "custom"
     assert append_payload["payload"] == {"text": "custom actor"}
+
+
+@pytest.mark.asyncio
+async def test_preserves_empty_payloads_when_appending_events() -> None:
+    recorder = Recorder(
+        [json_response(201, {"seq": 1, "last_seq": 1, "deduped": False})]
+    )
+
+    async with Starcite(base_url="http://localhost:4000", requester=recorder) as starcite:
+        session = starcite.session_from_token(make_session_token("ses_empty_payload", "writer"))
+        await session.append_event(type="agent.done", payload={})
+
+    append_payload = body_json(recorder.requests[0])
+    assert append_payload["type"] == "agent.done"
+    assert append_payload["payload"] == {}
+
+
+@pytest.mark.asyncio
+async def test_append_requires_text_or_payload() -> None:
+    async with Starcite(base_url="http://localhost:4000", requester=Recorder([])) as starcite:
+        session = starcite.session_from_token(make_session_token("ses_missing_payload", "writer"))
+        with pytest.raises(TypeError, match="text or payload"):
+            await session.append()
+
+
+@pytest.mark.asyncio
+async def test_reserves_next_producer_seq_after_connection_failure_and_rehydrates_it() -> None:
+    recorder = Recorder(
+        [
+            RuntimeError("network cut after send"),
+            json_response(201, {"seq": 2, "last_seq": 2, "deduped": False}),
+        ]
+    )
+    store = MemoryStore()
+
+    async with Starcite(
+        base_url="http://localhost:4000",
+        requester=recorder,
+        store=store,
+    ) as starcite:
+        session = starcite.session_from_token(make_session_token("ses_retry_seq", "writer"))
+        with pytest.raises(StarciteConnectionError, match="network cut after send"):
+            await session.append_text("first")
+
+    stored_state = store.load("ses_retry_seq")
+    assert stored_state is not None
+    assert stored_state.append is not None
+    assert stored_state.append.last_acknowledged_producer_seq == 0
+    assert stored_state.append.next_producer_seq == 2
+
+    async with Starcite(
+        base_url="http://localhost:4000",
+        requester=recorder,
+        store=store,
+    ) as starcite:
+        session = starcite.session_from_token(make_session_token("ses_retry_seq", "writer"))
+        await session.append_text("second")
+
+    first_payload = body_json(recorder.requests[0])
+    second_payload = body_json(recorder.requests[1])
+    assert first_payload["producer_seq"] == 1
+    assert second_payload["producer_seq"] == 2
 
 
 @pytest.mark.asyncio

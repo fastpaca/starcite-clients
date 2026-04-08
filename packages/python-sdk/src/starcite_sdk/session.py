@@ -17,6 +17,7 @@ from .transport import TransportConfig, request_json
 from .types import (
     AppendEventRequest,
     AppendResult,
+    JsonObject,
     RequestOptions,
     SessionAppendInput,
     SessionAppendQueueState,
@@ -63,7 +64,10 @@ class StarciteSession:
                 self._last_acknowledged_producer_seq = (
                     stored_state.append.last_acknowledged_producer_seq
                 )
-                self._next_producer_seq = self._last_acknowledged_producer_seq + 1
+                self._next_producer_seq = (
+                    stored_state.append.next_producer_seq
+                    or self._last_acknowledged_producer_seq + 1
+                )
 
     async def append(
         self,
@@ -95,10 +99,10 @@ class StarciteSession:
         item_id = append_input.idempotency_key or str(uuid.uuid4())
         request = AppendEventRequest(
             type=append_input.type or "content",
-            payload=dict(append_input.payload or {"text": append_input.text}),
+            payload=self._resolve_append_payload(append_input),
             actor=append_input.actor,
             producer_id=self._producer_id,
-            producer_seq=self._next_producer_seq,
+            producer_seq=self._reserve_producer_seq(),
             source=append_input.source or "agent",
             metadata=dict(append_input.metadata) if append_input.metadata is not None else None,
             refs=dict(append_input.refs) if append_input.refs is not None else None,
@@ -117,7 +121,6 @@ class StarciteSession:
             self._last_acknowledged_producer_seq,
             request.producer_seq,
         )
-        self._next_producer_seq = request.producer_seq + 1
         self._persist_state()
         return AppendResult(seq=response.seq, deduped=response.deduped)
 
@@ -287,6 +290,7 @@ class StarciteSession:
             producer_id=self._producer_id,
             last_acknowledged_producer_seq=self._last_acknowledged_producer_seq,
             pending=[],
+            next_producer_seq=self._next_producer_seq,
         )
 
     def state(self) -> SessionSnapshot:
@@ -326,6 +330,19 @@ class StarciteSession:
         if agent is None:
             return True
         return event.actor == f"agent:{agent}"
+
+    def _reserve_producer_seq(self) -> int:
+        producer_seq = self._next_producer_seq
+        self._next_producer_seq = producer_seq + 1
+        self._persist_state()
+        return producer_seq
+
+    def _resolve_append_payload(self, append_input: SessionAppendInput) -> JsonObject:
+        if append_input.payload is not None:
+            return dict(append_input.payload)
+        if append_input.text is not None:
+            return {"text": append_input.text}
+        raise TypeError("append() requires text or payload")
 
     def _resolve_append_input(
         self,
