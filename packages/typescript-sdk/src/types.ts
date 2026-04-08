@@ -24,9 +24,19 @@ export const SessionRecordSchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),
   metadata: ArbitraryObjectSchema,
-  last_seq: z.number().int().nonnegative(),
+  last_seq: z.number().int().nonnegative().optional(),
+  archived: z.boolean().optional(),
+  tenant_id: z.string().min(1).optional(),
+  creator_principal: z
+    .object({
+      tenant_id: z.string().min(1),
+      id: z.string().min(1),
+      type: z.string().min(1),
+    })
+    .optional(),
   created_at: z.string(),
   updated_at: z.string(),
+  version: z.number().int().positive().optional(),
 });
 
 /**
@@ -42,6 +52,9 @@ export const SessionListItemSchema = z.object({
   title: z.string().nullable().optional(),
   metadata: ArbitraryObjectSchema,
   created_at: z.string(),
+  archived: z.boolean().optional(),
+  updated_at: z.string().optional(),
+  version: z.number().int().positive().optional(),
 });
 
 /**
@@ -531,7 +544,16 @@ export interface SessionAppendInput {
 export interface SessionListOptions {
   limit?: number;
   cursor?: string;
+  archived?: SessionArchivedFilter;
   metadata?: Record<string, string>;
+}
+
+export type SessionArchivedFilter = boolean | "all";
+
+export interface SessionUpdateInput {
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+  expectedVersion?: number;
 }
 
 /**
@@ -592,6 +614,9 @@ export type LifecycleEventEnvelope = z.infer<
 
 export const SessionLifecycleEventNames = [
   "session.created",
+  "session.updated",
+  "session.archived",
+  "session.unarchived",
   "session.hydrating",
   "session.activated",
   "session.freezing",
@@ -613,6 +638,28 @@ export const SessionCreatedLifecycleEventSchema =
     title: z.string().nullable().optional(),
     metadata: ArbitraryObjectSchema,
     created_at: z.string().min(1),
+    version: z.number().int().positive().optional(),
+  });
+
+export const SessionUpdatedLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.updated"),
+    title: z.string().nullable().optional(),
+    metadata: ArbitraryObjectSchema,
+    updated_at: z.string().min(1),
+    version: z.number().int().positive().optional(),
+  });
+
+export const SessionArchivedLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.archived"),
+    archived: z.literal(true),
+  });
+
+export const SessionUnarchivedLifecycleEventSchema =
+  SessionLifecycleBaseSchema.extend({
+    kind: z.literal("session.unarchived"),
+    archived: z.literal(false),
   });
 
 export const SessionHydratingLifecycleEventSchema =
@@ -637,6 +684,9 @@ export const SessionFrozenLifecycleEventSchema =
 
 export const SessionLifecycleEventSchema = z.discriminatedUnion("kind", [
   SessionCreatedLifecycleEventSchema,
+  SessionUpdatedLifecycleEventSchema,
+  SessionArchivedLifecycleEventSchema,
+  SessionUnarchivedLifecycleEventSchema,
   SessionHydratingLifecycleEventSchema,
   SessionActivatedLifecycleEventSchema,
   SessionFreezingLifecycleEventSchema,
@@ -664,6 +714,18 @@ export type SessionLifecycleEventListeners = {
 
 export type SessionCreatedLifecycleEvent = z.infer<
   typeof SessionCreatedLifecycleEventSchema
+>;
+
+export type SessionUpdatedLifecycleEvent = z.infer<
+  typeof SessionUpdatedLifecycleEventSchema
+>;
+
+export type SessionArchivedLifecycleEvent = z.infer<
+  typeof SessionArchivedLifecycleEventSchema
+>;
+
+export type SessionUnarchivedLifecycleEvent = z.infer<
+  typeof SessionUnarchivedLifecycleEventSchema
 >;
 
 export type SessionHydratingLifecycleEvent = z.infer<

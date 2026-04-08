@@ -1567,6 +1567,203 @@ describe("Starcite", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${apiKey}`);
   });
 
+  it("serializes archived session filters on list requests", async () => {
+    fetchMock.mockImplementation(() => {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sessions: [],
+            next_cursor: null,
+          }),
+          { status: 200 }
+        )
+      );
+    });
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    await starcite.listSessions({
+      limit: 10,
+      cursor: "ses_cursor",
+      archived: true,
+      metadata: { workflow: "planner" },
+    });
+    await starcite.listSessions({ archived: "all" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:4000/v1/sessions?limit=10&cursor=ses_cursor&archived=true&metadata.workflow=planner",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:4000/v1/sessions?archived=all",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("fetches a session header by id", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_lookup",
+          title: "Archived draft",
+          metadata: { workflow: "planner" },
+          archived: true,
+          tenant_id: "tenant-alpha",
+          creator_principal: {
+            tenant_id: "tenant-alpha",
+            id: "system",
+            type: "service",
+          },
+          created_at: "2026-04-08T13:20:00Z",
+          updated_at: "2026-04-08T13:25:00Z",
+          version: 3,
+        }),
+        { status: 200 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const session = await starcite.getSession("ses_lookup");
+
+    expect(session).toMatchObject({
+      id: "ses_lookup",
+      archived: true,
+      tenant_id: "tenant-alpha",
+      version: 3,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions/ses_lookup",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("patches session headers with expected_version", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "ses_patch",
+          title: "Final",
+          metadata: {
+            workflow: "contract",
+            summary: "Generated",
+          },
+          last_seq: 0,
+          archived: false,
+          created_at: "2026-04-08T13:20:00Z",
+          updated_at: "2026-04-08T13:45:00Z",
+          version: 2,
+        }),
+        { status: 200 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const session = await starcite.updateSession("ses_patch", {
+      title: "Final",
+      metadata: { summary: "Generated" },
+      expectedVersion: 1,
+    });
+
+    expect(session).toMatchObject({
+      id: "ses_patch",
+      title: "Final",
+      version: 2,
+    });
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:4000/v1/sessions/ses_patch"
+    );
+    expect(requestInit.method).toBe("PATCH");
+    expect(JSON.parse(requestInit.body as string)).toEqual({
+      title: "Final",
+      metadata: { summary: "Generated" },
+      expected_version: 1,
+    });
+  });
+
+  it("archives and unarchives sessions through dedicated endpoints", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_archive",
+            title: "Archived",
+            metadata: {},
+            last_seq: 0,
+            archived: true,
+            created_at: "2026-04-08T13:20:00Z",
+            updated_at: "2026-04-08T13:50:00Z",
+            version: 2,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ses_archive",
+            title: "Archived",
+            metadata: {},
+            last_seq: 0,
+            archived: false,
+            created_at: "2026-04-08T13:20:00Z",
+            updated_at: "2026-04-08T13:51:00Z",
+            version: 3,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const archived = await starcite.archiveSession("ses_archive");
+    const unarchived = await starcite.unarchiveSession("ses_archive");
+
+    expect(archived.archived).toBe(true);
+    expect(unarchived.archived).toBe(false);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://localhost:4000/v1/sessions/ses_archive/archive"
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://localhost:4000/v1/sessions/ses_archive/unarchive"
+    );
+    expect(
+      fetchMock.mock.calls.map((call) => {
+        const requestInit = call[1] as RequestInit;
+        return {
+          body: JSON.parse(requestInit.body as string),
+          method: requestInit.method,
+        };
+      })
+    ).toEqual([
+      { method: "POST", body: {} },
+      { method: "POST", body: {} },
+    ]);
+  });
+
   it("injects inferred creator_principal from JWT apiKey via identity", async () => {
     const apiKey = tokenFromClaims({
       iss: "https://starcite.ai",

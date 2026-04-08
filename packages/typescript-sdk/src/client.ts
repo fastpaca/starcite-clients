@@ -24,6 +24,7 @@ import {
   LifecycleEventEnvelopeSchema,
   type RequestOptions,
   type SessionAppendOptions,
+  type SessionArchivedFilter,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -36,6 +37,7 @@ import {
   SessionRecordSchema,
   type SessionStore,
   type SessionTokenRefreshHandler,
+  type SessionUpdateInput,
   type StarciteOptions,
 } from "./types";
 
@@ -296,6 +298,10 @@ export class Starcite {
       query.set("cursor", options.cursor);
     }
 
+    if (options.archived !== undefined) {
+      query.set("archived", serializeArchivedFilter(options.archived));
+    }
+
     if (options.metadata !== undefined) {
       for (const [key, value] of Object.entries(options.metadata)) {
         query.set(`metadata.${key}`, value);
@@ -312,6 +318,86 @@ export class Starcite {
         signal: requestOptions?.signal,
       },
       SessionListPageSchema
+    );
+  }
+
+  /**
+   * Fetches one session header by id, including archived sessions.
+   */
+  getSession(
+    sessionId: string,
+    requestOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    return request(
+      this.transport,
+      `/sessions/${sessionId}`,
+      {
+        method: "GET",
+        signal: requestOptions?.signal,
+      },
+      SessionRecordSchema
+    );
+  }
+
+  /**
+   * Updates mutable session header fields.
+   */
+  updateSession(
+    sessionId: string,
+    input: SessionUpdateInput,
+    requestOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    return request(
+      this.transport,
+      `/sessions/${sessionId}`,
+      {
+        method: "PATCH",
+        signal: requestOptions?.signal,
+        body: JSON.stringify({
+          title: input.title,
+          metadata: input.metadata,
+          expected_version: input.expectedVersion,
+        }),
+      },
+      SessionRecordSchema
+    );
+  }
+
+  /**
+   * Archives one session without deleting its timeline.
+   */
+  archiveSession(
+    sessionId: string,
+    requestOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    return request(
+      this.transport,
+      `/sessions/${sessionId}/archive`,
+      {
+        method: "POST",
+        signal: requestOptions?.signal,
+        body: JSON.stringify({}),
+      },
+      SessionRecordSchema
+    );
+  }
+
+  /**
+   * Restores one archived session to active list results.
+   */
+  unarchiveSession(
+    sessionId: string,
+    requestOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    return request(
+      this.transport,
+      `/sessions/${sessionId}/unarchive`,
+      {
+        method: "POST",
+        signal: requestOptions?.signal,
+        body: JSON.stringify({}),
+      },
+      SessionRecordSchema
     );
   }
 
@@ -566,4 +652,8 @@ export class Starcite {
       throw error;
     });
   }
+}
+
+function serializeArchivedFilter(value: SessionArchivedFilter): string {
+  return value === "all" ? "all" : `${value}`;
 }
