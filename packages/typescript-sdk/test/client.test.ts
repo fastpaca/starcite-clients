@@ -1455,7 +1455,7 @@ describe("Starcite", () => {
         );
       });
 
-    const session = new Starcite({
+    const session = createStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1512,7 +1512,7 @@ describe("Starcite", () => {
       );
     });
 
-    const session = new Starcite({
+    const session = createStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1580,7 +1580,7 @@ describe("Starcite", () => {
         );
       });
 
-    const session = new Starcite({
+    const session = createStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1660,7 +1660,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = new Starcite({
+    const starcite = createStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
       apiKey,
