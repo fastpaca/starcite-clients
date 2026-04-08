@@ -100,7 +100,7 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for condition: ${description}`);
 }
 
-function createStarcite(
+function makeStarcite(
   options: ConstructorParameters<typeof Starcite>[0] = {}
 ): Starcite {
   return new Starcite(options);
@@ -183,7 +183,7 @@ describe("Starcite", () => {
         })
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -246,7 +246,7 @@ describe("Starcite", () => {
       })
     );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
@@ -315,7 +315,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -392,7 +392,7 @@ describe("Starcite", () => {
       );
     });
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
@@ -439,7 +439,7 @@ describe("Starcite", () => {
           )
         );
 
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "http://localhost:4000",
         fetch: fetchMock,
       });
@@ -501,7 +501,7 @@ describe("Starcite", () => {
         );
       });
 
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "http://localhost:4000",
         fetch: fetchMock,
       });
@@ -561,7 +561,7 @@ describe("Starcite", () => {
           )
         );
 
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "http://localhost:4000",
         fetch: fetchMock,
       });
@@ -601,7 +601,7 @@ describe("Starcite", () => {
         })
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
@@ -679,7 +679,7 @@ describe("Starcite", () => {
         );
       });
 
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "http://localhost:4000",
         fetch: fetchMock,
       });
@@ -761,7 +761,7 @@ describe("Starcite", () => {
         );
       });
 
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "http://localhost:4000",
         fetch: fetchMock,
       });
@@ -816,7 +816,7 @@ describe("Starcite", () => {
   it("restores persisted pending appends from the session store and auto-flushes them", async () => {
     const sessionToken = makeTailSessionToken("ses_persisted_outbox", "writer");
     const store = new MemoryStore();
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       store,
@@ -844,7 +844,7 @@ describe("Starcite", () => {
       })
     );
 
-    const restoredClient = createStarcite({
+    const restoredClient = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       store,
@@ -923,7 +923,7 @@ describe("Starcite", () => {
       },
     });
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       store,
@@ -974,7 +974,7 @@ describe("Starcite", () => {
       )
     );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       store,
@@ -991,7 +991,7 @@ describe("Starcite", () => {
 
     fetchMock.mockClear();
 
-    const restoredClient = createStarcite({
+    const restoredClient = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       store,
@@ -1030,7 +1030,7 @@ describe("Starcite", () => {
       )
     );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
@@ -1071,7 +1071,7 @@ describe("Starcite", () => {
 
   it("validates baseUrl at client construction", () => {
     expect(() =>
-      createStarcite({
+      makeStarcite({
         baseUrl: "localhost:4000",
         fetch: fetchMock,
       })
@@ -1091,7 +1091,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         fetch: fetchMock,
       });
 
@@ -1135,7 +1135,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         fetch: fetchMock,
       });
 
@@ -1180,7 +1180,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         fetch: fetchMock,
       });
 
@@ -1232,7 +1232,7 @@ describe("Starcite", () => {
       )
     );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
       apiKey,
@@ -1290,7 +1290,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
       apiKey,
@@ -1342,7 +1342,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       authUrl: "https://auth.starcite.example",
       fetch: fetchMock,
@@ -1366,7 +1366,7 @@ describe("Starcite", () => {
 
     try {
       const sessionToken = makeTailSessionToken("ses_demo", "user-42", "user");
-      const starcite = createStarcite({
+      const starcite = makeStarcite({
         baseUrl: "https://tenant-a.starcite.io",
         fetch: fetchMock,
       });
@@ -1392,7 +1392,7 @@ describe("Starcite", () => {
 
   it("returns session({ token }) synchronously", () => {
     const sessionToken = makeTailSessionToken("ses_sync", "syncer");
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
     });
@@ -1435,7 +1435,7 @@ describe("Starcite", () => {
         );
       });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1492,7 +1492,7 @@ describe("Starcite", () => {
       );
     });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1560,7 +1560,7 @@ describe("Starcite", () => {
         );
       });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({
@@ -1640,7 +1640,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "https://tenant-a.starcite.io",
       fetch: fetchMock,
       apiKey,
@@ -1677,7 +1677,7 @@ describe("Starcite", () => {
       })
     );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     });
@@ -1700,7 +1700,7 @@ describe("Starcite", () => {
 
     const apiKey = makeApiKey();
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -1750,7 +1750,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -1777,7 +1777,7 @@ describe("Starcite", () => {
       principal_type: "agent",
     });
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -1793,7 +1793,7 @@ describe("Starcite", () => {
   it("identity factories produce correct principal types", () => {
     const apiKey = makeApiKey({ tenant_id: "tenant-alpha" });
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,
@@ -1844,7 +1844,7 @@ describe("Starcite", () => {
         )
       );
 
-    const starcite = createStarcite({
+    const starcite = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
       apiKey,

@@ -3,7 +3,7 @@ import { Starcite } from "../src/client";
 import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
 
-function createStarcite(
+function makeStarcite(
   options: ConstructorParameters<typeof Starcite>[0] = {}
 ): Starcite {
   return new Starcite(options);
@@ -457,7 +457,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("subscribes to lifecycle over Phoenix and emits raw and typed lifecycle events", async () => {
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
@@ -561,7 +561,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("keeps the lifecycle channel attached until the last lifecycle listener is removed", async () => {
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
@@ -586,7 +586,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("forwards unsupported lifecycle event kinds through raw listeners without surfacing an error", async () => {
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
@@ -628,7 +628,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("surfaces invalid supported lifecycle payloads as errors", async () => {
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
@@ -671,7 +671,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("retries lifecycle joins after a timeout without surfacing an error", async () => {
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
@@ -730,7 +730,7 @@ describe("Phoenix Tail Transport", () => {
       .mockResolvedValueOnce(makeSessionRecord("ses_beta"))
       .mockResolvedValueOnce(makeTokenResponse("ses_beta"));
 
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -832,7 +832,7 @@ describe("Phoenix Tail Transport", () => {
       )
       .mockResolvedValueOnce(makeTokenResponse("ses_shared", "reviewer"));
 
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -923,7 +923,7 @@ describe("Phoenix Tail Transport", () => {
       )
       .mockResolvedValueOnce(makeTokenResponse("ses_rejoin", "reviewer"));
 
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -1005,7 +1005,7 @@ describe("Phoenix Tail Transport", () => {
       )
       .mockResolvedValueOnce(makeTokenResponse("ses_followup", "worker"));
 
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
@@ -1079,7 +1079,7 @@ describe("Phoenix Tail Transport", () => {
       lastSeq: 4,
     });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
       store,
@@ -1130,7 +1130,7 @@ describe("Phoenix Tail Transport", () => {
       lastSeq: 6,
     });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
       store,
@@ -1171,7 +1171,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("filters event listeners by agent without creating extra channels", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_filter") });
@@ -1218,7 +1218,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("surfaces gap events explicitly and rejoins the channel from next_cursor", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_gap") });
@@ -1265,7 +1265,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("treats server-reported gaps as recoverable when no gap listener is attached", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_gap_recoverable") });
@@ -1325,7 +1325,7 @@ describe("Phoenix Tail Transport", () => {
       });
     });
 
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
     }).session({ token: makeSessionToken("ses_append_reconcile") });
@@ -1376,7 +1376,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("surfaces token_expired to session error listeners and detaches the channel", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_expired") });
@@ -1409,7 +1409,7 @@ describe("Phoenix Tail Transport", () => {
       "planner-refreshed"
     );
     const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({
@@ -1482,7 +1482,7 @@ describe("Phoenix Tail Transport", () => {
       "planner-refreshed"
     );
     const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({
@@ -1548,7 +1548,7 @@ describe("Phoenix Tail Transport", () => {
       .mockResolvedValueOnce(
         makeSessionToken("ses_refresh_retry_tail", "planner-recovered")
       );
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({
@@ -1611,7 +1611,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("retries tail joins after a timeout without surfacing an error", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_join_timeout_retry") });
@@ -1649,7 +1649,7 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("surfaces join failures to session error listeners", async () => {
-    const session = createStarcite({
+    const session = makeStarcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({ token: makeSessionToken("ses_join_error") });
@@ -1681,7 +1681,7 @@ describe("Phoenix Tail Transport", () => {
       .mockResolvedValueOnce(makeSessionRecord("ses_two"))
       .mockResolvedValueOnce(makeTokenResponse("ses_two"));
 
-    const client = createStarcite({
+    const client = makeStarcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
