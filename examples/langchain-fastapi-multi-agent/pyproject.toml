@@ -1,0 +1,19 @@
+[project]
+name = "starcite-langchain-fastapi-example"
+version = "0.1.0"
+description = "FastAPI + LangChain multi-agent example backed by Starcite"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "langchain-core",
+    "langchain-openai",
+    "starcite-sdk",
+    "uvicorn",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+starcite-sdk = { path = "../../packages/python-sdk", editable = true }

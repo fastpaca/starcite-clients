@@ -5,6 +5,7 @@ Clients for building and operating multi-agent systems on one ordered session ti
 ## Packages
 
 - `@starcite/sdk` (`packages/typescript-sdk`) for app and browser integration
+- `starcite-sdk` (`packages/python-sdk`) for Python backend integration
 - `@starcite/react` (`packages/starcite-react`) for durable session chat hooks
 - `starcite` (`packages/starcite-cli`) for terminal workflows
 
@@ -12,13 +13,16 @@ Clients for building and operating multi-agent systems on one ordered session ti
 
 - Next.js chat UI (`examples/nextjs-chat-ui`) for minimal durable chat streaming with `useStarciteChat`
 - Multi-agent viewer (`examples/multi-agent-viewer`) for a shared-session research swarm with a coordinator and specialist agents
+- LangChain + FastAPI multi-agent app (`examples/langchain-fastapi-multi-agent`) for an async Python research swarm with a browser UI that tails Starcite directly
 
 Detailed docs:
 - SDK guide: `packages/typescript-sdk/README.md`
+- Python SDK guide: `packages/python-sdk/README.md`
 - React hook guide: `packages/starcite-react/README.md`
 - CLI guide: `packages/starcite-cli/README.md`
 - AI SDK migration guide: `docs/ai-sdk-migration.md`
 - Next.js chat UI example: `examples/nextjs-chat-ui/README.md`
+- LangChain + FastAPI example: `examples/langchain-fastapi-multi-agent/README.md`
 
 ## Public SDK Surface
 
@@ -148,6 +152,7 @@ bun run check
 bun run --cwd packages/typescript-sdk check
 bun run --cwd packages/starcite-cli check
 bun run --cwd packages/starcite-react check
+uv run --directory packages/python-sdk pytest
 
 ## Example app checks
 bun run --cwd examples/nextjs-chat-ui check
