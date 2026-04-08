@@ -1254,10 +1254,6 @@ describe("Phoenix Tail Transport", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(StarciteTokenExpiredError);
     expect(channel.leaveCalls).toBe(1);
-    expect(session.authState()).toMatchObject({
-      reason: "token_expired",
-      status: "failed",
-    });
 
     stopError();
     stopEvents();
@@ -1277,12 +1273,8 @@ describe("Phoenix Tail Transport", () => {
       refreshToken,
     });
 
-    const authStates: string[] = [];
     const errors: Error[] = [];
     const seen: Array<{ phase: string; seq: number }> = [];
-    const stopAuth = session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
     const stopError = session.on("error", (error) => {
       errors.push(error);
     });
@@ -1313,7 +1305,6 @@ describe("Phoenix Tail Transport", () => {
       token: refreshedToken,
     });
     expect(reboundChannel.joinCalls[0]).toEqual({ cursor: 1 });
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(errors).toEqual([]);
 
     reboundSocket?.emitOpen();
@@ -1336,7 +1327,6 @@ describe("Phoenix Tail Transport", () => {
     expect(session.identity.id).toBe("planner-refreshed");
     expect(session.events().map((event) => event.seq)).toEqual([1, 2]);
 
-    stopAuth();
     stopError();
     stopEvents();
     session.disconnect();
@@ -1356,11 +1346,7 @@ describe("Phoenix Tail Transport", () => {
       refreshToken,
     });
 
-    const authStates: string[] = [];
     const seen: Array<{ phase: string; seq: number }> = [];
-    const stopAuth = session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
     const stopEvents = session.on("event", (event, context) => {
       seen.push({ phase: context.phase, seq: event.seq });
     });
@@ -1384,7 +1370,6 @@ describe("Phoenix Tail Transport", () => {
       2
     );
     expect(initialChannel.leaveCalls).toBe(1);
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(reboundSocket?.currentParams()).toEqual({
       token: refreshedToken,
     });
@@ -1408,27 +1393,27 @@ describe("Phoenix Tail Transport", () => {
       { phase: "live", seq: 2 },
     ]);
 
-    stopAuth();
     stopEvents();
     session.disconnect();
   });
 
-  it("surfaces refresh failures and allows manual rebind recovery", async () => {
-    const refreshToken = vi.fn().mockRejectedValue(new Error("reauth denied"));
+  it("surfaces refresh failures and allows manual refresh retry recovery", async () => {
+    const refreshToken = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("reauth denied"))
+      .mockResolvedValueOnce(
+        makeSessionToken("ses_refresh_retry_tail", "planner-recovered")
+      );
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     }).session({
-      token: makeSessionToken("ses_rebind_tail"),
+      token: makeSessionToken("ses_refresh_retry_tail"),
       refreshToken,
     });
 
-    const authStates: string[] = [];
     const errors: Error[] = [];
     const seen: number[] = [];
-    const stopAuth = session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
     const stopError = session.on("error", (error) => {
       errors.push(error);
     });
@@ -1438,7 +1423,7 @@ describe("Phoenix Tail Transport", () => {
 
     await waitForSocketCount(1);
     const initialSocket = phoenixMock.MockPhoenixSocket.instances[0];
-    const initialChannel = await waitForChannel("tail:ses_rebind_tail");
+    const initialChannel = await waitForChannel("tail:ses_refresh_retry_tail");
     initialSocket?.emitOpen();
     initialChannel.emitJoinOk({});
     initialChannel.emit("events", {
@@ -1449,35 +1434,33 @@ describe("Phoenix Tail Transport", () => {
     initialChannel.emit("token_expired", { reason: "token_expired" });
     await flush();
 
-    expect(authStates).toEqual(["refreshing", "failed"]);
     expect(errors).toHaveLength(1);
-    expect(session.authState()).toMatchObject({
-      reason: "token_expired",
-      status: "failed",
-    });
+    expect(errors[0]?.message).toContain("reauth denied");
 
-    session.rebindToken(makeSessionToken("ses_rebind_tail", "planner-rebound"));
+    await expect(session.refreshAuth()).resolves.toBeUndefined();
     await waitForSocketCount(2);
 
     const reboundSocket = phoenixMock.MockPhoenixSocket.instances[1];
-    const [, reboundChannel] = await waitForChannels("tail:ses_rebind_tail", 2);
+    const [, reboundChannel] = await waitForChannels(
+      "tail:ses_refresh_retry_tail",
+      2
+    );
     expect(reboundSocket?.currentParams()).toEqual({
-      token: makeSessionToken("ses_rebind_tail", "planner-rebound"),
+      token: makeSessionToken("ses_refresh_retry_tail", "planner-recovered"),
     });
     expect(reboundChannel.joinCalls[0]).toEqual({ cursor: 1 });
 
     reboundSocket?.emitOpen();
     reboundChannel.emitJoinOk({});
     reboundChannel.emit("events", {
-      events: [makeEvent(2, "agent:planner-rebound", 2)],
+      events: [makeEvent(2, "agent:planner-recovered", 2)],
     });
     await flush();
 
-    expect(authStates).toEqual(["refreshing", "failed", "ready"]);
     expect(seen).toEqual([1, 2]);
-    expect(session.identity.id).toBe("planner-rebound");
+    expect(refreshToken).toHaveBeenCalledTimes(2);
+    expect(session.identity.id).toBe("planner-recovered");
 
-    stopAuth();
     stopError();
     stopEvents();
     session.disconnect();

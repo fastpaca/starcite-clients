@@ -3,7 +3,6 @@
 import { useStarciteSession } from "@starcite/react";
 import {
   LocalStorageSessionStore,
-  type SessionAuthState,
   Starcite,
   type TailEvent,
   type StarciteSession,
@@ -48,7 +47,7 @@ const WORKER_COLORS: AgentColor[] = [
 
 export default function Page() {
   const { sessionId, session, error, retry, setError } = useViewerSession();
-  const { events, authState, append } = useStarciteSession({
+  const { events, append } = useStarciteSession({
     session,
     onError: (nextError) => setError(nextError.message),
   });
@@ -94,25 +93,6 @@ export default function Page() {
           {sessionId.slice(0, 20)}...
         </span>
       </header>
-
-      <div className="border-b border-border px-5 py-2 text-xs text-muted-foreground">
-        auth: {describeAuthState(authState)}
-        {authState.status === "failed" && session ? (
-          <button
-            className="ml-3 rounded-md border px-2 py-1 text-foreground"
-            onClick={() => {
-              void session.refreshAuth().catch((nextError) => {
-                setError(
-                  nextError instanceof Error ? nextError.message : "Reauth failed"
-                );
-              });
-            }}
-            type="button"
-          >
-            Retry reauth
-          </button>
-        ) : null}
-      </div>
 
       <Feed agents={agents} committed={committed} pending={pending} />
 
@@ -208,20 +188,6 @@ async function requestViewerSession(sessionId?: string) {
   }
 
   return (await response.json()) as { sessionId: string; token: string };
-}
-
-function describeAuthState(authState: SessionAuthState): string {
-  if (authState.status === "ready") {
-    return "ready";
-  }
-
-  if (authState.status === "refreshing") {
-    return `refreshing${authState.reason ? ` (${authState.reason})` : ""}`;
-  }
-
-  return authState.error?.message
-    ? `failed (${authState.error.message})`
-    : "failed";
 }
 
 function Feed({

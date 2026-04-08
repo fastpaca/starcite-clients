@@ -12,7 +12,6 @@ This package exposes:
 - `messages`
 - `sendMessage`
 - `status`
-- `authState`
 
 For the migration spec, see `docs/ai-sdk-migration.md`.
 
@@ -49,7 +48,7 @@ export function Timeline({ token }: { token: string }) {
     },
   });
 
-  const { events, authState, append } = useStarciteSession({
+  const { events, append } = useStarciteSession({
     session,
     id: session.id,
     onError(error) {
@@ -65,7 +64,6 @@ export function Timeline({ token }: { token: string }) {
       >
         Append
       </button>
-      <p>Auth: {authState.status}</p>
       <pre>{JSON.stringify(events, null, 2)}</pre>
     </>
   );
@@ -100,7 +98,7 @@ export function Chat({ token }: { token: string }) {
     },
   });
 
-  const { messages, sendMessage, status, authState } = useStarciteChat({
+  const { messages, sendMessage, status } = useStarciteChat({
     session,
     id: session.id,
   });
@@ -114,7 +112,6 @@ export function Chat({ token }: { token: string }) {
     >
       <button type="submit">Send</button>
       <p>Status: {status}</p>
-      <p>Auth: {authState.status}</p>
       <pre>{JSON.stringify(messages, null, 2)}</pre>
     </form>
   );
@@ -138,7 +135,7 @@ after the session is bound.
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `onError` (optional): callback for surfaced session `error` events
-- Returns `{ events, authState, append }`
+- Returns `{ events, append }`
 
 `useStarciteChat`:
 
@@ -146,7 +143,7 @@ after the session is bound.
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `userMessageSource` (optional, default `"use-chat"`): source string for user append events
 - `onError` (optional): callback for append, projection, or surfaced session `error` events
-- Returns `{ messages, sendMessage, status, authState }`
+- Returns `{ messages, sendMessage, status }`
 
 ## Behavior
 
@@ -158,7 +155,7 @@ after the session is bound.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Terminal append failures pause the SDK outbox by default; inspect `session.appendState()` and use `session.resumeAppendQueue()` or `session.resetAppendQueue()` for operational recovery.
-- `authState` mirrors `session.authState()` so UI can show token refresh progress, failures, and retry affordances while keeping the same session instance and retained events.
+- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and retained events remain the source of truth.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
 
 ## Exports

@@ -228,10 +228,6 @@ export interface SessionSnapshot {
    */
   syncing: boolean;
   /**
-   * Current session-auth refresh state.
-   */
-  auth: SessionAuthState;
-  /**
    * Current local append outbox state for this session.
    */
   append?: SessionAppendQueueState;
@@ -264,26 +260,6 @@ export interface SessionTokenRefreshContext {
 export type SessionTokenRefreshHandler = (
   context: SessionTokenRefreshContext
 ) => string | Promise<string>;
-
-export type SessionAuthStatus = "ready" | "refreshing" | "failed";
-
-export interface SessionAuthFailureSnapshot {
-  name: string;
-  message: string;
-  occurredAtMs: number;
-  status?: number;
-  code?: string;
-}
-
-export interface SessionAuthState {
-  status: SessionAuthStatus;
-  reason?: SessionTokenRefreshReason;
-  error?: SessionAuthFailureSnapshot;
-}
-
-export type SessionAuthListener = (
-  state: SessionAuthState
-) => void | Promise<void>;
 
 export type SessionAppendQueueStatus =
   | "idle"

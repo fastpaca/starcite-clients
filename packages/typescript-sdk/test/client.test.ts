@@ -1262,7 +1262,6 @@ describe("Starcite", () => {
       "writer-refreshed"
     );
     const authHeaders: Array<string | null> = [];
-    const authStates: string[] = [];
     const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
 
     fetchMock
@@ -1295,9 +1294,6 @@ describe("Starcite", () => {
       token: sessionToken,
       refreshToken,
     });
-    session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
 
     await expect(
       session.append({ text: "retry after reauth" })
@@ -1317,7 +1313,6 @@ describe("Starcite", () => {
       `Bearer ${sessionToken}`,
       `Bearer ${refreshedToken}`,
     ]);
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(session.appendState()).toEqual(
       expect.objectContaining({
         pending: [],
@@ -1338,7 +1333,6 @@ describe("Starcite", () => {
       principal_type: "agent",
     });
     const authHeaders: Array<string | null> = [];
-    const authStates: string[] = [];
     const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
 
     fetchMock.mockImplementationOnce((_url, init) => {
@@ -1357,9 +1351,6 @@ describe("Starcite", () => {
       token: sessionToken,
       refreshToken,
     });
-    session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
 
     await expect(session.refreshAuth()).resolves.toBeUndefined();
     await expect(
@@ -1376,7 +1367,6 @@ describe("Starcite", () => {
         token: sessionToken,
       })
     );
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(authHeaders).toEqual([`Bearer ${refreshedToken}`]);
     expect(session.token).toBe(refreshedToken);
   });
@@ -1388,7 +1378,6 @@ describe("Starcite", () => {
       "writer-refreshed"
     );
     const authHeaders: Array<string | null> = [];
-    const authStates: string[] = [];
     const refreshToken = vi.fn().mockResolvedValue(refreshedToken);
 
     fetchMock
@@ -1430,9 +1419,6 @@ describe("Starcite", () => {
       token: sessionToken,
       refreshToken,
     });
-    session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
 
     const firstAppend = session.append({ text: "first after refresh" });
     const secondAppend = session.append({ text: "second after refresh" });
@@ -1447,7 +1433,6 @@ describe("Starcite", () => {
     });
 
     expect(refreshToken).toHaveBeenCalledTimes(1);
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(authHeaders).toEqual([
       `Bearer ${sessionToken}`,
       `Bearer ${refreshedToken}`,
@@ -1516,10 +1501,6 @@ describe("Starcite", () => {
       identity: starcite.agent({ id: "planner" }),
       id: "ses_identity_refresh",
     });
-    const authStates: string[] = [];
-    session.on("auth", (state) => {
-      authStates.push(state.status);
-    });
 
     await expect(session.refreshAuth()).resolves.toBeUndefined();
 
@@ -1537,7 +1518,6 @@ describe("Starcite", () => {
         method: "POST",
       })
     );
-    expect(authStates).toEqual(["refreshing", "ready"]);
     expect(session.token).toBe(refreshedToken);
     expect(session.identity.id).toBe("planner");
   });

@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const STREAMING_STATUS_TEXT = /status: streaming \| streaming right now: yes/i;
-const AUTH_READY_TEXT = /auth: ready/i;
 
 const mockState = vi.hoisted(() => {
   return {
@@ -119,7 +118,6 @@ describe("nextjs chat example page", () => {
       ],
       sendMessage: vi.fn(),
       status: "streaming",
-      authState: { status: "ready" },
     });
 
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -173,7 +171,6 @@ describe("nextjs chat example page", () => {
       })
     );
     expect(screen.getByText(STREAMING_STATUS_TEXT)).toBeTruthy();
-    expect(screen.getByText(AUTH_READY_TEXT)).toBeTruthy();
     expect(window.location.search).toContain("sessionId=ses_refresh");
   });
 });

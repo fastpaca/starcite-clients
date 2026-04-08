@@ -1,7 +1,6 @@
 import type {
   AppendResult,
   SessionAppendInput,
-  SessionAuthState,
   SessionEventContext,
   SessionEventListener,
   SessionOnEventOptions,
@@ -15,10 +14,8 @@ class FakeSession {
   readonly id: string;
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
-  private readonly authListeners = new Set<(state: SessionAuthState) => void>();
   private readonly eventLog: TailEvent[] = [];
   private nextSeq = 1;
-  private state: SessionAuthState = { status: "ready" };
 
   constructor(id: string) {
     this.id = id;
@@ -32,10 +29,6 @@ class FakeSession {
     return [...this.eventLog];
   }
 
-  authState(): SessionAuthState {
-    return this.state;
-  }
-
   on(
     eventName: "event",
     listener: SessionEventListener,
@@ -43,29 +36,14 @@ class FakeSession {
   ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "auth",
-    listener: (state: SessionAuthState) => void
-  ): () => void;
-  on(
-    eventName: "event" | "error" | "auth",
-    listener:
-      | SessionEventListener
-      | ((error: Error) => void)
-      | ((state: SessionAuthState) => void)
+    eventName: "event" | "error",
+    listener: SessionEventListener | ((error: Error) => void)
   ): () => void {
     if (eventName === "event") {
       const eventListener = listener as SessionEventListener;
       this.eventListeners.add(eventListener);
       return () => {
         this.eventListeners.delete(eventListener);
-      };
-    }
-
-    if (eventName === "auth") {
-      const authListener = listener as (state: SessionAuthState) => void;
-      this.authListeners.add(authListener);
-      return () => {
-        this.authListeners.delete(authListener);
       };
     }
 
@@ -94,63 +72,38 @@ class FakeSession {
     }
   }
 
-  emitAuthState(state: SessionAuthState): void {
-    this.state = state;
-    for (const listener of this.authListeners) {
-      listener(state);
+  emitError(error: Error): void {
+    for (const listener of this.errorListeners) {
+      listener(error);
     }
   }
 }
 
 describe("useStarciteSession", () => {
-  it("surfaces session auth refresh state without dropping retained events", async () => {
-    const session = new FakeSession("ses_auth_state");
-    const { result } = renderHook(() => useStarciteSession({ session }));
-
-    expect(result.current.authState).toEqual({ status: "ready" });
+  it("surfaces retained events and forwards session errors", async () => {
+    const session = new FakeSession("ses_session_hook");
+    const errors: string[] = [];
+    const { result } = renderHook(() =>
+      useStarciteSession({
+        session,
+        onError: (error) => {
+          errors.push(error.message);
+        },
+      })
+    );
 
     act(() => {
       session.emitEvent("first");
+      session.emitError(new Error("refresh failed"));
     });
 
     await waitFor(() => {
       expect(result.current.events).toHaveLength(1);
     });
-
-    act(() => {
-      session.emitAuthState({
-        status: "refreshing",
-        reason: "token_expired",
-      });
-    });
-
-    await waitFor(() => {
-      expect(result.current.authState).toEqual({
-        reason: "token_expired",
-        status: "refreshing",
-      });
-    });
-    expect(result.current.events).toHaveLength(1);
-
-    act(() => {
-      session.emitAuthState({
-        status: "failed",
-        reason: "token_expired",
-        error: {
-          name: "Error",
-          message: "reauth denied",
-          occurredAtMs: Date.now(),
-        },
-      });
-    });
-
-    await waitFor(() => {
-      expect(result.current.authState.status).toBe("failed");
-    });
-    expect(result.current.events).toHaveLength(1);
+    expect(errors).toEqual(["refresh failed"]);
   });
 
-  it("resets auth state and retained events when the session key changes", async () => {
+  it("resets retained events when the session key changes", async () => {
     const firstSession = new FakeSession("ses_first");
     const secondSession = new FakeSession("ses_second");
     const { result, rerender } = renderHook(
@@ -172,30 +125,13 @@ describe("useStarciteSession", () => {
       expect(result.current.events).toHaveLength(1);
     });
 
-    act(() => {
-      firstSession.emitAuthState({
-        status: "failed",
-        reason: "token_expired",
-        error: {
-          name: "Error",
-          message: "reauth denied",
-          occurredAtMs: Date.now(),
-        },
-      });
-    });
-
-    await waitFor(() => {
-      expect(result.current.authState.status).toBe("failed");
-    });
-
     rerender({
       session: secondSession,
       id: secondSession.id,
     });
 
     await waitFor(() => {
-      expect(result.current.authState).toEqual({ status: "ready" });
+      expect(result.current.events).toEqual([]);
     });
-    expect(result.current.events).toEqual([]);
   });
 });

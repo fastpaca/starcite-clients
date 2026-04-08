@@ -124,10 +124,6 @@ session.on("error", (error) => {
   console.error("Session live-sync error", error);
 });
 
-session.on("auth", (state) => {
-  console.log("Session auth state", state.status, state.reason);
-});
-
 await session.append({
   text: "Can you summarize the last 3 updates?",
   source: "user",
@@ -278,7 +274,6 @@ session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
 session.log; // SessionLog — best-effort committed mirror of backend state
-session.authState(); // { status: "ready" | "refreshing" | "failed", ... }
 
 // ── Session log ─────────────────────────────────────────────────────────────
 
@@ -298,7 +293,7 @@ session.appendState();
 // -> { status, pending, producerId, lastAcknowledgedProducerSeq, ... }
 
 const snapshot: SessionSnapshot = session.state();
-// -> { events, lastSeq, cursor, syncing, auth, append }
+// -> { events, lastSeq, cursor, syncing, append }
 
 session.on("append", (event) => {
   console.log(event.type);
@@ -307,8 +302,7 @@ session.on("append", (event) => {
 
 session.resumeAppendQueue(); // retry a paused or restored queue
 session.resetAppendQueue(); // drop queued appends and rotate managed producer identity
-await session.refreshAuth(); // manually retry the configured refreshToken callback
-session.rebindToken("<fresh-jwt>"); // or bind a freshly obtained token directly
+await session.refreshAuth(); // manually retry the configured refreshToken callback after a failed automatic refresh
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
@@ -330,10 +324,6 @@ const stopLiveOnly = session.on(
 // Stream, append, schema, and store errors are surfaced here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
-});
-
-session.on("auth", (state) => {
-  console.log(state.status); // ready | refreshing | failed
 });
 
 // Optional: observe backend-reported recovery boundaries.
@@ -359,13 +349,13 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
-- `session.on("auth", ...)` surfaces in-place session reauthentication state so browser UIs can render refresh progress and retry affordances without rebuilding the session instance.
 - When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
+- If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
 ## Session Stores
 
 `new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
-and the append outbox across session rebinds.
+and the append outbox across session reconnects.
 
 - No default store is configured. When omitted, startup catch-up replays from
   channel cursor `0`.

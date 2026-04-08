@@ -3,7 +3,6 @@ import { z } from "zod";
 import { AppendQueue } from "./append-queue";
 import { decodeSessionToken } from "./auth";
 import {
-  StarciteApiError,
   StarciteError,
   StarciteTailError,
   StarciteTokenExpiredError,
@@ -23,9 +22,6 @@ import {
   type SessionAppendListener,
   type SessionAppendOptions,
   type SessionAppendQueueState,
-  type SessionAuthFailureSnapshot,
-  type SessionAuthListener,
-  type SessionAuthState,
   type SessionEventContext,
   type SessionEventListener,
   type SessionGapListener,
@@ -62,7 +58,6 @@ export interface StarciteSessionOptions {
 }
 
 interface SessionLifecycleEvents {
-  auth: (state: SessionAuthState) => void;
   error: (error: Error) => void;
   append: (event: SessionAppendLifecycleEvent) => void;
   gap: (gap: TailGap) => void;
@@ -84,9 +79,7 @@ export class StarciteSession {
   private readonly refreshTokenHandler: SessionTokenRefreshHandler | undefined;
   private currentToken: string;
   private currentIdentity: StarciteIdentity;
-  private currentAuthState: SessionAuthState = { status: "ready" };
   private authRefreshTask: Promise<void> | undefined;
-  private authRefreshVersion = 0;
 
   readonly log: SessionLog;
   private readonly store: SessionStore | undefined;
@@ -189,15 +182,13 @@ export class StarciteSession {
   ): () => void;
   on(eventName: "append", listener: SessionAppendListener): () => void;
   on(eventName: "gap", listener: SessionGapListener): () => void;
-  on(eventName: "auth", listener: SessionAuthListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "event" | "append" | "gap" | "auth" | "error",
+    eventName: "event" | "append" | "gap" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
       | SessionGapListener
-      | SessionAuthListener
       | ((error: Error) => void),
     options?: SessionOnEventOptions
   ): () => void {
@@ -254,14 +245,6 @@ export class StarciteSession {
       };
     }
 
-    if (eventName === "auth") {
-      const authListener = listener as SessionAuthListener;
-      this.lifecycle.on("auth", authListener);
-      return () => {
-        this.off("auth", authListener);
-      };
-    }
-
     if (eventName === "error") {
       const errorListener = listener as (error: Error) => void;
       this.lifecycle.on("error", errorListener);
@@ -279,15 +262,13 @@ export class StarciteSession {
   off(eventName: "event", listener: SessionEventListener): void;
   off(eventName: "append", listener: SessionAppendListener): void;
   off(eventName: "gap", listener: SessionGapListener): void;
-  off(eventName: "auth", listener: SessionAuthListener): void;
   off(eventName: "error", listener: (error: Error) => void): void;
   off(
-    eventName: "event" | "append" | "gap" | "auth" | "error",
+    eventName: "event" | "append" | "gap" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
       | SessionGapListener
-      | SessionAuthListener
       | ((error: Error) => void)
   ): void {
     if (eventName === "event") {
@@ -315,11 +296,6 @@ export class StarciteSession {
       return;
     }
 
-    if (eventName === "auth") {
-      this.lifecycle.off("auth", listener as SessionAuthListener);
-      return;
-    }
-
     if (eventName === "error") {
       this.lifecycle.off("error", listener as (error: Error) => void);
       return;
@@ -333,7 +309,6 @@ export class StarciteSession {
    */
   disconnect(): void {
     this.keepTailAttached = false;
-    this.authRefreshVersion += 1;
     this.outbox.stop();
     for (const unsubscribe of this.eventSubscriptions.values()) {
       unsubscribe();
@@ -348,13 +323,6 @@ export class StarciteSession {
    */
   appendState(): SessionAppendQueueState {
     return this.outbox.state();
-  }
-
-  /**
-   * Returns the current session-auth refresh state.
-   */
-  authState(): SessionAuthState {
-    return this.snapshotAuthState();
   }
 
   /**
@@ -381,23 +349,11 @@ export class StarciteSession {
   }
 
   /**
-   * Rebinds the session to a new token and reconnects the tail stream in place.
-   */
-  rebindToken(token: string): void {
-    this.authRefreshVersion += 1;
-    this.applyTokenBinding(token);
-    this.setAuthState({ status: "ready" });
-    this.ensureChannelAttached();
-    this.outbox.ensureProcessing();
-  }
-
-  /**
    * Returns a stable view of the current canonical in-memory log state.
    */
   state(): SessionSnapshot {
     return {
       ...this.log.state(this.tailChannel !== undefined),
-      auth: this.snapshotAuthState(),
       append: this.outbox.state(),
     };
   }
@@ -467,7 +423,7 @@ export class StarciteSession {
     if (
       this.tailChannel ||
       !this.shouldKeepChannelAttached() ||
-      this.currentAuthState.status !== "ready"
+      this.authRefreshTask
     ) {
       return;
     }
@@ -571,31 +527,6 @@ export class StarciteSession {
     this.closeTailChannel = undefined;
   }
 
-  private snapshotAuthState(): SessionAuthState {
-    return {
-      status: this.currentAuthState.status,
-      reason: this.currentAuthState.reason,
-      error: this.currentAuthState.error
-        ? { ...this.currentAuthState.error }
-        : undefined,
-    };
-  }
-
-  private setAuthState(state: SessionAuthState): void {
-    this.currentAuthState = state;
-    const snapshot = this.snapshotAuthState();
-
-    for (const listener of this.lifecycle.listeners(
-      "auth"
-    ) as SessionAuthListener[]) {
-      try {
-        this.observeListenerResult(listener(snapshot));
-      } catch (error) {
-        this.emitStreamError(error);
-      }
-    }
-  }
-
   private refreshAuthInternal(
     reason: SessionTokenRefreshReason,
     error: Error | undefined,
@@ -606,9 +537,11 @@ export class StarciteSession {
       const missingHandlerError =
         error ??
         new StarciteError(
-          `Session '${this.id}' does not have a refreshToken callback. Provide one to session({ token, refreshToken }) or call session.rebindToken(newToken).`
+          `Session '${this.id}' does not have a refreshToken callback. Provide one to session({ token, refreshToken }) or reconnect with a fresh session token.`
         );
-      this.failAuthRefresh(reason, missingHandlerError, options);
+      if (options.emitFailure) {
+        this.emitStreamError(missingHandlerError);
+      }
       return Promise.reject(missingHandlerError);
     }
 
@@ -616,9 +549,8 @@ export class StarciteSession {
       return this.authRefreshTask;
     }
 
-    const refreshVersion = ++this.authRefreshVersion;
     this.detachTailChannel();
-    this.setAuthState({ status: "refreshing", reason });
+    let refreshed = false;
 
     const task = Promise.resolve()
       .then(() =>
@@ -630,27 +562,23 @@ export class StarciteSession {
         })
       )
       .then((nextToken) => {
-        if (refreshVersion !== this.authRefreshVersion) {
-          return;
-        }
-
         this.applyTokenBinding(nextToken);
-        this.setAuthState({ status: "ready" });
-        this.ensureChannelAttached();
         this.outbox.ensureProcessing();
+        refreshed = true;
       })
       .catch((refreshError) => {
-        if (refreshVersion !== this.authRefreshVersion) {
-          return;
-        }
-
         const authError = this.toError(refreshError);
-        this.failAuthRefresh(reason, authError, options);
+        if (options.emitFailure) {
+          this.emitStreamError(authError);
+        }
         throw authError;
       })
       .finally(() => {
         if (this.authRefreshTask === task) {
           this.authRefreshTask = undefined;
+        }
+        if (refreshed) {
+          this.ensureChannelAttached();
         }
       });
 
@@ -658,51 +586,17 @@ export class StarciteSession {
     return task;
   }
 
-  private failAuthRefresh(
-    reason: SessionTokenRefreshReason,
-    error: Error,
-    options: { emitFailure: boolean }
-  ): void {
-    this.setAuthState({
-      status: "failed",
-      reason,
-      error: this.snapshotAuthFailure(error),
-    });
-
-    if (options.emitFailure) {
-      this.emitStreamError(error);
-    }
-  }
-
-  private snapshotAuthFailure(error: Error): SessionAuthFailureSnapshot {
-    if (error instanceof StarciteApiError) {
-      return {
-        name: error.name,
-        message: error.message,
-        occurredAtMs: Date.now(),
-        status: error.status,
-        code: error.code,
-      };
-    }
-
-    return {
-      name: error.name,
-      message: error.message,
-      occurredAtMs: Date.now(),
-    };
-  }
-
   private applyTokenBinding(token: string): void {
     const decoded = decodeSessionToken(token);
     if (!decoded.sessionId) {
       throw new StarciteError(
-        "session.rebindToken() requires a token with a session_id claim."
+        "refreshToken callback must return a token with a session_id claim."
       );
     }
 
     if (decoded.sessionId !== this.id) {
       throw new StarciteError(
-        `session.rebindToken() requires a token for session '${this.id}', received '${decoded.sessionId}'.`
+        `refreshToken callback returned a token for session '${decoded.sessionId}', expected '${this.id}'.`
       );
     }
 
