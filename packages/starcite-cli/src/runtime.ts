@@ -98,21 +98,37 @@ export function parseArgs(
 }
 
 export function resolveCliStarciteConfig(
-  config: StarciteCliConfig,
+  fileConfig: StarciteCliConfig,
   options: GlobalOptions,
+  storedApiKey?: string,
   envConfig = getStarciteConfig()
-): StarciteConfig & { readonly baseUrl: string } {
+): {
+  readonly apiKeySource: "option" | "env" | "stored" | "unset";
+  readonly config: StarciteConfig & { readonly baseUrl: string };
+} {
+  const optionToken = trimString(options.token);
+  const localApiKey = trimString(storedApiKey);
+  let apiKeySource: "option" | "env" | "stored" | "unset" = "unset";
+
+  if (optionToken) {
+    apiKeySource = "option";
+  } else if (envConfig.apiKey) {
+    apiKeySource = "env";
+  } else if (localApiKey) {
+    apiKeySource = "stored";
+  }
+
   return {
-    apiKey:
-      trimString(options.token) ??
-      envConfig.apiKey ??
-      trimString(config.apiKey),
-    authUrl: envConfig.authUrl,
-    baseUrl:
-      trimString(options.baseUrl) ??
-      envConfig.baseUrl ??
-      trimString(config.baseUrl) ??
-      DEFAULT_API_BASE_URL,
+    apiKeySource,
+    config: {
+      apiKey: optionToken ?? envConfig.apiKey ?? localApiKey,
+      authUrl: envConfig.authUrl,
+      baseUrl:
+        trimString(options.baseUrl) ??
+        envConfig.baseUrl ??
+        trimString(fileConfig.baseUrl) ??
+        DEFAULT_API_BASE_URL,
+    },
   };
 }
 
@@ -236,14 +252,12 @@ export class CliRuntime {
     );
     const store = new StarciteCliStore(config.directory);
     const fileConfig = await config.readConfig();
-    const envConfig = getStarciteConfig();
-    const clientConfig = {
-      ...resolveCliStarciteConfig(fileConfig, options, envConfig),
-      apiKey:
-        trimString(options.token) ??
-        envConfig.apiKey ??
-        (await config.readApiKey()),
-    };
+    const storedApiKey = await config.readApiKey();
+    const { config: clientConfig } = resolveCliStarciteConfig(
+      fileConfig,
+      options,
+      storedApiKey
+    );
     const client =
       this.createClient?.(clientConfig, store) ??
       new Starcite({

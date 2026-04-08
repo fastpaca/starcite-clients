@@ -1769,4 +1769,40 @@ describe("starcite CLI", () => {
     expect(output.apiKeySource).toBe("stored");
     expect(info).toEqual(["API key saved."]);
   });
+
+  it("config show reports CLI token overrides as the active source", async () => {
+    const { logger } = makeLogger();
+    const { stdout, messages } = makeStdout();
+
+    const program = buildProgram({
+      logger,
+      stdout,
+      createClient: () => {
+        throw new Error("config commands should not create a client");
+      },
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        "sk_cli_override",
+        "--json",
+        "config",
+        "show",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    const output = JSON.parse(messages.join("")) as {
+      apiKey?: string | null;
+      apiKeySource?: string;
+    };
+
+    expect(output.apiKey).toBe("***");
+    expect(output.apiKeySource).toBe("option");
+  });
 });

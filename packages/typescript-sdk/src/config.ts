@@ -62,11 +62,17 @@ export function getStarciteConfig(
 }
 
 export function resolveStarciteConfig(
-  input: StarciteConfig = {}
+  input: StarciteConfig = {},
+  env: StarciteEnvSource | undefined = readProcessEnv()
 ): StarciteConfig & { readonly baseUrl: string } {
+  const envConfig = getStarciteConfig(env);
+
   return {
-    apiKey: trimEnvValue(input.apiKey),
-    authUrl: trimEnvValue(input.authUrl),
-    baseUrl: trimEnvValue(input.baseUrl) ?? DEFAULT_STARCITE_BASE_URL,
+    apiKey: trimEnvValue(input.apiKey) ?? envConfig.apiKey,
+    authUrl: trimEnvValue(input.authUrl) ?? envConfig.authUrl,
+    baseUrl:
+      trimEnvValue(input.baseUrl) ??
+      envConfig.baseUrl ??
+      DEFAULT_STARCITE_BASE_URL,
   };
 }

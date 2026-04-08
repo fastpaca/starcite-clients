@@ -48,10 +48,48 @@ describe("getStarciteConfig", () => {
 
 describe("resolveStarciteConfig", () => {
   it("fills in the default base URL", () => {
-    expect(resolveStarciteConfig({})).toEqual({
+    expect(resolveStarciteConfig({}, {})).toEqual({
       apiKey: undefined,
       authUrl: undefined,
       baseUrl: "http://localhost:4000",
+    });
+  });
+
+  it("falls back to env config before applying the default base URL", () => {
+    expect(
+      resolveStarciteConfig(
+        {},
+        {
+          STARCITE_API_KEY: "service-token",
+          STARCITE_AUTH_URL: "https://auth.starcite.io",
+          STARCITE_API_URL: "https://tenant-a.starcite.io",
+        }
+      )
+    ).toEqual({
+      apiKey: "service-token",
+      authUrl: "https://auth.starcite.io",
+      baseUrl: "https://tenant-a.starcite.io",
+    });
+  });
+
+  it("prefers explicit constructor config over env config", () => {
+    expect(
+      resolveStarciteConfig(
+        {
+          apiKey: "override-token",
+          authUrl: "https://override-auth.starcite.io",
+          baseUrl: "https://override.starcite.io",
+        },
+        {
+          STARCITE_API_KEY: "service-token",
+          STARCITE_AUTH_URL: "https://auth.starcite.io",
+          STARCITE_BASE_URL: "https://tenant-a.starcite.io",
+        }
+      )
+    ).toEqual({
+      apiKey: "override-token",
+      authUrl: "https://override-auth.starcite.io",
+      baseUrl: "https://override.starcite.io",
     });
   });
 });

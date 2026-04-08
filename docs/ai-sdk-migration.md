@@ -143,10 +143,6 @@ const starcite = new Starcite();
 Any backend path that calls `session({ identity, ... })` must have auth issuer
 resolution through `authUrl`, `STARCITE_AUTH_URL`, or the API key JWT `iss`.
 
-Migration code must not read Starcite env vars inline at the call site. Use
-`new Starcite()` for the default path. If an application needs custom Starcite
-config, pass it directly to the constructor.
-
 Backend must use lifecycle events for session discovery:
 
 ```ts

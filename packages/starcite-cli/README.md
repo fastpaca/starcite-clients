@@ -93,7 +93,7 @@ Supported `config set` keys:
 
 - resolved endpoint
 - whether an API key is present
-- whether that API key came from env or local storage
+- whether that API key came from a CLI flag, env, or local storage
 - the active config directory
 
 ### `create`

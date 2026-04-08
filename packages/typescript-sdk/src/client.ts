@@ -1,10 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { decodeApiKeyContext, decodeSessionToken } from "./auth";
-import {
-  getStarciteConfig,
-  resolveStarciteConfig,
-  type StarciteConfig,
-} from "./config";
+import { resolveStarciteConfig, type StarciteConfig } from "./config";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
@@ -116,12 +112,7 @@ export class Starcite {
       appendOptions?: SessionAppendOptions;
     } = {}
   ) {
-    const envConfig = getStarciteConfig();
-    this.config = resolveStarciteConfig({
-      apiKey: options.apiKey ?? envConfig.apiKey,
-      authUrl: options.authUrl ?? envConfig.authUrl,
-      baseUrl: options.baseUrl ?? envConfig.baseUrl,
-    });
+    this.config = resolveStarciteConfig(options);
     const baseUrl = toApiBaseUrl(this.config.baseUrl);
     this.baseUrl = baseUrl;
 
