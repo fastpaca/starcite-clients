@@ -1,30 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
-import { resolveStarciteConfig, type StarciteConfig } from "../src/config";
 import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
-import type { StarciteOptions } from "../src/types";
 
-type TestStarciteOptions = StarciteOptions & {
-  readonly apiKey?: string;
-  readonly authUrl?: string;
-  readonly baseUrl?: string;
-  readonly config?: StarciteConfig;
-};
-
-function createStarcite(options: TestStarciteOptions): Starcite {
-  const { apiKey, authUrl, baseUrl, config, ...rest } = options;
-
-  return new Starcite(
-    resolveStarciteConfig(
-      config ?? {
-        apiKey,
-        authUrl,
-        baseUrl,
-      }
-    ),
-    rest
-  );
+function createStarcite(
+  options: ConstructorParameters<typeof Starcite>[0] = {}
+): Starcite {
+  return new Starcite(options);
 }
 
 const phoenixMock = vi.hoisted(() => {

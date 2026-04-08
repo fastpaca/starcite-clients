@@ -1,4 +1,4 @@
-import { createStarcite } from "@starcite/sdk";
+import { Starcite } from "@starcite/sdk";
 
 /** One client for the whole server: lifecycle listeners and session mint must share this. */
-export const starcite = createStarcite();
+export const starcite = new Starcite();

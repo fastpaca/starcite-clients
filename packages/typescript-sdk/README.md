@@ -46,9 +46,9 @@ This is the practical shape teams end up using in production.
 Use the identity flow. This creates or binds a session and mints a session token.
 
 ```ts
-import { createStarcite, MemoryStore } from "@starcite/sdk";
+import { MemoryStore, Starcite } from "@starcite/sdk";
 
-const starcite = createStarcite({
+const starcite = new Starcite({
   // Use a durable SessionStore in production.
   store: new MemoryStore(),
 });
@@ -180,9 +180,9 @@ export async function mintAdminViewerToken(sessionId: string) {
 Frontend admin inspector:
 
 ```ts
-import { createStarcite } from "@starcite/sdk";
+import { Starcite } from "@starcite/sdk";
 
-const starcite = createStarcite();
+const starcite = new Starcite();
 
 export async function inspectSession(sessionId: string) {
   const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
@@ -211,7 +211,7 @@ export async function inspectSession(sessionId: string) {
 ```ts
 import {
   MemoryStore,
-  createStarcite,
+  Starcite,
   type AppendResult,
   type SessionSnapshot,
   type SessionStore,
@@ -220,7 +220,7 @@ import {
 
 // ── Construction ────────────────────────────────────────────────────────────
 
-const starcite = createStarcite({
+const starcite = new Starcite({
   fetch: globalThis.fetch,
   store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
@@ -353,7 +353,7 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 ## Session Stores
 
-`createStarcite({ store })` accepts a `SessionStore` for cursor, retained events,
+`new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
 and the append outbox across session reconnects.
 
 - No default store is configured. When omitted, startup catch-up replays from

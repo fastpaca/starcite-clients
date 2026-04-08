@@ -1,16 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createStarcite as createStarciteFromEnv,
-  Starcite,
-} from "../src/client";
-import { resolveStarciteConfig, type StarciteConfig } from "../src/config";
+import { Starcite } from "../src/client";
 import {
   StarciteApiError,
   StarciteConnectionError,
   StarciteError,
 } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
-import type { StarciteOptions } from "../src/types";
 
 const AUTH_BEARER_PATTERN = /^Bearer /;
 
@@ -105,26 +100,10 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for condition: ${description}`);
 }
 
-type TestStarciteOptions = StarciteOptions & {
-  readonly apiKey?: string;
-  readonly authUrl?: string;
-  readonly baseUrl?: string;
-  readonly config?: StarciteConfig;
-};
-
-function createStarcite(options: TestStarciteOptions): Starcite {
-  const { apiKey, authUrl, baseUrl, config, ...rest } = options;
-
-  return new Starcite(
-    resolveStarciteConfig(
-      config ?? {
-        apiKey,
-        authUrl,
-        baseUrl,
-      }
-    ),
-    rest
-  );
+function createStarcite(
+  options: ConstructorParameters<typeof Starcite>[0] = {}
+): Starcite {
+  return new Starcite(options);
 }
 
 function tokenFromClaims(claims: Record<string, unknown>): string {
@@ -1112,7 +1091,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarciteFromEnv({
+      const starcite = createStarcite({
         fetch: fetchMock,
       });
 
@@ -1156,7 +1135,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarciteFromEnv({
+      const starcite = createStarcite({
         fetch: fetchMock,
       });
 
@@ -1201,7 +1180,7 @@ describe("Starcite", () => {
     );
 
     try {
-      const starcite = createStarciteFromEnv({
+      const starcite = createStarcite({
         fetch: fetchMock,
       });
 

@@ -3,7 +3,6 @@ import {
   resolveStarciteConfig,
   Starcite,
   StarciteApiError,
-  type StarciteConfig,
 } from "../packages/typescript-sdk/src/index.ts";
 const DEFAULT_TAIL_TIMEOUT_MS = 15_000;
 const DEFAULT_SETTLE_MS = 1000;
@@ -24,7 +23,11 @@ interface LiveSmokeResult {
   };
 }
 
-function readStarciteRuntimeConfig(): StarciteConfig {
+function readStarciteRuntimeConfig(): {
+  readonly apiKey: string;
+  readonly authUrl?: string;
+  readonly baseUrl: string;
+} {
   const config = resolveStarciteConfig(getStarciteConfig());
   const apiKey = config.apiKey;
   if (!apiKey) {

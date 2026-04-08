@@ -137,16 +137,15 @@ Frontend behavior requirements:
 Backend must use one long-lived `Starcite` client:
 
 ```ts
-const starcite = createStarcite();
+const starcite = new Starcite();
 ```
 
 Any backend path that calls `session({ identity, ... })` must have auth issuer
 resolution through `authUrl`, `STARCITE_AUTH_URL`, or the API key JWT `iss`.
 
-Migration code must not read Starcite env vars inline at the call site. The
-standard path is to use `createStarcite()`. If an application uses a
-non-default config source, it should resolve that once in application bootstrap
-and pass it into `new Starcite(config, options)`.
+Migration code must not read Starcite env vars inline at the call site. Use
+`new Starcite()` for the default path. If an application needs custom Starcite
+config, pass it directly to the constructor.
 
 Backend must use lifecycle events for session discovery:
 

@@ -545,26 +545,6 @@ export interface RequestOptions {
 }
 
 /**
- * Runtime options for client construction.
- */
-export interface StarciteOptions {
-  /**
-   * Custom fetch implementation for non-standard runtimes.
-   */
-  fetch?: typeof fetch;
-  /**
-   * Optional session store used for resume state + retained event persistence.
-   *
-   * When omitted, fresh attaches replay from the start of the server tail.
-   */
-  store?: SessionStore;
-  /**
-   * Default append queue behavior for sessions created by this client.
-   */
-  appendOptions?: SessionAppendOptions;
-}
-
-/**
  * Live tenant-scoped lifecycle event emitted by `starcite.on(...)`.
  */
 export const LifecycleEventEnvelopeSchema = z

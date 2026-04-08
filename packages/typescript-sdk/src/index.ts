@@ -1,6 +1,6 @@
 /* biome-ignore-all lint/performance/noBarrelFile: package entrypoint intentionally re-exports public API. */
-export { createStarcite, Starcite } from "./client";
-export type { StarciteConfig, StarciteConfigInput } from "./config";
+export { Starcite } from "./client";
+export type { StarciteConfig } from "./config";
 export { getStarciteConfig, resolveStarciteConfig } from "./config";
 export type { StarciteTailErrorStage } from "./errors";
 export {
@@ -61,7 +61,6 @@ export type {
   SessionTokenRefreshContext,
   SessionTokenRefreshHandler,
   SessionTokenRefreshReason,
-  StarciteOptions,
   TailCursor,
   TailEvent,
   TailGap,

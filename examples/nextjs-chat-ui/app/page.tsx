@@ -2,8 +2,8 @@
 
 import { useStarciteChat } from "@starcite/react";
 import {
-  createStarcite,
   LocalStorageSessionStore,
+  Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
 import { useEffect, useState } from "react";
@@ -42,13 +42,13 @@ async function fetchToken(sessionId?: string) {
 export default function Page() {
   const [starcite] = useState(
     () =>
-      createStarcite({
+      new Starcite({
         store:
           typeof window === "undefined"
             ? undefined
             : new LocalStorageSessionStore({
-              keyPrefix: "starcite:nextjs-chat-ui",
-            }),
+                keyPrefix: "starcite:nextjs-chat-ui",
+              }),
       })
   );
   const [session, setSession] = useState<StarciteSession>();

@@ -23,9 +23,9 @@ Detailed docs:
 ## Public SDK Surface
 
 ```ts
-import { createStarcite, MemoryStore } from "@starcite/sdk";
+import { MemoryStore, Starcite } from "@starcite/sdk";
 
-const starcite = createStarcite({
+const starcite = new Starcite({
   fetch: globalThis.fetch,
   store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
 });
@@ -99,9 +99,9 @@ const stop = session.on("event", (event) => {
 ### C) Admin Panel
 
 ```ts
-import { createStarcite } from "@starcite/sdk";
+import { Starcite } from "@starcite/sdk";
 
-const starcite = createStarcite();
+const starcite = new Starcite();
 
 const { token } = await fetch(`/admin/api/sessions/${sessionId}/viewer-token`).then(
   (res) => res.json()

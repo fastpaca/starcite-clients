@@ -4,7 +4,6 @@ import {
   getStarciteConfig,
   resolveStarciteConfig,
   type StarciteConfig,
-  type StarciteConfigInput,
 } from "./config";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
@@ -42,7 +41,6 @@ import {
   SessionRecordSchema,
   type SessionStore,
   type SessionTokenRefreshHandler,
-  type StarciteOptions,
 } from "./types";
 
 /**
@@ -98,7 +96,7 @@ export class Starcite {
   /** Normalized API base URL ending with `/v1`. */
   readonly baseUrl: string;
 
-  private readonly config: StarciteConfig;
+  private readonly config: StarciteConfig & { readonly baseUrl: string };
   private readonly transport: TransportConfig;
   private readonly authBaseUrl?: string;
   private readonly inferredTenantId?: string;
@@ -111,8 +109,19 @@ export class Starcite {
   private closeLifecycleChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
 
-  constructor(config: StarciteConfigInput, options: StarciteOptions = {}) {
-    this.config = resolveStarciteConfig(config);
+  constructor(
+    options: StarciteConfig & {
+      fetch?: typeof fetch;
+      store?: SessionStore;
+      appendOptions?: SessionAppendOptions;
+    } = {}
+  ) {
+    const envConfig = getStarciteConfig();
+    this.config = resolveStarciteConfig({
+      apiKey: options.apiKey ?? envConfig.apiKey,
+      authUrl: options.authUrl ?? envConfig.authUrl,
+      baseUrl: options.baseUrl ?? envConfig.baseUrl,
+    });
     const baseUrl = toApiBaseUrl(this.config.baseUrl);
     this.baseUrl = baseUrl;
 
@@ -567,14 +576,4 @@ export class Starcite {
       throw error;
     });
   }
-}
-
-/**
- * Creates a client using the SDK's default environment-based config path.
- *
- * Use this for standard application wiring. Call `new Starcite(config, options)`
- * only when you need to supply an explicit config override.
- */
-export function createStarcite(options: StarciteOptions = {}): Starcite {
-  return new Starcite(getStarciteConfig(), options);
 }

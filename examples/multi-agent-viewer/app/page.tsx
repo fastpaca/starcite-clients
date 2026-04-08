@@ -2,8 +2,8 @@
 
 import { useStarciteSession } from "@starcite/react";
 import {
-  createStarcite,
   LocalStorageSessionStore,
+  Starcite,
   type StarciteSession,
   type TailEvent,
 } from "@starcite/sdk";
@@ -171,7 +171,7 @@ function useViewerSession() {
 }
 
 function createBrowserClient() {
-  return createStarcite({
+  return new Starcite({
     store:
       typeof window === "undefined"
         ? undefined

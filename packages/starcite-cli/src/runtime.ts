@@ -38,7 +38,10 @@ export interface GlobalOptions {
 }
 
 export interface CliDependencies {
-  createClient?: (config: StarciteConfig, store: StarciteCliStore) => Starcite;
+  createClient?: (
+    config: StarciteConfig & { readonly baseUrl: string },
+    store: StarciteCliStore
+  ) => Starcite;
   logger?: LoggerLike;
   stdout?: StdoutLike;
 }
@@ -98,7 +101,7 @@ export function resolveCliStarciteConfig(
   config: StarciteCliConfig,
   options: GlobalOptions,
   envConfig = getStarciteConfig()
-): StarciteConfig {
+): StarciteConfig & { readonly baseUrl: string } {
   return {
     apiKey:
       trimString(options.token) ??
@@ -243,7 +246,8 @@ export class CliRuntime {
     };
     const client =
       this.createClient?.(clientConfig, store) ??
-      new Starcite(clientConfig, {
+      new Starcite({
+        ...clientConfig,
         store: store.sessionStore(clientConfig.baseUrl),
       });
 

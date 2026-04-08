@@ -1,13 +1,9 @@
 const DEFAULT_STARCITE_BASE_URL = "http://localhost:4000";
 
-export interface StarciteConfigInput {
+export interface StarciteConfig {
   readonly apiKey?: string;
   readonly authUrl?: string;
   readonly baseUrl?: string;
-}
-
-export interface StarciteConfig extends StarciteConfigInput {
-  readonly baseUrl: string;
 }
 
 interface StarciteEnvSource {
@@ -50,7 +46,7 @@ function readProcessEnv(): StarciteEnvSource | undefined {
 
 export function getStarciteConfig(
   env: StarciteEnvSource | undefined = readProcessEnv()
-): StarciteConfigInput {
+): StarciteConfig {
   return {
     apiKey: firstEnvValue(env?.STARCITE_API_KEY),
     authUrl: firstEnvValue(env?.STARCITE_AUTH_URL),
@@ -66,8 +62,8 @@ export function getStarciteConfig(
 }
 
 export function resolveStarciteConfig(
-  input: StarciteConfigInput = {}
-): StarciteConfig {
+  input: StarciteConfig = {}
+): StarciteConfig & { readonly baseUrl: string } {
   return {
     apiKey: trimEnvValue(input.apiKey),
     authUrl: trimEnvValue(input.authUrl),
