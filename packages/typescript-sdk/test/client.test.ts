@@ -1112,6 +1112,94 @@ describe("Starcite", () => {
     }
   });
 
+  it("uses NEXT_PUBLIC_STARCITE_BASE_URL when no server base URL is configured", async () => {
+    const previousBaseUrl = process.env.STARCITE_BASE_URL;
+    const previousApiUrl = process.env.STARCITE_API_URL;
+    const previousPublicBaseUrl = process.env.NEXT_PUBLIC_STARCITE_BASE_URL;
+
+    Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+    Reflect.deleteProperty(process.env, "STARCITE_API_URL");
+    process.env.NEXT_PUBLIC_STARCITE_BASE_URL = "https://public.starcite.io";
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessions: [], next_cursor: null }), {
+        status: 200,
+      })
+    );
+
+    try {
+      const starcite = new Starcite({
+        fetch: fetchMock,
+      });
+
+      await starcite.listSessions();
+
+      expect(starcite.baseUrl).toBe("https://public.starcite.io/v1");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://public.starcite.io/v1/sessions",
+        expect.objectContaining({
+          method: "GET",
+        })
+      );
+    } finally {
+      if (previousBaseUrl === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_BASE_URL");
+      } else {
+        process.env.STARCITE_BASE_URL = previousBaseUrl;
+      }
+
+      if (previousApiUrl === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_API_URL");
+      } else {
+        process.env.STARCITE_API_URL = previousApiUrl;
+      }
+
+      if (previousPublicBaseUrl === undefined) {
+        Reflect.deleteProperty(process.env, "NEXT_PUBLIC_STARCITE_BASE_URL");
+      } else {
+        process.env.NEXT_PUBLIC_STARCITE_BASE_URL = previousPublicBaseUrl;
+      }
+    }
+  });
+
+  it("uses STARCITE_API_KEY from env for authenticated requests", async () => {
+    const previousApiKey = process.env.STARCITE_API_KEY;
+    process.env.STARCITE_API_KEY = makeApiKey();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessions: [], next_cursor: null }), {
+        status: 200,
+      })
+    );
+
+    try {
+      const starcite = new Starcite({
+        baseUrl: "http://localhost:4000",
+        fetch: fetchMock,
+      });
+
+      await starcite.listSessions();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:4000/v1/sessions",
+        expect.objectContaining({
+          method: "GET",
+          headers: expect.any(Headers),
+        })
+      );
+
+      const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const headers = new Headers(requestInit.headers);
+      expect(headers.get("authorization")).toMatch(/^Bearer /);
+    } finally {
+      if (previousApiKey === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
+      } else {
+        process.env.STARCITE_API_KEY = previousApiKey;
+      }
+    }
+  });
+
   it("session({ identity, id }) creates missing sessions before minting a token", async () => {
     const apiKey = makeApiKey({
       iss: "https://starcite.ai",
@@ -1267,20 +1355,33 @@ describe("Starcite", () => {
   });
 
   it("fails session creation when apiKey is missing", async () => {
-    const sessionToken = makeTailSessionToken("ses_demo", "user-42", "user");
-    const starcite = new Starcite({
-      baseUrl: "https://tenant-a.starcite.io",
-      fetch: fetchMock,
-    });
+    const previousApiKey = process.env.STARCITE_API_KEY;
+    Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
 
-    // session({ token }) works without apiKey
-    const session = await starcite.session({
-      token: sessionToken,
-    });
-    expect(session.id).toBe("ses_demo");
+    try {
+      const sessionToken = makeTailSessionToken("ses_demo", "user-42", "user");
+      const starcite = new Starcite({
+        baseUrl: "https://tenant-a.starcite.io",
+        fetch: fetchMock,
+      });
 
-    // But agent()/user() require apiKey to infer tenant
-    expect(() => starcite.agent({ id: "agent-7" })).toThrowError(StarciteError);
+      // session({ token }) works without apiKey
+      const session = await starcite.session({
+        token: sessionToken,
+      });
+      expect(session.id).toBe("ses_demo");
+
+      // But agent()/user() require apiKey to infer tenant
+      expect(() => starcite.agent({ id: "agent-7" })).toThrowError(
+        StarciteError
+      );
+    } finally {
+      if (previousApiKey === undefined) {
+        Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
+      } else {
+        process.env.STARCITE_API_KEY = previousApiKey;
+      }
+    }
   });
 
   it("returns session({ token }) synchronously", () => {

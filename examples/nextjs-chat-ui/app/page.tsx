@@ -39,7 +39,6 @@ async function fetchToken(sessionId?: string) {
 
   return (await response.json()) as { token: string; sessionId: string };
 }
-
 export default function Page() {
   const [starcite] = useState(
     () =>

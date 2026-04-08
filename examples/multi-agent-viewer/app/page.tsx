@@ -58,7 +58,6 @@ async function fetchToken(sessionId?: string) {
 
   return (await response.json()) as { sessionId: string; token: string };
 }
-
 export default function Page() {
   const { sessionId, session, error, retry, setError } = useViewerSession();
   const { events, append } = useStarciteSession({

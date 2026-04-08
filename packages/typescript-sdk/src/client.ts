@@ -109,14 +109,17 @@ export class Starcite {
   constructor(options: StarciteOptions = {}) {
     const config = getStarciteConfig();
     const baseUrl = toApiBaseUrl(
-      options.baseUrl ?? config.baseUrl ?? "http://localhost:4000"
+      options.baseUrl ??
+        config.baseUrl ??
+        config.publicBaseUrl ??
+        "http://localhost:4000"
     );
     this.baseUrl = baseUrl;
 
     const fetchFn =
       options.fetch ??
       ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
-    const apiKey = options.apiKey;
+    const apiKey = options.apiKey ?? config.apiKey;
     let issuerAuthority: string | undefined;
 
     if (apiKey) {
