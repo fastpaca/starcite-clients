@@ -3,6 +3,7 @@
 import { useStarciteSession } from "@starcite/react";
 import {
   LocalStorageSessionStore,
+  type SessionAuthState,
   Starcite,
   type TailEvent,
   type StarciteSession,
@@ -47,7 +48,7 @@ const WORKER_COLORS: AgentColor[] = [
 
 export default function Page() {
   const { sessionId, session, error, retry, setError } = useViewerSession();
-  const { events, append } = useStarciteSession({
+  const { events, authState, append } = useStarciteSession({
     session,
     onError: (nextError) => setError(nextError.message),
   });
@@ -94,6 +95,25 @@ export default function Page() {
         </span>
       </header>
 
+      <div className="border-b border-border px-5 py-2 text-xs text-muted-foreground">
+        auth: {describeAuthState(authState)}
+        {authState.status === "failed" && session ? (
+          <button
+            className="ml-3 rounded-md border px-2 py-1 text-foreground"
+            onClick={() => {
+              void session.refreshAuth().catch((nextError) => {
+                setError(
+                  nextError instanceof Error ? nextError.message : "Reauth failed"
+                );
+              });
+            }}
+            type="button"
+          >
+            Retry reauth
+          </button>
+        ) : null}
+      </div>
+
       <Feed agents={agents} committed={committed} pending={pending} />
 
       {pending.length > 0 ? (
@@ -116,25 +136,18 @@ function useViewerSession() {
     async (existingId?: string) => {
       try {
         setError(undefined);
-
-        const response = await fetch("/api/starcite/session", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(existingId ? { sessionId: existingId } : {}),
-        });
-
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error ?? `Failed (${response.status})`);
-        }
-
-        const { sessionId: nextSessionId, token } = (await response.json()) as {
-          sessionId: string;
-          token: string;
-        };
+        const { sessionId: nextSessionId, token } =
+          await requestViewerSession(existingId);
 
         setSessionId(nextSessionId);
-        setSession(starcite.session({ token }));
+        setSession(
+          starcite.session({
+            token,
+            refreshToken: async ({ sessionId }) => {
+              return (await requestViewerSession(sessionId)).token;
+            },
+          })
+        );
 
         const url = new URL(window.location.href);
         url.searchParams.set("sessionId", nextSessionId);
@@ -178,6 +191,37 @@ function createBrowserClient() {
 
 function currentSessionIdFromUrl(): string | undefined {
   return new URLSearchParams(window.location.search).get("sessionId")?.trim();
+}
+
+async function requestViewerSession(sessionId?: string) {
+  const response = await fetch("/api/starcite/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      typeof body.error === "string" ? body.error : `Failed (${response.status})`
+    );
+  }
+
+  return (await response.json()) as { sessionId: string; token: string };
+}
+
+function describeAuthState(authState: SessionAuthState): string {
+  if (authState.status === "ready") {
+    return "ready";
+  }
+
+  if (authState.status === "refreshing") {
+    return `refreshing${authState.reason ? ` (${authState.reason})` : ""}`;
+  }
+
+  return authState.error?.message
+    ? `failed (${authState.error.message})`
+    : "failed";
 }
 
 function Feed({

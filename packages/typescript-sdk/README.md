@@ -102,7 +102,18 @@ const { token } = await fetch("/api/chat/session", {
   method: "POST",
 }).then((res) => res.json());
 
-const session = starcite.session({ token });
+const session = starcite.session({
+  token,
+  refreshToken: async ({ sessionId }) => {
+    const refreshed = await fetch("/api/chat/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    }).then((res) => res.json());
+
+    return refreshed.token;
+  },
+});
 
 const stopEvents = session.on("event", (event) => {
   // Replay + live events from canonical ordered session log.
@@ -111,6 +122,10 @@ const stopEvents = session.on("event", (event) => {
 
 session.on("error", (error) => {
   console.error("Session live-sync error", error);
+});
+
+session.on("auth", (state) => {
+  console.log("Session auth state", state.status, state.reason);
 });
 
 await session.append({
@@ -245,7 +260,17 @@ const botSession = await starcite.session({
 });
 
 // Client-side: wraps existing JWT (sync, no network calls)
-const session = starcite.session({ token: "<jwt>" });
+const session = starcite.session({
+  token: "<jwt>",
+  refreshToken: async ({ sessionId }) => {
+    return await fetch("/api/chat/session", {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    })
+      .then((response) => response.json())
+      .then((response) => response.token as string);
+  },
+});
 
 // ── Session properties ──────────────────────────────────────────────────────
 
@@ -253,6 +278,7 @@ session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
 session.log; // SessionLog — best-effort committed mirror of backend state
+session.authState(); // { status: "ready" | "refreshing" | "failed", ... }
 
 // ── Session log ─────────────────────────────────────────────────────────────
 
@@ -272,7 +298,7 @@ session.appendState();
 // -> { status, pending, producerId, lastAcknowledgedProducerSeq, ... }
 
 const snapshot: SessionSnapshot = session.state();
-// -> { events, lastSeq, cursor, syncing, append }
+// -> { events, lastSeq, cursor, syncing, auth, append }
 
 session.on("append", (event) => {
   console.log(event.type);
@@ -281,6 +307,8 @@ session.on("append", (event) => {
 
 session.resumeAppendQueue(); // retry a paused or restored queue
 session.resetAppendQueue(); // drop queued appends and rotate managed producer identity
+await session.refreshAuth(); // manually retry the configured refreshToken callback
+session.rebindToken("<fresh-jwt>"); // or bind a freshly obtained token directly
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
@@ -302,6 +330,10 @@ const stopLiveOnly = session.on(
 // Stream, append, schema, and store errors are surfaced here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
+});
+
+session.on("auth", (state) => {
+  console.log(state.status); // ready | refreshing | failed
 });
 
 // Optional: observe backend-reported recovery boundaries.
@@ -327,6 +359,8 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
+- `session.on("auth", ...)` surfaces in-place session reauthentication state so browser UIs can render refresh progress and retry affordances without rebuilding the session instance.
+- When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
 
 ## Session Stores
 

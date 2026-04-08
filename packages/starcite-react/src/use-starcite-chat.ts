@@ -1,4 +1,4 @@
-import type { TailEvent } from "@starcite/sdk";
+import type { SessionAuthState, TailEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
@@ -41,6 +41,7 @@ export interface UseStarciteChatResult<TMessage extends UIMessage = UIMessage> {
   messages: TMessage[];
   sendMessage: (message: SendMessageInput<TMessage>) => Promise<void>;
   status: ChatStatus;
+  authState: SessionAuthState;
 }
 
 // --- Internals ---
@@ -102,7 +103,11 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 ): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
 
-  const { events, append } = useStarciteSession({ session, id, onError });
+  const { events, authState, append } = useStarciteSession({
+    session,
+    id,
+    onError,
+  });
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
@@ -161,7 +166,7 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   );
 
   return useMemo(
-    () => ({ messages, sendMessage, status }),
-    [messages, sendMessage, status]
+    () => ({ messages, sendMessage, status, authState }),
+    [messages, sendMessage, status, authState]
   );
 }

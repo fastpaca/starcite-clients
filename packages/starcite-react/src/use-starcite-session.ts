@@ -1,6 +1,7 @@
 import type {
   AppendResult,
   SessionAppendInput,
+  SessionAuthState,
   SessionEventListener,
   SessionOnEventOptions,
   TailEvent,
@@ -33,12 +34,31 @@ export interface UseStarciteSessionOptions {
 
 export interface UseStarciteSessionResult {
   events: readonly TailEvent[];
+  authState: SessionAuthState;
   append: (input: SessionAppendInput) => Promise<AppendResult>;
 }
 
 const NOOP_APPEND = (): Promise<AppendResult> =>
   Promise.resolve({ seq: -1, deduped: false });
 const EMPTY_EVENTS: readonly TailEvent[] = [];
+const READY_AUTH_STATE: SessionAuthState = { status: "ready" };
+
+type SessionWithAuthState = StarciteSessionLike & {
+  authState(): SessionAuthState;
+  on(
+    eventName: "auth",
+    listener: (state: SessionAuthState) => void
+  ): () => void;
+};
+
+function isSessionWithAuthState(
+  session: StarciteSessionLike | null | undefined
+): session is SessionWithAuthState {
+  return (
+    typeof (session as { authState?: unknown } | null | undefined)
+      ?.authState === "function"
+  );
+}
 
 export function useStarciteSession(
   options: UseStarciteSessionOptions
@@ -47,6 +67,9 @@ export function useStarciteSession(
   const resetKey = id ?? session?.id ?? "__none__";
 
   const [events, setEvents] = useState<readonly TailEvent[]>([]);
+  const [authState, setAuthState] = useState<SessionAuthState>(() =>
+    isSessionWithAuthState(session) ? session.authState() : READY_AUTH_STATE
+  );
 
   const refreshVersionRef = useRef(0);
   const sessionKeyRef = useRef(resetKey);
@@ -114,6 +137,9 @@ export function useStarciteSession(
     sessionKeyRef.current = resetKey;
     refreshVersionRef.current += 1;
     setEvents([]);
+    setAuthState(
+      isSessionWithAuthState(session) ? session.authState() : READY_AUTH_STATE
+    );
 
     if (!session) {
       return;
@@ -127,6 +153,11 @@ export function useStarciteSession(
         error instanceof Error ? error : new Error(String(error))
       );
     });
+    const offAuth = isSessionWithAuthState(session)
+      ? session.on("auth", (nextAuthState) => {
+          setAuthState(nextAuthState);
+        })
+      : null;
 
     return () => {
       refreshVersionRef.current += 1;
@@ -140,6 +171,7 @@ export function useStarciteSession(
       }
       offEvent();
       offError();
+      offAuth?.();
     };
   }, [onEvent, refresh, session, resetKey]);
 
@@ -150,7 +182,11 @@ export function useStarciteSession(
   );
 
   return useMemo(
-    () => ({ events: session ? events : EMPTY_EVENTS, append }),
-    [session, events, append]
+    () => ({
+      events: session ? events : EMPTY_EVENTS,
+      authState,
+      append,
+    }),
+    [session, events, authState, append]
   );
 }

@@ -228,10 +228,62 @@ export interface SessionSnapshot {
    */
   syncing: boolean;
   /**
+   * Current session-auth refresh state.
+   */
+  auth: SessionAuthState;
+  /**
    * Current local append outbox state for this session.
    */
   append?: SessionAppendQueueState;
 }
+
+export type SessionTokenRefreshReason =
+  | "manual"
+  | "token_expired"
+  | "unauthorized";
+
+export interface SessionTokenRefreshContext {
+  /**
+   * Session being reauthenticated.
+   */
+  sessionId: string;
+  /**
+   * The currently bound session token when refresh started.
+   */
+  token: string;
+  /**
+   * Why the SDK is asking for a new token.
+   */
+  reason: SessionTokenRefreshReason;
+  /**
+   * Optional triggering error when refresh was caused by a failed operation.
+   */
+  error?: Error;
+}
+
+export type SessionTokenRefreshHandler = (
+  context: SessionTokenRefreshContext
+) => string | Promise<string>;
+
+export type SessionAuthStatus = "ready" | "refreshing" | "failed";
+
+export interface SessionAuthFailureSnapshot {
+  name: string;
+  message: string;
+  occurredAtMs: number;
+  status?: number;
+  code?: string;
+}
+
+export interface SessionAuthState {
+  status: SessionAuthStatus;
+  reason?: SessionTokenRefreshReason;
+  error?: SessionAuthFailureSnapshot;
+}
+
+export type SessionAuthListener = (
+  state: SessionAuthState
+) => void | Promise<void>;
 
 export type SessionAppendQueueStatus =
   | "idle"

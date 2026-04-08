@@ -2,11 +2,12 @@
 
 import { useStarciteChat } from "@starcite/react";
 import {
+  type SessionAuthState,
   LocalStorageSessionStore,
   Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -42,6 +43,20 @@ export default function Page() {
   const [session, setSession] = useState<StarciteSession>();
   const [error, setError] = useState<string>();
 
+  const requestSessionBinding = useCallback(async (sessionId?: string) => {
+    const response = await fetch("/api/starcite/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Session token request failed (${response.status}).`);
+    }
+
+    return (await response.json()) as { token: string; sessionId: string };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -49,24 +64,20 @@ export default function Page() {
       const fromQuery = new URLSearchParams(window.location.search).get(
         "sessionId"
       );
-
-      const response = await fetch("/api/starcite/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(fromQuery ? { sessionId: fromQuery } : {}),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Session token request failed (${response.status}).`);
-      }
-
-      const next = (await response.json()) as { token: string; sessionId: string };
+      const next = await requestSessionBinding(fromQuery ?? undefined);
       if (cancelled) {
         return;
       }
 
       setError(undefined);
-      setSession(starcite.session({ token: next.token }));
+      setSession(
+        starcite.session({
+          token: next.token,
+          refreshToken: async ({ sessionId }) => {
+            return (await requestSessionBinding(sessionId)).token;
+          },
+        })
+      );
 
       const url = new URL(window.location.href);
       url.searchParams.set("sessionId", next.sessionId);
@@ -86,7 +97,7 @@ export default function Page() {
     return () => {
       cancelled = true;
     };
-  }, [starcite]);
+  }, [requestSessionBinding, starcite]);
 
   return (
     <main className="mx-auto flex h-dvh w-full max-w-4xl flex-col gap-3 p-4">
@@ -110,7 +121,8 @@ export default function Page() {
 
 function ChatPane({ session }: { session: StarciteSession }) {
   const [chatError, setChatError] = useState<string>();
-  const { messages, sendMessage, status } = useStarciteChat({
+  const [refreshPending, setRefreshPending] = useState(false);
+  const { messages, sendMessage, status, authState } = useStarciteChat({
     id: session.id,
     onError: (error) => {
       setChatError(error.message);
@@ -125,10 +137,36 @@ function ChatPane({ session }: { session: StarciteSession }) {
         <p>
           status: {status} | streaming right now: {status === "streaming" ? "yes" : "no"}
         </p>
+        <p>
+          auth: {describeAuthState(authState)}
+          {refreshPending ? " | retrying reauth..." : ""}
+        </p>
         {chatError ? (
           <p className="mt-1 normal-case tracking-normal text-destructive">
             last error: {chatError}
           </p>
+        ) : null}
+        {authState.status === "failed" ? (
+          <button
+            className="mt-2 rounded-md border px-2 py-1 normal-case tracking-normal"
+            disabled={refreshPending}
+            onClick={() => {
+              setRefreshPending(true);
+              void session
+                .refreshAuth()
+                .catch((error) => {
+                  setChatError(
+                    error instanceof Error ? error.message : "Reauth failed."
+                  );
+                })
+                .finally(() => {
+                  setRefreshPending(false);
+                });
+            }}
+            type="button"
+          >
+            Retry reauth
+          </button>
         ) : null}
       </section>
 
@@ -195,4 +233,18 @@ function ChatPane({ session }: { session: StarciteSession }) {
       </PromptInput>
     </>
   );
+}
+
+function describeAuthState(authState: SessionAuthState): string {
+  if (authState.status === "ready") {
+    return "ready";
+  }
+
+  if (authState.status === "refreshing") {
+    return `refreshing${authState.reason ? ` (${authState.reason})` : ""}`;
+  }
+
+  return authState.error?.message
+    ? `failed (${authState.error.message})`
+    : "failed";
 }
