@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-04-08
+
+### Added
+
+- Session token refresh support via `session({ token, refreshToken })`, automatic rebind on tail expiry and auth failures, and manual recovery with `session.refreshAuth()`
+- Raw lifecycle subscriptions with `starcite.on("lifecycle", ...)` plus typed listeners for `session.hydrating`, `session.activated`, `session.freezing`, and `session.frozen`
+
+### Changed
+
+- `session.on("event", ...)` listeners now receive `{ phase: "replay" | "live" }` instead of the old `replayed` flag
+- Public event typing now uses `TailEvent`, and `session({ identity })` now auto-refreshes its session token through the parent API key flow
+
+### Fixed
+
+- Phoenix channel joins now retry timeout failures instead of failing the stream immediately
+- HTTP transport now preserves the default `fetch` binding and normalizes trailing slashes to avoid double-slash request paths
+
 ### Added
 
 - Session listing support: `client.listSessions(options?)` with pagination and metadata filters

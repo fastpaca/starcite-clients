@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-04-08
+
+### Changed
+
+- No user-facing CLI behavior changed in this release; it refreshes the published docs and picks up `@starcite/sdk@0.0.15`
+- Clarified README guidance around credential resolution, the default local endpoint, and the API-key-driven CLI flows
+
 ### Added
 
 - Session catalog command: `sessions list` with pagination and metadata filters
