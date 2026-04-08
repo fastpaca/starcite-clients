@@ -450,28 +450,32 @@ describe("Phoenix Tail Transport", () => {
     vi.useRealTimers();
   });
 
-  it("subscribes to lifecycle over Phoenix and emits all supported lifecycle events", async () => {
+  it("subscribes to lifecycle over Phoenix and emits raw and typed lifecycle events", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     });
 
-    const seen: string[] = [];
+    const rawSeen: string[] = [];
+    const typedSeen: string[] = [];
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
     const stopCreated = client.on("session.created", (event) => {
-      seen.push(event.kind);
+      typedSeen.push(event.kind);
     });
     const stopHydrating = client.on("session.hydrating", (event) => {
-      seen.push(event.kind);
+      typedSeen.push(event.kind);
     });
     const stopActivated = client.on("session.activated", (event) => {
-      seen.push(event.kind);
+      typedSeen.push(event.kind);
     });
     const stopFreezing = client.on("session.freezing", (event) => {
-      seen.push(event.kind);
+      typedSeen.push(event.kind);
     });
     const stopFrozen = client.on("session.frozen", (event) => {
-      seen.push(event.kind);
+      typedSeen.push(event.kind);
     });
 
     await waitForSocketCount(1);
@@ -524,7 +528,14 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    expect(seen).toEqual([
+    expect(rawSeen).toEqual([
+      "session.created",
+      "session.hydrating",
+      "session.activated",
+      "session.freezing",
+      "session.frozen",
+    ]);
+    expect(typedSeen).toEqual([
       "session.created",
       "session.hydrating",
       "session.activated",
@@ -532,6 +543,7 @@ describe("Phoenix Tail Transport", () => {
       "session.frozen",
     ]);
 
+    stopLifecycle();
     stopCreated();
     stopHydrating();
     stopActivated();
@@ -549,7 +561,7 @@ describe("Phoenix Tail Transport", () => {
       fetch: vi.fn<typeof fetch>(),
     });
 
-    const stopCreated = client.on("session.created", () => undefined);
+    const stopLifecycle = client.on("lifecycle", () => undefined);
     const stopFrozen = client.on("session.frozen", () => undefined);
 
     await waitForSocketCount(1);
@@ -558,24 +570,28 @@ describe("Phoenix Tail Transport", () => {
     socket?.emitOpen();
     channel.emitJoinOk({});
 
-    stopCreated();
+    stopFrozen();
     await flush();
     expect(channel.leaveCalls).toBe(0);
 
-    stopFrozen();
+    stopLifecycle();
     await flush();
     expect(channel.leaveCalls).toBe(1);
   });
 
-  it("ignores unsupported lifecycle event kinds without surfacing an error", async () => {
+  it("forwards unsupported lifecycle event kinds through raw listeners without surfacing an error", async () => {
     const client = new Starcite({
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
     });
 
+    const rawSeen: string[] = [];
     const seen: string[] = [];
     const errors: Error[] = [];
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
     const stopCreated = client.on("session.created", (event) => {
       seen.push(event.session_id);
     });
@@ -596,9 +612,11 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
+    expect(rawSeen).toEqual(["session.archived"]);
     expect(seen).toEqual([]);
     expect(errors).toEqual([]);
 
+    stopLifecycle();
     stopCreated();
     stopError();
   });
@@ -610,8 +628,15 @@ describe("Phoenix Tail Transport", () => {
       fetch: vi.fn<typeof fetch>(),
     });
 
+    const rawSeen: string[] = [];
+    const typedSeen: string[] = [];
     const errors: Error[] = [];
-    const stopFrozen = client.on("session.frozen", () => undefined);
+    const stopLifecycle = client.on("lifecycle", (event) => {
+      rawSeen.push(event.kind);
+    });
+    const stopFrozen = client.on("session.frozen", (event) => {
+      typedSeen.push(event.kind);
+    });
     const stopError = client.on("error", (error) => {
       errors.push(error);
     });
@@ -629,9 +654,12 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
+    expect(rawSeen).toEqual(["session.frozen"]);
+    expect(typedSeen).toEqual([]);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toMatch(INVALID_FROZEN_PAYLOAD_MESSAGE);
 
+    stopLifecycle();
     stopFrozen();
     stopError();
   });

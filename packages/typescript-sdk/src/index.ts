@@ -25,6 +25,7 @@ export type {
   AppendEventRequest,
   AppendEventResponse,
   AppendResult,
+  LifecycleEventEnvelope,
   RequestOptions,
   SessionActivatedLifecycleEvent,
   SessionAppendFailureSnapshot,

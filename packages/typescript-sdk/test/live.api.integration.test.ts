@@ -44,7 +44,7 @@ function tenantIdFromApiKey(token: string): string {
 }
 
 describeLive("Starcite live API integration", () => {
-  it("receives session.created and session.activated lifecycle events against the live API", async () => {
+  it("receives raw lifecycle events and typed known lifecycle events against the live API", async () => {
     const apiKey = LIVE_API_KEY;
     if (!apiKey) {
       throw new Error("missing STARCITE_LIVE_API_KEY");
@@ -63,6 +63,7 @@ describeLive("Starcite live API integration", () => {
       tenant_id: string;
     }> = [];
     const activatedSessionIds = new Set<string>();
+    const rawLifecycleEvents = new Set<string>();
     let createdSessionId: string | undefined;
 
     await new Promise<void>((resolve, reject) => {
@@ -76,6 +77,7 @@ describeLive("Starcite live API integration", () => {
       }, 20_000);
 
       const cleanup = () => {
+        stopLifecycle();
         stopCreated();
         stopActivated();
         stopError();
@@ -95,11 +97,26 @@ describeLive("Starcite live API integration", () => {
         const created = createdEvents.find((event) => {
           return event.session_id === createdSessionId;
         });
-        if (created && activatedSessionIds.has(createdSessionId)) {
+        if (
+          created &&
+          activatedSessionIds.has(createdSessionId) &&
+          rawLifecycleEvents.has(`session.created:${createdSessionId}`) &&
+          rawLifecycleEvents.has(`session.activated:${createdSessionId}`)
+        ) {
           settle(resolve);
         }
       };
 
+      const stopLifecycle = client.on("lifecycle", (event) => {
+        const sessionId =
+          typeof event.session_id === "string" ? event.session_id : undefined;
+        if (!sessionId) {
+          return;
+        }
+
+        rawLifecycleEvents.add(`${event.kind}:${sessionId}`);
+        maybeResolve();
+      });
       const stopCreated = client.on("session.created", (event) => {
         if (event.metadata.integration !== marker) {
           return;
@@ -160,6 +177,12 @@ describeLive("Starcite live API integration", () => {
     expect(created?.tenant_id).toBe(tenantId);
     expect(created?.metadata.integration).toBe(marker);
     expect(activatedSessionIds.has(createdSessionId ?? "")).toBe(true);
+    expect(rawLifecycleEvents.has(`session.created:${createdSessionId}`)).toBe(
+      true
+    );
+    expect(
+      rawLifecycleEvents.has(`session.activated:${createdSessionId}`)
+    ).toBe(true);
   }, 45_000);
 
   it("creates, appends, tails, and lists sessions against the live API", async () => {

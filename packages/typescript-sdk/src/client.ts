@@ -20,6 +20,7 @@ import {
 import {
   type IssueSessionTokenInput,
   IssueSessionTokenResponseSchema,
+  type LifecycleEventEnvelope,
   LifecycleEventEnvelopeSchema,
   type RequestOptions,
   type SessionAppendOptions,
@@ -79,6 +80,7 @@ function mergeAppendOptions(
 }
 
 interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
+  lifecycle: (event: LifecycleEventEnvelope) => void;
   error: (error: Error) => void;
 }
 
@@ -143,16 +145,24 @@ export class Starcite {
   /**
    * Subscribes to tenant-scoped Starcite lifecycle events.
    *
-   * Lifecycle subscriptions are live-only and require backend/service auth.
+   * `lifecycle` forwards every backend lifecycle payload as-is. Typed named
+   * listeners such as `session.created` are convenience helpers for the
+   * currently modeled lifecycle kinds. Lifecycle subscriptions are live-only
+   * and require backend/service auth.
    */
+  on(
+    eventName: "lifecycle",
+    listener: (event: LifecycleEventEnvelope) => void
+  ): () => void;
   on<K extends SessionLifecycleEventName>(
     eventName: K,
     listener: StarciteLifecycleEvents[K]
   ): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: SessionLifecycleEventName | "error",
+    eventName: "lifecycle" | SessionLifecycleEventName | "error",
     listener:
+      | ((event: LifecycleEventEnvelope) => void)
       | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): () => void {
@@ -178,10 +188,15 @@ export class Starcite {
     eventName: K,
     listener: StarciteLifecycleEvents[K]
   ): void;
+  off(
+    eventName: "lifecycle",
+    listener: (event: LifecycleEventEnvelope) => void
+  ): void;
   off(eventName: "error", listener: (error: Error) => void): void;
   off(
-    eventName: SessionLifecycleEventName | "error",
+    eventName: "lifecycle" | SessionLifecycleEventName | "error",
     listener:
+      | ((event: LifecycleEventEnvelope) => void)
       | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): void {
@@ -478,6 +493,15 @@ export class Starcite {
       return;
     }
 
+    this.lifecycle.emit("lifecycle", envelope.data);
+
+    const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
+    if (parsed.success) {
+      // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
+      this.lifecycle.emit(parsed.data.kind, parsed.data as any);
+      return;
+    }
+
     const lifecycleKind = SessionLifecycleEventNameSchema.safeParse(
       envelope.data.kind
     );
@@ -485,22 +509,16 @@ export class Starcite {
       return;
     }
 
-    const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
-    if (!parsed.success) {
-      this.emitLifecycleError(
-        new StarciteError(
-          `Invalid ${envelope.data.kind} payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
-        )
-      );
-      return;
-    }
-
-    // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
-    this.lifecycle.emit(parsed.data.kind, parsed.data as any);
+    this.emitLifecycleError(
+      new StarciteError(
+        `Invalid ${envelope.data.kind} payload: ${parsed.error.issues[0]?.message ?? "parse failed"}`
+      )
+    );
   }
 
   private detachLifecycleChannelIfIdle(): void {
     if (
+      this.lifecycle.listenerCount("lifecycle") > 0 ||
       SessionLifecycleEventNames.some((eventName) => {
         return this.lifecycle.listenerCount(eventName) > 0;
       })

@@ -558,6 +558,10 @@ export const LifecycleEventEnvelopeSchema = z
   })
   .passthrough();
 
+export type LifecycleEventEnvelope = z.infer<
+  typeof LifecycleEventEnvelopeSchema
+>;
+
 export const SessionLifecycleEventNames = [
   "session.created",
   "session.hydrating",
@@ -611,6 +615,10 @@ export const SessionLifecycleEventSchema = z.discriminatedUnion("kind", [
   SessionFrozenLifecycleEventSchema,
 ]);
 
+/**
+ * Currently modeled lifecycle payloads surfaced through typed named listeners
+ * such as `starcite.on("session.created", ...)`.
+ */
 export type SessionLifecycleEvent = z.infer<typeof SessionLifecycleEventSchema>;
 
 export type SessionLifecycleEventName = z.infer<
