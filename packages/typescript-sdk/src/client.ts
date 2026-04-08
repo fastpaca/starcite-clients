@@ -575,8 +575,6 @@ export class Starcite {
  * Use this for standard application wiring. Call `new Starcite(config, options)`
  * only when you need to supply an explicit config override.
  */
-export function createStarcite(
-  options: StarciteOptions = {}
-): Starcite {
+export function createStarcite(options: StarciteOptions = {}): Starcite {
   return new Starcite(getStarciteConfig(), options);
 }

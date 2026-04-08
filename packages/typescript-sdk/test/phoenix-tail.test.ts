@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
-import { type StarciteConfig, resolveStarciteConfig } from "../src/config";
+import { resolveStarciteConfig, type StarciteConfig } from "../src/config";
 import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
 import type { StarciteOptions } from "../src/types";

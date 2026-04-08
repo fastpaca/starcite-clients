@@ -37,6 +37,9 @@ vi.mock("@starcite/sdk", () => {
   }
 
   return {
+    createStarcite(options: unknown) {
+      return new FakeStarcite(options);
+    },
     LocalStorageSessionStore: FakeLocalStorageSessionStore,
     Starcite: FakeStarcite,
   };

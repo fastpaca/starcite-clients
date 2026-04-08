@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  getStarciteConfig,
-  resolveStarciteConfig,
-} from "../src/config";
+import { getStarciteConfig, resolveStarciteConfig } from "../src/config";
 
 describe("getStarciteConfig", () => {
   it("reads canonical server env vars", () => {

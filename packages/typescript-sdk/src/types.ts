@@ -1,4 +1,5 @@
 import { z } from "zod";
+
 const ArbitraryObjectSchema = z.record(z.unknown());
 
 export interface IssueSessionTokenInput {

@@ -237,7 +237,9 @@ export class CliRuntime {
     const clientConfig = {
       ...resolveCliStarciteConfig(fileConfig, options, envConfig),
       apiKey:
-        trimString(options.token) ?? envConfig.apiKey ?? (await config.readApiKey()),
+        trimString(options.token) ??
+        envConfig.apiKey ??
+        (await config.readApiKey()),
     };
     const client =
       this.createClient?.(clientConfig, store) ??

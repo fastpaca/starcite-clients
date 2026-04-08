@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  StarciteIdentity,
   type StarciteConfig,
+  StarciteIdentity,
   type TailEvent,
 } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -112,7 +112,13 @@ function expectStarciteConfig(
   config: StarciteConfig,
   expected: { apiKey?: string; baseUrl: string }
 ): void {
-  expect(config).toEqual(expect.objectContaining(expected));
+  for (const [key, value] of Object.entries(expected)) {
+    if (config[key as keyof StarciteConfig] !== value) {
+      throw new Error(
+        `Expected config.${key} to equal ${JSON.stringify(value)}, received ${JSON.stringify(config[key as keyof StarciteConfig])}`
+      );
+    }
+  }
 }
 
 describe("starcite CLI", () => {

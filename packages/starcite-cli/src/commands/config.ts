@@ -7,7 +7,6 @@ import {
   parseConfigSetKey,
   parseEndpoint,
   resolveCliStarciteConfig,
-  trimString,
 } from "../runtime";
 
 export async function runConfigCommand(

@@ -3,7 +3,7 @@ import {
   createStarcite as createStarciteFromEnv,
   Starcite,
 } from "../src/client";
-import { type StarciteConfig, resolveStarciteConfig } from "../src/config";
+import { resolveStarciteConfig, type StarciteConfig } from "../src/config";
 import {
   StarciteApiError,
   StarciteConnectionError,
@@ -11,6 +11,8 @@ import {
 } from "../src/errors";
 import { MemoryStore } from "../src/session-store";
 import type { StarciteOptions } from "../src/types";
+
+const AUTH_BEARER_PATTERN = /^Bearer /;
 
 vi.mock("phoenix", () => {
   class MockChannel {
@@ -1089,12 +1091,11 @@ describe("Starcite", () => {
   });
 
   it("validates baseUrl at client construction", () => {
-    expect(
-      () =>
-        createStarcite({
-          baseUrl: "localhost:4000",
-          fetch: fetchMock,
-        })
+    expect(() =>
+      createStarcite({
+        baseUrl: "localhost:4000",
+        fetch: fetchMock,
+      })
     ).toThrowError(StarciteError);
   });
 
@@ -1216,7 +1217,7 @@ describe("Starcite", () => {
 
       const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
       const headers = new Headers(requestInit.headers);
-      expect(headers.get("authorization")).toMatch(/^Bearer /);
+      expect(headers.get("authorization")).toMatch(AUTH_BEARER_PATTERN);
     } finally {
       if (previousApiKey === undefined) {
         Reflect.deleteProperty(process.env, "STARCITE_API_KEY");
