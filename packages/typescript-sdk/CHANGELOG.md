@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-08
+
+### Added
+
+- Session catalog header APIs: `client.getSession(id)`, `client.updateSession(id, input)`, `client.archiveSession(id)`, and `client.unarchiveSession(id)`
+- Archive-state filtering for session catalogs via `client.listSessions({ archived })`
+- Typed lifecycle coverage and exports for `session.updated`, `session.archived`, and `session.unarchived`
+
+### Changed
+
+- Session catalog payloads now expose archive/version metadata from the API, including `archived`, `updated_at`, `version`, `tenant_id`, and `creator_principal` when present
+- Session header updates now support optimistic concurrency via `expectedVersion`
+
 ## [0.0.15] - 2026-04-08
 
 ### Added

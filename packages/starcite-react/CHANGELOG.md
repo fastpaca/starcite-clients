@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-08
+
+### Changed
+
+- No user-facing React API changes in this release; the package version is aligned with the `0.0.16` monorepo release and `@starcite/sdk@0.0.16`
+
 ## [0.0.15] - 2026-04-08
 
 ### Changed

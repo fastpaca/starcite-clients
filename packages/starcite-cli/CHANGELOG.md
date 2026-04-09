@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-08
+
+### Added
+
+- `sessions get <sessionId>` for fetching a single session header
+- `sessions update` / `sessions patch` for changing session titles and metadata, including `--expected-version` support
+- `sessions archive` and `sessions unarchive` for moving sessions in and out of the archived catalog
+
+### Changed
+
+- `sessions list` now accepts `--archived <active|archived|all>`
+- Text output for session catalog commands now surfaces archive state and header metadata more explicitly
+
 ## [0.0.15] - 2026-04-08
 
 ### Changed
