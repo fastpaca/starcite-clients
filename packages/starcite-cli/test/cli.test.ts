@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { StarciteIdentity, type TailEvent } from "@starcite/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli";
-import { StarciteCliStore } from "../src/store";
+import { StarciteCliCache } from "../src/store";
 
 interface FakeSession {
   readonly id: string;
@@ -649,14 +649,14 @@ describe("starcite CLI", () => {
     });
   });
 
-  it("passes the CLI store into the SDK client for high-level appends", async () => {
+  it("passes the CLI cache into the SDK client for high-level appends", async () => {
     const { logger } = makeLogger();
     const createClient = vi.fn(
-      (_baseUrl: string, _apiKey?: string, store?: StarciteCliStore) => {
-        expect(store).toBeDefined();
-        const sessionStore = store?.sessionStore("http://localhost:45187/v1");
-        expect(typeof sessionStore?.load).toBe("function");
-        expect(typeof sessionStore?.save).toBe("function");
+      (_baseUrl: string, _apiKey?: string, cache?: StarciteCliCache) => {
+        expect(cache).toBeDefined();
+        const sessionCache = cache?.sessionCache("http://localhost:45187/v1");
+        expect(typeof sessionCache?.read).toBe("function");
+        expect(typeof sessionCache?.write).toBe("function");
         return createFakeClient();
       }
     );
@@ -721,8 +721,8 @@ describe("starcite CLI", () => {
       "http://config.local:4100",
       serviceToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
   });
@@ -763,8 +763,8 @@ describe("starcite CLI", () => {
       "http://config-toml.local:4200",
       serviceToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
   });
@@ -799,8 +799,8 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       authToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
   });
@@ -854,8 +854,8 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       serviceToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
     expect(info).toContain("seq=1 deduped=false");
@@ -1068,8 +1068,8 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       opaqueToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
     expect(info).toContain("seq=1 deduped=false");
@@ -1106,8 +1106,8 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       serviceToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
     expect(info).toContain("[drafter] Drafting clause 4.2...");
@@ -1150,8 +1150,8 @@ describe("starcite CLI", () => {
       "http://localhost:45187",
       overrideToken,
       expect.objectContaining({
-        load: expect.any(Function),
-        save: expect.any(Function),
+        read: expect.any(Function),
+        write: expect.any(Function),
       })
     );
   });
@@ -1431,7 +1431,7 @@ describe("starcite CLI", () => {
 
   it("tail surfaces session errors without mutating local session cache", async () => {
     const { logger, info, error } = makeLogger();
-    let capturedStore: StarciteCliStore | undefined;
+    let capturedCache: StarciteCliCache | undefined;
 
     const staleSession: FakeSession = {
       ...fakeSession,
@@ -1443,24 +1443,26 @@ describe("starcite CLI", () => {
 
     const program = buildProgram({
       logger,
-      createClient: (_baseUrl, _apiKey, store) => {
-        capturedStore = store;
-        store.sessionStore("http://localhost:45187").save("ses_123", {
-          cursor: 1,
-          lastSeq: 1,
-          events: [
-            {
-              seq: 1,
-              type: "content",
-              payload: { text: "stale event" },
-              actor: "agent:drafter",
-              producer_id: "producer:drafter",
-              producer_seq: 1,
-            },
-          ],
+      createClient: (_baseUrl, _apiKey, cache) => {
+        capturedCache = cache;
+        cache.sessionCache("http://localhost:45187").write("ses_123", {
+          log: {
+            cursor: 1,
+            lastSeq: 1,
+            events: [
+              {
+                seq: 1,
+                type: "content",
+                payload: { text: "stale event" },
+                actor: "agent:drafter",
+                producer_id: "producer:drafter",
+                producer_seq: 1,
+              },
+            ],
+          },
           metadata: {
-            schemaVersion: 4,
-            updatedAtMs: Date.now(),
+            schemaVersion: 5,
+            cachedAtMs: Date.now(),
           },
         });
 
@@ -1487,22 +1489,24 @@ describe("starcite CLI", () => {
     expect(info).toEqual([]);
     expect(error).toEqual([]);
     expect(
-      capturedStore?.sessionStore("http://localhost:45187").load("ses_123")
+      capturedCache?.sessionCache("http://localhost:45187").read("ses_123")
     ).toEqual({
-      cursor: 1,
-      lastSeq: 1,
-      events: [
-        {
-          seq: 1,
-          type: "content",
-          payload: { text: "stale event" },
-          actor: "agent:drafter",
-          producer_id: "producer:drafter",
-          producer_seq: 1,
-        },
-      ],
+      log: {
+        cursor: 1,
+        lastSeq: 1,
+        events: [
+          {
+            seq: 1,
+            type: "content",
+            payload: { text: "stale event" },
+            actor: "agent:drafter",
+            producer_id: "producer:drafter",
+            producer_seq: 1,
+          },
+        ],
+      },
       metadata: expect.objectContaining({
-        schemaVersion: 4,
+        schemaVersion: 5,
       }),
     });
   });
@@ -1749,7 +1753,7 @@ describe("starcite CLI", () => {
     expect(credentialsFile.apiKey).toBe("sk_test_123");
   });
 
-  it("clears existing local session cache on store version mismatch", () => {
+  it("clears existing local session cache on version mismatch", () => {
     writeFileSync(
       join(configDir, "state.json"),
       `${JSON.stringify(
@@ -1763,7 +1767,7 @@ describe("starcite CLI", () => {
       )}\n`
     );
 
-    new StarciteCliStore(configDir);
+    new StarciteCliCache(configDir);
 
     const stateFile = JSON.parse(
       readFileSync(join(configDir, "state.json"), "utf8")
@@ -1772,7 +1776,7 @@ describe("starcite CLI", () => {
     expect(
       stateFile["https://anor-ai.starcite.io/v1::ses_123"]
     ).toBeUndefined();
-    expect(stateFile.__starciteCliStoreVersion).toBe("2");
+    expect(stateFile.__starciteCliCacheVersion).toBe("3");
   });
 
   it("config set endpoint persists base URL", async () => {

@@ -5,7 +5,7 @@ import {
   type StarciteCliConfig,
   StarciteCliConfigStore,
 } from "./config";
-import { StarciteCliStore } from "./store";
+import { StarciteCliCache } from "./store";
 
 const DEFAULT_API_PORT = 45_187;
 const DEFAULT_TAIL_BATCH_SIZE = 256;
@@ -35,7 +35,7 @@ export interface CliDependencies {
   createClient?: (
     baseUrl: string,
     apiKey: string | undefined,
-    store: StarciteCliStore
+    cache: StarciteCliCache
   ) => Starcite;
   logger?: LoggerLike;
   stdout?: StdoutLike;
@@ -45,7 +45,7 @@ export interface ResolvedGlobalOptions {
   baseUrl: string;
   json: boolean;
   config: StarciteCliConfigStore;
-  store: StarciteCliStore;
+  cache: StarciteCliCache;
   client: Starcite;
 }
 
@@ -222,25 +222,25 @@ export class CliRuntime {
     const config = new StarciteCliConfigStore(
       resolveConfigDir(options.configDir)
     );
-    const store = new StarciteCliStore(config.directory);
+    const cache = new StarciteCliCache(config.directory);
     const baseUrl = resolveConfiguredBaseUrl(
       await config.readConfig(),
       options
     );
     const apiKey = trimString(options.token) ?? (await config.readApiKey());
     const client =
-      this.createClient?.(baseUrl, apiKey, store) ??
+      this.createClient?.(baseUrl, apiKey, cache) ??
       new Starcite({
         baseUrl,
         apiKey,
-        store: store.sessionStore(baseUrl),
+        cache: cache.sessionCache(baseUrl),
       });
 
     return {
       baseUrl,
       json: options.json,
       config,
-      store,
+      cache,
       client,
     };
   }

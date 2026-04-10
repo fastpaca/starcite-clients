@@ -325,9 +325,9 @@ export interface SessionAppendOptions {
    */
   retryPolicy?: SessionAppendRetryPolicy;
   /**
-   * Whether queued appends should be persisted through the configured `SessionStore`.
+   * Whether queued appends should be persisted through the configured session cache.
    *
-   * Defaults to `true` when a store is configured.
+   * Defaults to `true` when a cache is configured.
    */
   persist?: boolean;
   /**
@@ -472,23 +472,9 @@ export type SessionAppendStoreState = z.infer<
 >;
 
 /**
- * Serializable persisted state for one session log.
+ * Serializable checkpoint for one materialized session log.
  */
-export interface SessionStoreMetadata {
-  /**
-   * Store payload schema version.
-   */
-  schemaVersion: 4;
-  /**
-   * Unix epoch milliseconds when this snapshot was written.
-   */
-  updatedAtMs: number;
-}
-
-/**
- * Serializable persisted state for one session log.
- */
-export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
+export interface SessionLogCheckpoint<TEvent extends TailEvent = TailEvent> {
   /**
    * Highest committed sequence observed for this session.
    */
@@ -501,22 +487,46 @@ export interface SessionStoreState<TEvent extends TailEvent = TailEvent> {
    * Retained committed events snapshot used for immediate replay.
    */
   events: TEvent[];
-  /**
-   * Optional persisted append queue + producer state.
-   */
-  append?: SessionAppendStoreState;
-  /**
-   * Optional metadata for versioning and operational introspection.
-   */
-  metadata?: SessionStoreMetadata;
 }
 
 /**
- * Persistence interface for session resume state + retained events.
+ * Operational metadata for one persisted cache entry.
  */
-export interface SessionStore<TEvent extends TailEvent = TailEvent> {
-  load(sessionId: string): SessionStoreState<TEvent> | undefined;
-  save(sessionId: string, state: SessionStoreState<TEvent>): void;
+export interface SessionCacheMetadata {
+  /**
+   * Cache entry schema version.
+   */
+  schemaVersion: 5;
+  /**
+   * Unix epoch milliseconds when this entry was written.
+   */
+  cachedAtMs: number;
+}
+
+/**
+ * Persisted cache entry for one session.
+ */
+export interface SessionCacheEntry<TEvent extends TailEvent = TailEvent> {
+  /**
+   * Optional warm-start checkpoint for the session log.
+   */
+  log?: SessionLogCheckpoint<TEvent>;
+  /**
+   * Optional persisted append outbox + producer state.
+   */
+  outbox?: SessionAppendStoreState;
+  /**
+   * Optional metadata for versioning and operational introspection.
+   */
+  metadata?: SessionCacheMetadata;
+}
+
+/**
+ * Persistence interface for session resume cache + retained events.
+ */
+export interface SessionCache<TEvent extends TailEvent = TailEvent> {
+  read(sessionId: string): SessionCacheEntry<TEvent> | undefined;
+  write(sessionId: string, entry: SessionCacheEntry<TEvent>): void;
   clear?(sessionId: string): void;
 }
 
@@ -588,11 +598,11 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Optional session store used for resume state + retained event persistence.
+   * Optional session cache used for resume state + retained event persistence.
    *
    * When omitted, fresh attaches replay from the start of the server tail.
    */
-  store?: SessionStore;
+  cache?: SessionCache;
   /**
    * Default append queue behavior for sessions created by this client.
    */

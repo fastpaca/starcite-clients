@@ -20,7 +20,7 @@ vi.mock("@starcite/react", () => {
 });
 
 vi.mock("@starcite/sdk", () => {
-  class FakeLocalStorageSessionStore {
+  class FakeLocalStorageSessionCache {
     constructor(options: unknown) {
       mockState.storeOptions.push(options);
     }
@@ -37,7 +37,7 @@ vi.mock("@starcite/sdk", () => {
   }
 
   return {
-    LocalStorageSessionStore: FakeLocalStorageSessionStore,
+    LocalStorageSessionCache: FakeLocalStorageSessionCache,
     Starcite: FakeStarcite,
   };
 });

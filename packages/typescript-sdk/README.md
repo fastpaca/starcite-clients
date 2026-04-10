@@ -46,14 +46,14 @@ This is the practical shape teams end up using in production.
 Use the identity flow. This creates or binds a session and mints a session token.
 
 ```ts
-import { MemoryStore, Starcite } from "@starcite/sdk";
+import { MemorySessionCache, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
   authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT already has iss
-  // Use a durable SessionStore in production.
-  store: new MemoryStore(),
+  // Use a durable SessionCache in production.
+  cache: new MemorySessionCache(),
 });
 
 export async function runPlanner(prompt: string, sessionId?: string) {
@@ -231,11 +231,11 @@ export async function inspectSession(sessionId: string) {
 
 ```ts
 import {
-  MemoryStore,
+  MemorySessionCache,
   Starcite,
   type AppendResult,
+  type SessionCache,
   type SessionSnapshot,
-  type SessionStore,
   type TailEvent,
 } from "@starcite/sdk";
 
@@ -246,7 +246,7 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
-  store: new MemoryStore(), // retained events + numeric tail cursor + append queue persistence
+  cache: new MemorySessionCache(), // retained events + numeric tail cursor + append outbox persistence
 });
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
@@ -359,7 +359,7 @@ const stopLiveOnly = session.on(
   { replay: false }
 );
 
-// Stream, append, schema, and store errors are surfaced here.
+// Stream, append, schema, and cache errors are surfaced here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
 });
@@ -390,18 +390,18 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
 - If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
-## Session Stores
+## Session Caches
 
-`new Starcite({ store })` accepts a `SessionStore` for cursor, retained events,
-and the append outbox across session reconnects.
+`new Starcite({ cache })` accepts a `SessionCache` for cursor, retained events,
+and the append outbox across session rebinds.
 
-- No default store is configured. When omitted, startup catch-up replays from
+- No default cache is configured. When omitted, startup catch-up replays from
   channel cursor `0`.
 - Bring your own by implementing:
-  - `load(sessionId)`
-  - `save(sessionId, { lastSeq, cursor, events, append?, metadata? })`
+  - `read(sessionId)`
+  - `write(sessionId, { log?, outbox?, metadata? })`
   - optional `clear(sessionId)`
-- `MemoryStore`, `WebStorageSessionStore`, and `LocalStorageSessionStore`
+- `MemorySessionCache`, `WebStorageSessionCache`, and `LocalStorageSessionCache`
   support the same contract.
 - Paused terminal failures are persisted, so a restarted session does not
   auto-replay a poisoned head append until you explicitly resume or reset it.

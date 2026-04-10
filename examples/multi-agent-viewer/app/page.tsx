@@ -2,17 +2,14 @@
 
 import { useStarciteSession } from "@starcite/react";
 import {
-  LocalStorageSessionStore,
+  LocalStorageSessionCache,
   Starcite,
-  type TailEvent,
   type StarciteSession,
+  type TailEvent,
 } from "@starcite/sdk";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
-import {
-  StickToBottom,
-  useStickToBottomContext,
-} from "use-stick-to-bottom";
+import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { cn } from "@/lib/utils";
 
 type AgentColor = { bg: string; text: string; accent: string };
@@ -83,9 +80,9 @@ export default function Page() {
       <div className="flex h-dvh items-center justify-center">
         {error ? (
           <div className="space-y-3 text-center">
-            <p className="text-sm text-destructive">{error}</p>
+            <p className="text-destructive text-sm">{error}</p>
             <button
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              className="rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground text-sm hover:bg-primary/90"
               onClick={retry}
               type="button"
             >
@@ -93,7 +90,7 @@ export default function Page() {
             </button>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">Creating session...</p>
+          <p className="text-muted-foreground text-sm">Creating session...</p>
         )}
       </div>
     );
@@ -101,9 +98,9 @@ export default function Page() {
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr_auto] overflow-hidden">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
-        <span className="text-sm font-semibold">Research Swarm</span>
-        <span className="ml-auto font-mono text-xs text-muted-foreground">
+      <header className="flex items-center gap-3 border-border border-b px-5 py-3">
+        <span className="font-semibold text-sm">Research Swarm</span>
+        <span className="ml-auto font-mono text-muted-foreground text-xs">
           {sessionId.slice(0, 20)}...
         </span>
       </header>
@@ -175,10 +172,10 @@ function createBrowserClient() {
   return new Starcite({
     baseUrl:
       process.env.NEXT_PUBLIC_STARCITE_BASE_URL ?? "https://api.starcite.io",
-    store:
+    cache:
       typeof window === "undefined"
         ? undefined
-        : new LocalStorageSessionStore({
+        : new LocalStorageSessionCache({
             keyPrefix: "starcite:multi-agent-viewer",
           }),
   });
@@ -199,7 +196,7 @@ function Feed({
 }) {
   if (committed.length === 0 && pending.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+      <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
         Ask a question and watch the research swarm investigate it from multiple
         angles.
       </div>
@@ -207,7 +204,11 @@ function Feed({
   }
 
   return (
-    <StickToBottom className="flex-1 overflow-y-hidden" resize="smooth" role="log">
+    <StickToBottom
+      className="flex-1 overflow-y-hidden"
+      resize="smooth"
+      role="log"
+    >
       <StickToBottom.Content className="mx-auto max-w-3xl space-y-3 p-4">
         {committed.map((entry) => renderEntry(entry, false, agents))}
         {pending.map((entry) => renderEntry(entry, true, agents))}
@@ -254,7 +255,7 @@ function ScrollToBottom() {
 
   return (
     <button
-      className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted"
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:bg-muted"
       onClick={() => scrollToBottom()}
       type="button"
     >
@@ -283,7 +284,12 @@ const FullCard = memo(function FullCard({
     >
       <div className="mb-1.5 flex items-center gap-2">
         <Avatar color={color} name={entry.name} />
-        <span className={cn("text-xs font-semibold", color?.text ?? "text-gray-600")}>
+        <span
+          className={cn(
+            "font-semibold text-xs",
+            color?.text ?? "text-gray-600"
+          )}
+        >
           {isUser ? "You" : entry.name}
         </span>
         {streaming ? <Spinner className={color?.text} /> : null}
@@ -317,17 +323,17 @@ const WorkerCard = memo(function WorkerCard({
         type="button"
       >
         <Avatar color={color} name={entry.name} />
-        <span className={cn("truncate text-xs font-semibold", color.text)}>
+        <span className={cn("truncate font-semibold text-xs", color.text)}>
           {entry.name}
         </span>
         {streaming ? (
           <Spinner className={color.text} />
         ) : (
-          <span className="text-xs text-emerald-500">Done</span>
+          <span className="text-emerald-500 text-xs">Done</span>
         )}
         <span
           className={cn(
-            "ml-auto text-xs text-muted-foreground transition-transform",
+            "ml-auto text-muted-foreground text-xs transition-transform",
             expanded && "rotate-180"
           )}
         >
@@ -350,9 +356,7 @@ const WorkerCard = memo(function WorkerCard({
 function StreamingTail({ text }: { text: string }) {
   return (
     <div className="relative overflow-hidden" style={{ maxHeight: 80 }}>
-      <div
-        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-white to-transparent dark:from-gray-950"
-      />
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-white to-transparent dark:from-gray-950" />
       <div className="flex flex-col-reverse" style={{ maxHeight: 80 }}>
         <Markdown small text={text} />
       </div>
@@ -370,7 +374,7 @@ const Markdown = memo(function Markdown({
   return (
     <Streamdown
       className={cn(
-        "prose prose-sm prose-neutral max-w-none text-foreground/90 dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        "prose prose-sm prose-neutral dark:prose-invert max-w-none text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         small && "text-[13px] leading-relaxed"
       )}
     >
@@ -383,7 +387,7 @@ function Avatar({ name, color }: { name: string; color?: AgentColor }) {
   return (
     <div
       className={cn(
-        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
+        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-bold text-[10px]",
         color ? [color.bg, color.text] : "bg-gray-100 text-gray-600"
       )}
     >
@@ -419,9 +423,9 @@ function Spinner({ className }: { className?: string }) {
 
 function StatusBar({ count }: { count: number }) {
   return (
-    <div className="border-t border-border bg-muted/30 px-4 py-3">
+    <div className="border-border border-t bg-muted/30 px-4 py-3">
       <div className="mx-auto flex max-w-3xl items-center justify-center gap-3">
-        <span className="text-sm text-muted-foreground">
+        <span className="text-muted-foreground text-sm">
           {count === 1
             ? "1 agent working..."
             : `${count} agents working concurrently...`}
@@ -436,7 +440,7 @@ function InputBar({ onSend }: { onSend: (text: string) => void }) {
 
   return (
     <form
-      className="border-t border-border bg-muted/30 px-4 py-3"
+      className="border-border border-t bg-muted/30 px-4 py-3"
       onSubmit={(event) => {
         event.preventDefault();
         const text = input.trim();
@@ -456,7 +460,7 @@ function InputBar({ onSend }: { onSend: (text: string) => void }) {
           value={input}
         />
         <button
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-50"
           disabled={!input.trim()}
           type="submit"
         >
@@ -499,7 +503,8 @@ function derivePresentation(events: readonly TailEvent[]): FeedPresentation {
     if (agent !== "coordinator" && !agents.has(agent)) {
       agents.set(
         agent,
-        WORKER_COLORS[nextWorkerColor % WORKER_COLORS.length] ?? WORKER_COLORS[0]!
+        WORKER_COLORS[nextWorkerColor % WORKER_COLORS.length] ??
+          WORKER_COLORS[0]!
       );
       nextWorkerColor += 1;
     }

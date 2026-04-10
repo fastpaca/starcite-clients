@@ -25,7 +25,7 @@
 - Type exports for session listing payloads/options
 - First-class auth input via `apiKey` in `Starcite` constructor options
 - Automatic bearer auth header on HTTP API requests
-- Built-in session stores: `MemoryStore`, `WebStorageSessionStore`, and `LocalStorageSessionStore`
+- Built-in session caches: `MemorySessionCache`, `WebStorageSessionCache`, and `LocalStorageSessionCache`
 - `StarciteTailError` with structured tail failure context (`stage`, `sessionId`, `attempts`, close metadata)
 - Explicit `session.on("gap", ...)` support for server gap payloads
 

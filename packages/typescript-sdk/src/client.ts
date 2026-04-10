@@ -25,6 +25,7 @@ import {
   type RequestOptions,
   type SessionAppendOptions,
   type SessionArchivedFilter,
+  type SessionCache,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -35,7 +36,6 @@ import {
   SessionListPageSchema,
   type SessionRecord,
   SessionRecordSchema,
-  type SessionStore,
   type SessionTokenRefreshHandler,
   type SessionUpdateInput,
   type StarciteOptions,
@@ -102,7 +102,7 @@ export class Starcite {
   private readonly inferredTenantId?: string;
   private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
-  private readonly store: SessionStore | undefined;
+  private readonly cache: SessionCache | undefined;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
   private lifecycleChannel: RejoinableChannel | undefined;
@@ -131,7 +131,7 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
     this.apiKey = apiKey;
-    this.store = options.store;
+    this.cache = options.cache;
     this.appendOptions = options.appendOptions;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
@@ -445,7 +445,7 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token),
-      store: this.store,
+      cache: this.cache,
       record,
       appendOptions: mergeAppendOptions(
         this.appendOptions,
@@ -481,7 +481,7 @@ export class Starcite {
       token,
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
-      store: this.store,
+      cache: this.cache,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
       refreshToken,
     });

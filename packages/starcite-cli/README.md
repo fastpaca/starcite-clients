@@ -176,7 +176,7 @@ Behavior:
 
 - `--agent` filters emitted events to `actor === "agent:<name>"`.
 - `--cursor` filters output to events with `seq >= <value>`.
-- Transport resume comes from the SDK session store when cached state exists; without cached state the session tail attaches from cursor `0`.
+- Transport resume comes from the SDK session cache when cached state exists; without cached state the session tail attaches from cursor `0`.
 - Without `--no-follow`, the command keeps following live events until interrupted.
 - With `--no-follow`, the command exits after replay and a short idle window.
 
@@ -233,7 +233,7 @@ By default the CLI uses `~/.starcite`:
 
 - `config.json` or `config.toml`: optional defaults such as `baseUrl` and `apiKey`
 - `credentials.json`: saved API key
-- `state.json`: SDK session-store state keyed by base URL and session id
+- `state.json`: SDK session-cache state keyed by base URL and session id
 
 `state.json` is where retained events, numeric tail cursor, and append queue
 state are cached. It does not cache session tokens.

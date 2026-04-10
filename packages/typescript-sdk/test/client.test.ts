@@ -5,7 +5,7 @@ import {
   StarciteConnectionError,
   StarciteError,
 } from "../src/errors";
-import { MemoryStore } from "../src/session-store";
+import { MemorySessionCache } from "../src/session-cache";
 
 vi.mock("phoenix", () => {
   class MockChannel {
@@ -805,13 +805,13 @@ describe("Starcite", () => {
     }
   });
 
-  it("restores persisted pending appends from the session store and auto-flushes them", async () => {
+  it("restores persisted pending appends from the session cache and auto-flushes them", async () => {
     const sessionToken = makeTailSessionToken("ses_persisted_outbox", "writer");
-    const store = new MemoryStore();
+    const cache = new MemorySessionCache();
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const session = await starcite.session({
       token: sessionToken,
@@ -823,10 +823,10 @@ describe("Starcite", () => {
     const queuedAppend = session.append({ text: "persist me" });
     queuedAppend.catch(() => undefined);
 
-    const storedBeforeRestore = store.load("ses_persisted_outbox");
-    const persistedProducerId = storedBeforeRestore?.append?.producerId;
-    expect(storedBeforeRestore?.append?.pending).toHaveLength(1);
-    expect(storedBeforeRestore?.append?.pending[0]?.request.producer_seq).toBe(
+    const cachedBeforeRestore = cache.read("ses_persisted_outbox");
+    const persistedProducerId = cachedBeforeRestore?.outbox?.producerId;
+    expect(cachedBeforeRestore?.outbox?.pending).toHaveLength(1);
+    expect(cachedBeforeRestore?.outbox?.pending[0]?.request.producer_seq).toBe(
       1
     );
 
@@ -839,7 +839,7 @@ describe("Starcite", () => {
     const restoredClient = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const restoredSession = await restoredClient.session({
       token: sessionToken,
@@ -858,9 +858,9 @@ describe("Starcite", () => {
       })
     );
     await waitForCondition(() => {
-      return store.load("ses_persisted_outbox")?.append?.pending.length === 0;
+      return cache.read("ses_persisted_outbox")?.outbox?.pending.length === 0;
     }, "persisted append queue to flush");
-    expect(store.load("ses_persisted_outbox")?.append?.pending).toHaveLength(0);
+    expect(cache.read("ses_persisted_outbox")?.outbox?.pending).toHaveLength(0);
     expect(restoredSession.appendState()).toEqual(
       expect.objectContaining({
         status: "idle",
@@ -875,25 +875,27 @@ describe("Starcite", () => {
       "ses_reconciled_outbox",
       "writer"
     );
-    const store = new MemoryStore();
+    const cache = new MemorySessionCache();
     const producerId = crypto.randomUUID();
 
-    store.save("ses_reconciled_outbox", {
-      cursor: 1,
-      lastSeq: 1,
-      events: [
-        {
-          seq: 1,
-          cursor: 1,
-          type: "content",
-          payload: { text: "persist me" },
-          actor: "agent:writer",
-          producer_id: producerId,
-          producer_seq: 1,
-          idempotency_key: "persisted-append",
-        },
-      ],
-      append: {
+    cache.write("ses_reconciled_outbox", {
+      log: {
+        cursor: 1,
+        lastSeq: 1,
+        events: [
+          {
+            seq: 1,
+            cursor: 1,
+            type: "content",
+            payload: { text: "persist me" },
+            actor: "agent:writer",
+            producer_id: producerId,
+            producer_seq: 1,
+            idempotency_key: "persisted-append",
+          },
+        ],
+      },
+      outbox: {
         producerId,
         lastAcknowledgedProducerSeq: 0,
         pending: [
@@ -918,7 +920,7 @@ describe("Starcite", () => {
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const restoredSession = await starcite.session({
       token: sessionToken,
@@ -944,7 +946,7 @@ describe("Starcite", () => {
         }),
       })
     );
-    expect(store.load("ses_reconciled_outbox")?.append).toEqual(
+    expect(cache.read("ses_reconciled_outbox")?.outbox).toEqual(
       expect.objectContaining({
         lastAcknowledgedProducerSeq: 1,
         pending: [],
@@ -954,7 +956,7 @@ describe("Starcite", () => {
 
   it("restores a terminally paused outbox without auto-flushing it again", async () => {
     const sessionToken = makeTailSessionToken("ses_persisted_pause", "writer");
-    const store = new MemoryStore();
+    const cache = new MemorySessionCache();
 
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -969,7 +971,7 @@ describe("Starcite", () => {
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const session = await starcite.session({ token: sessionToken });
     const firstAppendResult = session
@@ -979,14 +981,14 @@ describe("Starcite", () => {
     const firstError = await firstAppendResult;
     expect(firstError).toBeInstanceOf(StarciteApiError);
     expect(session.appendState().status).toBe("paused");
-    expect(store.load("ses_persisted_pause")?.append?.status).toBe("paused");
+    expect(cache.read("ses_persisted_pause")?.outbox?.status).toBe("paused");
 
     fetchMock.mockClear();
 
     const restoredClient = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      store,
+      cache,
     });
     const restoredSession = await restoredClient.session({
       token: sessionToken,
