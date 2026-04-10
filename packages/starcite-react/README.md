@@ -70,9 +70,11 @@ export function Timeline({ token }: { token: string }) {
 }
 ```
 
-`useStarciteSession` reads from `session.events()` and refreshes from
+`useStarciteSession` currently reads from `session.events()` and refreshes from
 `session.on("event", ..., { replay: false })`, so the retained session log
-stays the source of truth.
+stays the source of truth. `session.events()` remains supported for
+compatibility but is deprecated in favor of explicit history methods on the SDK
+session surface.
 
 ## `useStarciteChat`
 
@@ -147,7 +149,7 @@ after the session is bound.
 
 ## Behavior
 
-- Uses `session.events()` as the durable source of truth for chat state.
+- Uses the session's current materialized event view as the durable source of truth for chat state.
 - Refreshes from live `session.on("event", ..., { replay: false })` updates and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`

@@ -318,6 +318,7 @@ session.log; // SessionLog — best-effort committed mirror of backend state
 session.log.events; // readonly TailEvent[] — currently materialized committed events
 session.log.cursor; // TailCursor | undefined — numeric resume cursor from the backend
 session.log.lastSeq; // number
+session.events(); // deprecated compatibility shim for the current materialized view
 await session.last(50); // newest 50 committed events
 await session.window({ fromSeq: 101, toSeq: 150 }); // exact seq-addressed slice
 await session.all(); // full committed log; expensive and should be used sparingly
@@ -390,6 +391,7 @@ session.disconnect(); // stops WS immediately, removes all listeners
 - Pass `{ replay: false }` to skip retained replay and only receive future live events.
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
+- `session.events()` remains available for compatibility but is deprecated. It only returns the currently materialized local sparse-cache view.
 - `await session.last(count)` fetches and returns the newest committed events, merging them into the local sparse log cache.
 - `await session.window({ fromSeq, toSeq })` fetches and returns an exact committed seq slice, only requesting missing ranges from the server.
 - `await session.all()` fetches and returns the full committed log, then marks the local sparse cache as fully hydrated.

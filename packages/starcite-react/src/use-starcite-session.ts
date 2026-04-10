@@ -14,6 +14,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export interface StarciteSessionLike {
   readonly id: string;
   append(input: SessionAppendInput): Promise<AppendResult>;
+  /**
+   * @deprecated Use `session.last()`, `session.window()`, or `session.all()`
+   * when the concrete session implementation supports explicit history reads.
+   */
   events(): readonly TailEvent[];
   on(
     eventName: "event",

@@ -369,7 +369,11 @@ export class StarciteSession {
   }
 
   /**
-   * Returns the retained canonical event list.
+   * Returns the currently materialized local event view.
+   *
+   * @deprecated Use `session.last()`, `session.window()`, or `session.all()`
+   * to request explicit history. `session.events()` only reflects the events
+   * already loaded into the local sparse cache.
    */
   events(): readonly TailEvent[] {
     return this.log.events;

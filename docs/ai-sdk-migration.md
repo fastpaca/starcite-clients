@@ -95,14 +95,14 @@ The required Starcite model is:
 4. backend binds owned sessions explicitly with `starcite.session({ identity, id })`
 5. backend listens to live session events with `session.on("event", ...)`
 6. backend appends assistant chunks back into the same session
-7. frontend renders from the session timeline with `session.events()` or `useStarciteSession(...)`, plus `session.on("event")`
+7. frontend renders from the session timeline with explicit history reads such as `session.last(...)`, `session.window(...)`, or `session.all()`, plus `session.on("event")`
 
 These responsibilities must stay distinct:
 
 - `starcite.on(...)` is lifecycle discovery
 - `starcite.session(...)` is explicit identity binding
 - `session.on(...)` is per-session event handling
-- `session.events()` is the canonical session read model
+- explicit session history reads are the canonical session read model
 
 ## 5. Frontend Migration
 
@@ -184,7 +184,7 @@ Backend must use the session timeline as model input:
 
 ```ts
 async function respond(session: StarciteSession): Promise<void> {
-  const messages = await toUIMessagesFromEvents(session.events());
+  const messages = await toUIMessagesFromEvents(await session.all());
 
   const result = streamText({
     model,
@@ -203,7 +203,7 @@ Backend behavior requirements:
 
 - preserve existing model/tool/prompt/business logic
 - change only the transport/orchestration substrate
-- use `session.events()` as the canonical chat history
+- use explicit session history reads as the canonical chat history
 - append assistant output back into Starcite instead of returning it as the UI transport
 - keep demo/server code direct: stream with AI SDK and append deltas directly to the session
 
