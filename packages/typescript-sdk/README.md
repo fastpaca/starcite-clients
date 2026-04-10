@@ -315,9 +315,12 @@ session.log; // SessionLog — best-effort committed mirror of backend state
 
 // ── Session log ─────────────────────────────────────────────────────────────
 
-session.log.events; // readonly TailEvent[] — ordered committed events retained for replay
+session.log.events; // readonly TailEvent[] — currently materialized committed events
 session.log.cursor; // TailCursor | undefined — numeric resume cursor from the backend
 session.log.lastSeq; // number
+await session.last(50); // newest 50 committed events
+await session.window({ fromSeq: 101, toSeq: 150 }); // exact seq-addressed slice
+await session.all(); // full committed log; expensive and should be used sparingly
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -344,7 +347,8 @@ await session.refreshAuth(); // manually retry the configured refreshToken callb
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
-// Late subscribers get synchronous replay of retained committed state, then live updates.
+// Late subscribers get synchronous replay of currently materialized committed state,
+// then live updates.
 const unsub = session.on("event", (event, context) => {
   console.log(event.seq);
   console.log(context.phase); // "replay" | "live"
@@ -381,18 +385,21 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 ## Session Event Semantics
 
-- `session.on("event", listener)` replays retained `session.events()` synchronously by default, then continues with live events from the `tail:<sessionId>` channel.
+- `session.on("event", listener)` replays currently materialized `session.events()` synchronously by default, then continues with live events from the `tail:<sessionId>` channel.
 - The second callback argument is `{ phase: "replay" | "live" }`.
 - Pass `{ replay: false }` to skip retained replay and only receive future live events.
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
+- `await session.last(count)` fetches and returns the newest committed events, merging them into the local sparse log cache.
+- `await session.window({ fromSeq, toSeq })` fetches and returns an exact committed seq slice, only requesting missing ranges from the server.
+- `await session.all()` fetches and returns the full committed log, then marks the local sparse cache as fully hydrated.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
 - When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
 - If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
 ## Session Caches
 
-`new Starcite({ cache })` accepts a `SessionCache` for cursor, retained events,
+`new Starcite({ cache })` accepts a `SessionCache` for cursor, sparse retained events,
 and the append outbox across session rebinds.
 
 - No default cache is configured. When omitted, startup catch-up replays from

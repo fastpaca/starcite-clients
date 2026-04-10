@@ -135,6 +135,18 @@ function makeApiKey(overrides: Record<string, unknown> = {}): string {
   });
 }
 
+function makeHistoryEvent(seq: number, text = `event-${seq}`) {
+  return {
+    seq,
+    cursor: seq,
+    type: "content",
+    payload: { text },
+    actor: "agent:writer",
+    producer_id: "producer:writer",
+    producer_seq: seq,
+  };
+}
+
 describe("Starcite", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
@@ -256,6 +268,429 @@ describe("Starcite", () => {
     expect(body.actor).toBe("agent:researcher");
     expect(body.type).toBe("custom");
     expect(body.payload).toEqual({ text: "custom actor" });
+  });
+
+  it("loads the newest committed events through session.last()", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          events: [makeHistoryEvent(4), makeHistoryEvent(5)],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeTailSessionToken("ses_last_history", "writer") });
+
+    const seen: Array<{ phase: string; seq: number }> = [];
+    const stopEvents = session.on(
+      "event",
+      (event, context) => {
+        seen.push({
+          phase: context.phase,
+          seq: event.seq,
+        });
+      },
+      { replay: false }
+    );
+
+    const events = await session.last(2);
+    const replayedAfterFetch: number[] = [];
+    const stopReplay = session.on("event", (event) => {
+      replayedAfterFetch.push(event.seq);
+    });
+
+    expect(events).toEqual([makeHistoryEvent(4), makeHistoryEvent(5)]);
+    expect(session.events()).toEqual([
+      makeHistoryEvent(4),
+      makeHistoryEvent(5),
+    ]);
+    expect(seen).toEqual([]);
+    expect(replayedAfterFetch).toEqual([4, 5]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions/ses_last_history/events?last=2",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+
+    stopEvents();
+    stopReplay();
+  });
+
+  it("fills only missing seq ranges through session.window()", async () => {
+    const cache = new MemorySessionCache();
+    cache.write("ses_window_history", {
+      log: {
+        lastSeq: 10,
+        lastSeqKnown: true,
+        events: [makeHistoryEvent(9), makeHistoryEvent(10)],
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([makeHistoryEvent(8)]), {
+        status: 200,
+      })
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({ token: makeTailSessionToken("ses_window_history", "writer") });
+
+    const firstWindow = await session.window({ fromSeq: 8, toSeq: 10 });
+    const secondWindow = await session.window({ fromSeq: 8, toSeq: 10 });
+
+    expect(firstWindow).toEqual([
+      makeHistoryEvent(8),
+      makeHistoryEvent(9),
+      makeHistoryEvent(10),
+    ]);
+    expect(secondWindow).toEqual(firstWindow);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions/ses_window_history/events?from_seq=8&to_seq=8",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("hydrates the full log once through session.all()", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          makeHistoryEvent(1),
+          makeHistoryEvent(2),
+          makeHistoryEvent(3),
+        ]),
+        { status: 200 }
+      )
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeTailSessionToken("ses_full_history", "writer") });
+
+    const firstAll = await session.all();
+    const secondAll = await session.all();
+
+    expect(firstAll).toEqual([
+      makeHistoryEvent(1),
+      makeHistoryEvent(2),
+      makeHistoryEvent(3),
+    ]);
+    expect(secondAll).toEqual(firstAll);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions/ses_full_history/events",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("keeps partial window fetches from pretending the tail head is known", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([makeHistoryEvent(8), makeHistoryEvent(9)]),
+          {
+            status: 200,
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([makeHistoryEvent(9), makeHistoryEvent(10)]),
+          {
+            status: 200,
+          }
+        )
+      );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeTailSessionToken("ses_partial_window", "writer") });
+
+    const windowEvents = await session.window({ fromSeq: 8, toSeq: 9 });
+    const latestEvents = await session.last(2);
+
+    expect(windowEvents).toEqual([makeHistoryEvent(8), makeHistoryEvent(9)]);
+    expect(latestEvents).toEqual([makeHistoryEvent(9), makeHistoryEvent(10)]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:4000/v1/sessions/ses_partial_window/events?from_seq=8&to_seq=9",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:4000/v1/sessions/ses_partial_window/events?last=2",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+  });
+
+  it("deduplicates concurrent identical window fetches", async () => {
+    let resolveFetch: ((response: Response) => void) | undefined;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }) as ReturnType<typeof fetch>
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeTailSessionToken("ses_dedupe_window", "writer") });
+
+    const firstWindow = session.window({ fromSeq: 5, toSeq: 6 });
+    const secondWindow = session.window({ fromSeq: 5, toSeq: 6 });
+
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFetch?.(
+      new Response(JSON.stringify([makeHistoryEvent(5), makeHistoryEvent(6)]), {
+        status: 200,
+      })
+    );
+
+    await expect(Promise.all([firstWindow, secondWindow])).resolves.toEqual([
+      [makeHistoryEvent(5), makeHistoryEvent(6)],
+      [makeHistoryEvent(5), makeHistoryEvent(6)],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates concurrent identical last() fetches", async () => {
+    let resolveFetch: ((response: Response) => void) | undefined;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }) as ReturnType<typeof fetch>
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    }).session({ token: makeTailSessionToken("ses_dedupe_last", "writer") });
+
+    const firstLast = session.last(2);
+    const secondLast = session.last(2);
+
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFetch?.(
+      new Response(
+        JSON.stringify([makeHistoryEvent(9), makeHistoryEvent(10)]),
+        {
+          status: 200,
+        }
+      )
+    );
+
+    await expect(Promise.all([firstLast, secondLast])).resolves.toEqual([
+      [makeHistoryEvent(9), makeHistoryEvent(10)],
+      [makeHistoryEvent(9), makeHistoryEvent(10)],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches every uncovered sparse gap for a requested window", async () => {
+    const cache = new MemorySessionCache();
+    cache.write("ses_multi_gap_window", {
+      log: {
+        lastSeq: 10,
+        lastSeqKnown: true,
+        loadedRanges: [
+          { fromSeq: 2, toSeq: 3 },
+          { fromSeq: 5, toSeq: 6 },
+          { fromSeq: 9, toSeq: 10 },
+        ],
+        events: [
+          makeHistoryEvent(2),
+          makeHistoryEvent(3),
+          makeHistoryEvent(5),
+          makeHistoryEvent(6),
+          makeHistoryEvent(9),
+          makeHistoryEvent(10),
+        ],
+      },
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([makeHistoryEvent(1)]), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([makeHistoryEvent(4)]), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([makeHistoryEvent(7), makeHistoryEvent(8)]),
+          {
+            status: 200,
+          }
+        )
+      );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({
+      token: makeTailSessionToken("ses_multi_gap_window", "writer"),
+    });
+
+    await expect(session.window({ fromSeq: 1, toSeq: 10 })).resolves.toEqual([
+      makeHistoryEvent(1),
+      makeHistoryEvent(2),
+      makeHistoryEvent(3),
+      makeHistoryEvent(4),
+      makeHistoryEvent(5),
+      makeHistoryEvent(6),
+      makeHistoryEvent(7),
+      makeHistoryEvent(8),
+      makeHistoryEvent(9),
+      makeHistoryEvent(10),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://localhost:4000/v1/sessions/ses_multi_gap_window/events?from_seq=1&to_seq=1",
+      "http://localhost:4000/v1/sessions/ses_multi_gap_window/events?from_seq=4&to_seq=4",
+      "http://localhost:4000/v1/sessions/ses_multi_gap_window/events?from_seq=7&to_seq=8",
+    ]);
+  });
+
+  it("persists sparse loaded range metadata after window fetches", async () => {
+    const cache = new MemorySessionCache();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([makeHistoryEvent(4), makeHistoryEvent(5)]), {
+        status: 200,
+      })
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({ token: makeTailSessionToken("ses_cache_ranges", "writer") });
+
+    await session.window({ fromSeq: 4, toSeq: 5 });
+
+    expect(cache.read("ses_cache_ranges")?.log).toEqual(
+      expect.objectContaining({
+        events: [makeHistoryEvent(4), makeHistoryEvent(5)],
+        loadedRanges: [{ fromSeq: 4, toSeq: 5 }],
+        lastSeq: 5,
+        lastSeqKnown: false,
+        fullyLoaded: false,
+      })
+    );
+  });
+
+  it("serves session.all() from a fully loaded restored cache without refetching", async () => {
+    const cache = new MemorySessionCache();
+    cache.write("ses_all_cache_hit", {
+      log: {
+        lastSeq: 3,
+        lastSeqKnown: true,
+        events: [makeHistoryEvent(1), makeHistoryEvent(2), makeHistoryEvent(3)],
+      },
+    });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({ token: makeTailSessionToken("ses_all_cache_hit", "writer") });
+
+    await expect(session.all()).resolves.toEqual([
+      makeHistoryEvent(1),
+      makeHistoryEvent(2),
+      makeHistoryEvent(3),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("serves session.all() from an explicitly fully loaded sparse-start cache without refetching", async () => {
+    const cache = new MemorySessionCache();
+    cache.write("ses_sparse_full_cache_hit", {
+      log: {
+        lastSeq: 7,
+        lastSeqKnown: true,
+        fullyLoaded: true,
+        loadedRanges: [{ fromSeq: 5, toSeq: 7 }],
+        events: [makeHistoryEvent(5), makeHistoryEvent(6), makeHistoryEvent(7)],
+      },
+    });
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({
+      token: makeTailSessionToken("ses_sparse_full_cache_hit", "writer"),
+    });
+
+    await expect(session.all()).resolves.toEqual([
+      makeHistoryEvent(5),
+      makeHistoryEvent(6),
+      makeHistoryEvent(7),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not let a cursor-only restored cache short-circuit session.last()", async () => {
+    const cache = new MemorySessionCache();
+    cache.write("ses_cursor_only_cache", {
+      log: {
+        cursor: 5,
+        lastSeq: 0,
+        events: [],
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([makeHistoryEvent(4), makeHistoryEvent(5)]), {
+        status: 200,
+      })
+    );
+
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+      cache,
+    }).session({
+      token: makeTailSessionToken("ses_cursor_only_cache", "writer"),
+    });
+
+    await expect(session.last(2)).resolves.toEqual([
+      makeHistoryEvent(4),
+      makeHistoryEvent(5),
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:4000/v1/sessions/ses_cursor_only_cache/events?last=2",
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
   });
 
   it("uses distinct session-scoped socket managers for identity-backed sessions", async () => {

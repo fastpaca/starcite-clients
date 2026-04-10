@@ -13,6 +13,16 @@ const SessionLogCheckpointSchema = z.object({
   lastSeq: z.number().int().nonnegative(),
   cursor: TailCursorSchema.optional(),
   events: z.array(TailEventSchema),
+  lastSeqKnown: z.boolean().optional(),
+  loadedRanges: z
+    .array(
+      z.object({
+        fromSeq: z.number().int().nonnegative(),
+        toSeq: z.number().int().nonnegative(),
+      })
+    )
+    .optional(),
+  fullyLoaded: z.boolean().optional(),
 });
 
 const SessionCacheMetadataSchema = z.object({

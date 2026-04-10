@@ -471,6 +471,11 @@ export type SessionAppendStoreState = z.infer<
   typeof SessionAppendStoreStateSchema
 >;
 
+export interface SessionLogRange {
+  fromSeq: number;
+  toSeq: number;
+}
+
 /**
  * Serializable checkpoint for one materialized session log.
  */
@@ -487,6 +492,18 @@ export interface SessionLogCheckpoint<TEvent extends TailEvent = TailEvent> {
    * Retained committed events snapshot used for immediate replay.
    */
   events: TEvent[];
+  /**
+   * Whether `lastSeq` reflects a known session head.
+   */
+  lastSeqKnown?: boolean;
+  /**
+   * Sequence ranges that are already present in the local sparse cache.
+   */
+  loadedRanges?: SessionLogRange[];
+  /**
+   * Whether the entire session log has been loaded locally.
+   */
+  fullyLoaded?: boolean;
 }
 
 /**
@@ -528,6 +545,11 @@ export interface SessionCache<TEvent extends TailEvent = TailEvent> {
   read(sessionId: string): SessionCacheEntry<TEvent> | undefined;
   write(sessionId: string, entry: SessionCacheEntry<TEvent>): void;
   clear?(sessionId: string): void;
+}
+
+export interface SessionWindowOptions {
+  fromSeq: number;
+  toSeq: number;
 }
 
 /**

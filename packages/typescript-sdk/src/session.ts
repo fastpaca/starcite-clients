@@ -14,6 +14,7 @@ import {
   readJoinFailureReason,
 } from "./socket-manager";
 import type { TransportConfig } from "./transport";
+import { request } from "./transport";
 import {
   type AppendResult,
   type RequestOptions,
@@ -32,6 +33,7 @@ import {
   type SessionSnapshot,
   type SessionTokenRefreshHandler,
   type SessionTokenRefreshReason,
+  type SessionWindowOptions,
   type TailEvent,
   TailEventSchema,
   type TailGap,
@@ -42,6 +44,13 @@ import {
 const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
 });
+
+const SessionHistoryResponseSchema = z.union([
+  z.array(TailEventSchema),
+  z.object({
+    events: z.array(TailEventSchema),
+  }),
+]);
 
 /**
  * Construction options for a `StarciteSession`.
@@ -94,6 +103,7 @@ export class StarciteSession {
   private tailGapBindingRef = 0;
   private tailTokenExpiredBindingRef = 0;
   private closeTailChannel: (() => void) | undefined;
+  private readonly historyRequests = new Map<string, Promise<void>>();
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -365,6 +375,113 @@ export class StarciteSession {
     return this.log.events;
   }
 
+  /**
+   * Returns the newest committed events, fetching from the server when the local sparse cache is incomplete.
+   */
+  async last(
+    count: number,
+    requestOptions?: RequestOptions
+  ): Promise<readonly TailEvent[]> {
+    if (!Number.isInteger(count) || count <= 0) {
+      throw new StarciteError(
+        "session.last(count) requires a positive integer"
+      );
+    }
+
+    if (this.log.canServeLast(count)) {
+      return this.log.latest(count);
+    }
+
+    const query = new URLSearchParams({
+      last: `${count}`,
+    });
+    await this.fetchHistory(
+      `last:${count}`,
+      query,
+      requestOptions,
+      (events) => {
+        const oldestEvent = events[0];
+        this.mergeFetchedHistory(events, {
+          fullyLoaded:
+            events.length === 0 ||
+            events.length < count ||
+            oldestEvent?.seq === 0 ||
+            oldestEvent?.seq === 1,
+          lastSeqKnown: true,
+        });
+      }
+    );
+    return this.log.latest(count);
+  }
+
+  /**
+   * Returns a committed event slice, fetching any missing seq ranges from the server first.
+   */
+  async window(
+    options: SessionWindowOptions,
+    requestOptions?: RequestOptions
+  ): Promise<readonly TailEvent[]> {
+    const { fromSeq, toSeq } = options;
+    if (!Number.isInteger(fromSeq) || fromSeq < 0) {
+      throw new StarciteError(
+        "session.window({ fromSeq, toSeq }) requires a non-negative integer fromSeq"
+      );
+    }
+    if (!Number.isInteger(toSeq) || toSeq < 0) {
+      throw new StarciteError(
+        "session.window({ fromSeq, toSeq }) requires a non-negative integer toSeq"
+      );
+    }
+    if (fromSeq > toSeq) {
+      throw new StarciteError(
+        "session.window({ fromSeq, toSeq }) requires fromSeq <= toSeq"
+      );
+    }
+
+    const missingRanges = this.log.missingRanges(fromSeq, toSeq);
+    await Promise.all(
+      missingRanges.map((range) => {
+        const query = new URLSearchParams({
+          from_seq: `${range.fromSeq}`,
+          to_seq: `${range.toSeq}`,
+        });
+        return this.fetchHistory(
+          `window:${range.fromSeq}:${range.toSeq}`,
+          query,
+          requestOptions,
+          (events) => {
+            this.mergeFetchedHistory(events);
+          }
+        );
+      })
+    );
+
+    return this.log.window(fromSeq, toSeq);
+  }
+
+  /**
+   * Returns the full committed session log, using the local sparse cache when it is already fully hydrated.
+   */
+  async all(requestOptions?: RequestOptions): Promise<readonly TailEvent[]> {
+    if (this.log.isFullyLoaded) {
+      return this.log.events;
+    }
+
+    await this.fetchHistory(
+      "all",
+      new URLSearchParams(),
+      requestOptions,
+      (events) => {
+        this.mergeFetchedHistory(events, {
+          fullyLoaded: true,
+          lastSeqKnown: true,
+        });
+      }
+    );
+
+    return this.log.events;
+  }
+
   private parseOnEvent<TEvent extends TailEvent>(
     event: TailEvent,
     options: SessionOnEventOptions<TEvent> | undefined
@@ -463,6 +580,7 @@ export class StarciteSession {
         return;
       }
 
+      this.log.markSparse();
       this.log.advanceCursor(result.data.next_cursor);
       this.persistCacheEntry();
 
@@ -676,5 +794,61 @@ export class StarciteSession {
     } catch {
       // Ignore cache-clear failures; the live stream can still recover state.
     }
+  }
+
+  private mergeFetchedHistory(
+    events: TailEvent[],
+    options: {
+      fullyLoaded?: boolean;
+      lastSeqKnown?: boolean;
+    } = {}
+  ): void {
+    if (events.length === 0) {
+      if (options.fullyLoaded) {
+        this.log.markFullyLoaded();
+      }
+      return;
+    }
+
+    this.log.mergeHistory(events, options);
+  }
+
+  private fetchHistory(
+    requestKey: string,
+    query: URLSearchParams,
+    requestOptions: RequestOptions | undefined,
+    onEvents: (events: TailEvent[]) => void
+  ): Promise<void> {
+    const existing = this.historyRequests.get(requestKey);
+    if (existing) {
+      return existing;
+    }
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const task = request(
+      this.transport,
+      `/sessions/${this.id}/events${suffix}`,
+      {
+        method: "GET",
+        signal: requestOptions?.signal,
+      },
+      SessionHistoryResponseSchema
+    )
+      .then((response) => {
+        const events = Array.isArray(response) ? response : response.events;
+        const orderedEvents = [...events].sort((left, right) => {
+          return left.seq - right.seq;
+        });
+        onEvents(orderedEvents);
+        this.persistCacheEntry();
+      })
+      .finally(() => {
+        if (this.historyRequests.get(requestKey) === task) {
+          this.historyRequests.delete(requestKey);
+        }
+      });
+
+    this.historyRequests.set(requestKey, task);
+    return task;
   }
 }

@@ -122,6 +122,20 @@ describe("SessionLog", () => {
     expect(log.state(false).events.map((event) => event.seq)).toEqual([6]);
   });
 
+  it("does not infer a known session head from a stored cursor alone", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      cursor: 9,
+      events: [],
+      lastSeq: 0,
+    });
+
+    expect(log.cursor).toBe(9);
+    expect(log.hasKnownLastSeq).toBe(false);
+    expect(log.canServeLast(1)).toBe(false);
+  });
+
   it("replays retained history to new subscribers", () => {
     const log = new SessionLog();
     const replayedSeqs: number[] = [];
@@ -158,6 +172,121 @@ describe("SessionLog", () => {
     expect(observedSeqs).toEqual([3]);
   });
 
+  it("tracks missing sparse ranges and last-window availability independently from observed seqs", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      lastSeq: 10,
+      lastSeqKnown: true,
+      events: [makeEvent(2), makeEvent(3), makeEvent(9), makeEvent(10)],
+    });
+
+    expect(log.missingRanges(1, 10)).toEqual([
+      { fromSeq: 1, toSeq: 1 },
+      { fromSeq: 4, toSeq: 8 },
+    ]);
+    expect(log.canServeLast(2)).toBe(true);
+    expect(log.canServeLast(3)).toBe(false);
+  });
+
+  it("treats fetched history as sparse cache population instead of live replay", () => {
+    const log = new SessionLog();
+    const seenSeqs: number[] = [];
+
+    const unsubscribe = log.subscribe(
+      (event) => {
+        seenSeqs.push(event.seq);
+      },
+      { replay: false }
+    );
+
+    log.mergeHistory([makeEvent(8), makeEvent(9)]);
+
+    expect(seenSeqs).toEqual([]);
+    expect(log.lastSeq).toBe(9);
+    expect(log.hasKnownLastSeq).toBe(false);
+    expect(log.cursor).toBeUndefined();
+
+    unsubscribe();
+  });
+
+  it("marks the log fully loaded when history covers the complete known seq range", () => {
+    const log = new SessionLog();
+
+    log.mergeHistory([makeEvent(1), makeEvent(2), makeEvent(3)], {
+      lastSeqKnown: true,
+    });
+
+    expect(log.hasKnownLastSeq).toBe(true);
+    expect(log.isFullyLoaded).toBe(true);
+    expect(log.canServeLast(3)).toBe(true);
+  });
+
+  it("preserves explicit fully loaded checkpoints even when the earliest seq is greater than one", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      lastSeq: 7,
+      lastSeqKnown: true,
+      fullyLoaded: true,
+      loadedRanges: [{ fromSeq: 5, toSeq: 7 }],
+      events: [makeEvent(5), makeEvent(6), makeEvent(7)],
+    });
+
+    expect(log.hasKnownLastSeq).toBe(true);
+    expect(log.isFullyLoaded).toBe(true);
+    expect(log.events.map((event) => event.seq)).toEqual([5, 6, 7]);
+  });
+
+  it("keeps explicit fully loaded state when a live append extends the head contiguously", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      lastSeq: 7,
+      lastSeqKnown: true,
+      fullyLoaded: true,
+      loadedRanges: [{ fromSeq: 5, toSeq: 7 }],
+      events: [makeEvent(5), makeEvent(6), makeEvent(7)],
+    });
+
+    log.applyBatch([makeEvent(8, "frame-8", 8)]);
+
+    expect(log.isFullyLoaded).toBe(true);
+    expect(log.events.map((event) => event.seq)).toEqual([5, 6, 7, 8]);
+  });
+
+  it("drops explicit fully loaded state when a live append creates a gap", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      lastSeq: 7,
+      lastSeqKnown: true,
+      fullyLoaded: true,
+      loadedRanges: [{ fromSeq: 5, toSeq: 7 }],
+      events: [makeEvent(5), makeEvent(6), makeEvent(7)],
+    });
+
+    log.applyBatch([makeEvent(10, "frame-10", 10)]);
+
+    expect(log.isFullyLoaded).toBe(false);
+    expect(log.missingRanges(5, 10)).toEqual([{ fromSeq: 8, toSeq: 9 }]);
+  });
+
+  it("invalidates head knowledge when the log becomes sparse again", () => {
+    const log = new SessionLog();
+
+    log.mergeHistory([makeEvent(1), makeEvent(2), makeEvent(3)], {
+      lastSeqKnown: true,
+    });
+    expect(log.isFullyLoaded).toBe(true);
+
+    log.markSparse();
+
+    expect(log.isFullyLoaded).toBe(false);
+    expect(log.hasKnownLastSeq).toBe(false);
+    expect(log.canServeLast(1)).toBe(false);
+  });
+
   it("does not retain partial state when checkpoint validation fails", () => {
     const log = new SessionLog();
 
@@ -184,5 +313,18 @@ describe("SessionLog", () => {
 
     expect(log.lastSeq).toBe(0);
     expect(log.events).toEqual([]);
+  });
+
+  it("infers fully loaded state when a restored checkpoint covers the full known log", () => {
+    const log = new SessionLog();
+
+    log.restore({
+      lastSeq: 2,
+      lastSeqKnown: true,
+      events: [makeEvent(1), makeEvent(2)],
+    });
+
+    expect(log.hasKnownLastSeq).toBe(true);
+    expect(log.isFullyLoaded).toBe(true);
   });
 });
