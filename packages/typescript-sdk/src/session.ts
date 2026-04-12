@@ -8,12 +8,19 @@ import {
   StarciteTokenExpiredError,
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
+import {
+  concatSessionEvents,
+  type SessionEventsRead,
+  sessionEventsResponseSchema,
+  toSessionEventSlice,
+  toSessionEventsQuerySuffix,
+} from "./session-events";
 import { SessionLog, type SessionLogSubscriptionContext } from "./session-log";
 import {
   type RejoinableChannel,
   readJoinFailureReason,
 } from "./socket-manager";
-import type { TransportConfig } from "./transport";
+import { request, type TransportConfig } from "./transport";
 import {
   type AppendResult,
   type RequestOptions,
@@ -22,11 +29,14 @@ import {
   type SessionAppendListener,
   type SessionAppendOptions,
   type SessionAppendQueueState,
+  type SessionAttachMode,
   type SessionCache,
   type SessionCacheEntry,
   type SessionEventContext,
   type SessionEventListener,
+  type SessionEventSlice,
   type SessionGapListener,
+  type SessionHandle,
   type SessionOnEventOptions,
   type SessionRecord,
   type SessionSnapshot,
@@ -43,6 +53,8 @@ const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
 });
 
+const READ_ALL_PAGE_LIMIT = 1000;
+
 /**
  * Construction options for a `StarciteSession`.
  */
@@ -55,6 +67,7 @@ export interface StarciteSessionOptions {
   record?: SessionRecord;
   appendOptions?: SessionAppendOptions;
   refreshToken?: SessionTokenRefreshHandler;
+  attachMode?: SessionAttachMode;
 }
 
 interface SessionLifecycleEvents {
@@ -68,7 +81,7 @@ interface SessionLifecycleEvents {
  *
  * All operations use the session token for auth, not the parent client's API key.
  */
-export class StarciteSession {
+export class StarciteSession implements SessionHandle {
   /** Session identifier. */
   readonly id: string;
   /** Optional session record captured at creation time. */
@@ -88,7 +101,7 @@ export class StarciteSession {
     SessionEventListener,
     () => void
   >();
-  private keepTailAttached = true;
+  private keepTailAttached = false;
   private tailChannel: RejoinableChannel | undefined;
   private tailEventBindingRef = 0;
   private tailGapBindingRef = 0;
@@ -103,6 +116,7 @@ export class StarciteSession {
     this.record = options.record;
     this.cache = options.cache;
     this.refreshTokenHandler = options.refreshToken;
+    this.keepTailAttached = (options.attachMode ?? "on-demand") === "eager";
     this.log = new SessionLog();
 
     this.outbox = new AppendQueue({
@@ -115,7 +129,10 @@ export class StarciteSession {
           emitFailure: true,
         });
       },
-      onStateChange: () => this.persistCacheEntry(),
+      onStateChange: () => {
+        this.persistCacheEntry();
+        this.reconcileChannelAttachment();
+      },
       onError: (error) => this.emitStreamError(error),
       onLifecycle: (event) => {
         for (const listener of this.lifecycle.listeners(
@@ -145,7 +162,7 @@ export class StarciteSession {
       }
     }
 
-    this.ensureChannelAttached();
+    this.reconcileChannelAttachment();
     this.outbox.ensureProcessing();
   }
 
@@ -169,6 +186,63 @@ export class StarciteSession {
     options?: RequestOptions
   ): Promise<AppendResult> {
     return this.outbox.append(input, options?.signal);
+  }
+
+  async all(requestOptions?: RequestOptions): Promise<SessionEventSlice> {
+    let afterSeq = 0;
+    let events: TailEvent[] = [];
+
+    while (true) {
+      const response = await this.readEvents(
+        { kind: "after", limit: READ_ALL_PAGE_LIMIT, seq: afterSeq },
+        requestOptions
+      );
+      events = concatSessionEvents(events, response.events);
+
+      if (
+        !toSessionEventSlice(
+          { kind: "after", limit: READ_ALL_PAGE_LIMIT, seq: afterSeq },
+          response
+        ).hasMore
+      ) {
+        return {
+          events,
+          hasMore: false,
+        };
+      }
+
+      const nextAfterSeq = response.events.at(-1)?.seq;
+      if (nextAfterSeq === undefined) {
+        return {
+          events,
+          hasMore: false,
+        };
+      }
+      afterSeq = nextAfterSeq;
+    }
+  }
+
+  latest(
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSlice({ kind: "latest", limit }, requestOptions);
+  }
+
+  before(
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSlice({ kind: "before", limit, seq }, requestOptions);
+  }
+
+  after(
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSlice({ kind: "after", limit, seq }, requestOptions);
   }
 
   /**
@@ -196,7 +270,7 @@ export class StarciteSession {
       const eventListener = listener as SessionEventListener;
       if (!this.eventSubscriptions.has(eventListener)) {
         const eventOptions = options as SessionOnEventOptions | undefined;
-        const replay = eventOptions?.replay ?? true;
+        const replay = eventOptions?.replay ?? false;
 
         const dispatch = (
           event: TailEvent,
@@ -224,6 +298,8 @@ export class StarciteSession {
         this.eventSubscriptions.set(eventListener, unsubscribe);
       }
 
+      this.ensureChannelAttached();
+
       return () => {
         this.off("event", eventListener);
       };
@@ -240,6 +316,7 @@ export class StarciteSession {
     if (eventName === "gap") {
       const gapListener = listener as SessionGapListener;
       this.lifecycle.on("gap", gapListener);
+      this.ensureChannelAttached();
       return () => {
         this.off("gap", gapListener);
       };
@@ -359,10 +436,46 @@ export class StarciteSession {
   }
 
   /**
-   * Returns the retained canonical event list.
+   * Fetches the complete durable session history.
+   *
+   * @deprecated Use `all()` instead.
    */
-  events(): readonly TailEvent[] {
-    return this.log.events;
+  events(requestOptions?: RequestOptions): Promise<SessionEventSlice> {
+    return this.all(requestOptions);
+  }
+
+  private async readSlice(
+    read: SessionEventsRead,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return toSessionEventSlice(
+      read,
+      await this.readEvents(read, requestOptions)
+    );
+  }
+
+  private async readEvents(
+    read: SessionEventsRead,
+    requestOptions?: RequestOptions
+  ) {
+    const response = await request(
+      this.transport,
+      `/sessions/${this.id}/events${toSessionEventsQuerySuffix(read)}`,
+      {
+        method: "GET",
+        signal: requestOptions?.signal,
+      },
+      sessionEventsResponseSchema()
+    );
+
+    this.log.observeRead(response);
+    this.outbox.reconcileWithCommittedEvents(
+      response.events,
+      response.last_seq
+    );
+    this.persistCacheEntry();
+    this.reconcileChannelAttachment();
+    return response;
   }
 
   private parseOnEvent<TEvent extends TailEvent>(
@@ -414,9 +527,19 @@ export class StarciteSession {
   private shouldKeepChannelAttached(): boolean {
     return (
       this.keepTailAttached ||
+      this.outbox.pendingCount > 0 ||
       this.eventSubscriptions.size > 0 ||
       this.lifecycle.listenerCount("gap") > 0
     );
+  }
+
+  private reconcileChannelAttachment(): void {
+    if (this.shouldKeepChannelAttached()) {
+      this.ensureChannelAttached();
+      return;
+    }
+
+    this.detachTailChannel();
   }
 
   private ensureChannelAttached(): void {
@@ -431,7 +554,7 @@ export class StarciteSession {
     const managedChannel =
       this.transport.socketManager.openChannel<RejoinableChannel>({
         topic: `tail:${this.id}`,
-        params: () => ({ cursor: this.log.cursor ?? 0 }),
+        params: () => this.tailChannelParams(),
       });
     const channel = managedChannel.channel;
     this.closeTailChannel = managedChannel.close;
@@ -525,6 +648,18 @@ export class StarciteSession {
     this.tailTokenExpiredBindingRef = 0;
     this.closeTailChannel?.();
     this.closeTailChannel = undefined;
+  }
+
+  private tailChannelParams(): Record<string, unknown> {
+    if (this.log.cursor !== undefined) {
+      return { cursor: this.log.cursor };
+    }
+
+    if (this.keepTailAttached) {
+      return { cursor: 0 };
+    }
+
+    return { live_only: true };
   }
 
   private refreshAuthInternal(
@@ -655,7 +790,7 @@ export class StarciteSession {
         log: this.log.checkpoint(),
         outbox: this.outbox.serializeState(),
         metadata: {
-          schemaVersion: 5,
+          schemaVersion: 6,
           cachedAtMs: Date.now(),
         },
       });

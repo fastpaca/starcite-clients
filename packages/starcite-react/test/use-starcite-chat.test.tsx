@@ -1,8 +1,10 @@
 import type {
+  RequestOptions,
   SessionAppendInput,
   SessionEventContext,
   SessionEventListener,
   SessionOnEventOptions,
+  SessionSnapshot,
   TailEvent,
 } from "@starcite/sdk";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -36,8 +38,62 @@ class FakeSession implements StarciteChatSession {
     this.nextSeq = (seedEvents.at(-1)?.seq ?? 0) + 1;
   }
 
-  events(): readonly TailEvent[] {
-    return [...this.eventLog];
+  all(
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: false }> {
+    return Promise.resolve({
+      events: [...this.eventLog],
+      hasMore: false,
+    });
+  }
+
+  latest(
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog.slice(-limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: events[0] !== undefined && events[0].seq > 1,
+    });
+  }
+
+  before(
+    seq: number,
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog
+      .filter((event) => event.seq < seq)
+      .slice(-limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: events[0] !== undefined && events[0].seq > 1,
+    });
+  }
+
+  after(
+    seq: number,
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog
+      .filter((event) => event.seq > seq)
+      .slice(0, limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: (events.at(-1)?.seq ?? seq) < (this.eventLog.at(-1)?.seq ?? 0),
+    });
+  }
+
+  state(): SessionSnapshot {
+    return {
+      append: undefined,
+      cursor: this.eventLog.at(-1)?.cursor,
+      events: [...this.eventLog],
+      lastSeq: this.eventLog.at(-1)?.seq ?? 0,
+      syncing: false,
+    };
   }
 
   append(
@@ -525,7 +581,7 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("streaming");
 
     const refreshedSession = new FakeSession("ses_refresh", [
-      ...firstSession.events(),
+      ...firstSession.state().events,
     ]);
     rerender({ session: refreshedSession });
 

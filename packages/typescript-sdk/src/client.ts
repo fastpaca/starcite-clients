@@ -4,6 +4,13 @@ import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
 import {
+  concatSessionEvents,
+  type SessionEventsRead,
+  sessionEventsResponseSchema,
+  toSessionEventSlice,
+  toSessionEventsQuerySuffix,
+} from "./session-events";
+import {
   type RejoinableChannel,
   readJoinFailureReason,
   SocketManager,
@@ -25,7 +32,9 @@ import {
   type RequestOptions,
   type SessionAppendOptions,
   type SessionArchivedFilter,
+  type SessionAttachMode,
   type SessionCache,
+  type SessionEventSlice,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -39,6 +48,7 @@ import {
   type SessionTokenRefreshHandler,
   type SessionUpdateInput,
   type StarciteOptions,
+  type TailEvent,
 } from "./types";
 
 /**
@@ -87,6 +97,8 @@ interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
   error: (error: Error) => void;
 }
 
+const READ_ALL_PAGE_LIMIT = 1000;
+
 /**
  * Tenant-scoped Starcite client.
  *
@@ -103,6 +115,7 @@ export class Starcite {
   private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
   private readonly cache: SessionCache | undefined;
+  private readonly sessionAttachMode: SessionAttachMode;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
   private lifecycleChannel: RejoinableChannel | undefined;
@@ -132,6 +145,7 @@ export class Starcite {
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
     this.apiKey = apiKey;
     this.cache = options.cache;
+    this.sessionAttachMode = options.sessionAttachMode ?? "on-demand";
     this.appendOptions = options.appendOptions;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
@@ -245,6 +259,7 @@ export class Starcite {
     token: string;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): StarciteSession;
   session(input: {
     identity: StarciteIdentity;
@@ -253,6 +268,7 @@ export class Starcite {
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): Promise<StarciteSession>;
   session(
     input:
@@ -260,6 +276,7 @@ export class Starcite {
           token: string;
           appendOptions?: SessionAppendOptions;
           refreshToken?: SessionTokenRefreshHandler;
+          attachMode?: SessionAttachMode;
         }
       | {
           identity: StarciteIdentity;
@@ -268,13 +285,15 @@ export class Starcite {
           metadata?: Record<string, unknown>;
           appendOptions?: SessionAppendOptions;
           refreshToken?: SessionTokenRefreshHandler;
+          attachMode?: SessionAttachMode;
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
       return this.sessionFromToken(
         input.token,
         input.appendOptions,
-        input.refreshToken
+        input.refreshToken,
+        input.attachMode
       );
     }
 
@@ -336,6 +355,77 @@ export class Starcite {
         signal: requestOptions?.signal,
       },
       SessionRecordSchema
+    );
+  }
+
+  async getAllSessionEvents(
+    sessionId: string,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    let afterSeq = 0;
+    let events: TailEvent[] = [];
+
+    while (true) {
+      const read = {
+        kind: "after",
+        limit: READ_ALL_PAGE_LIMIT,
+        seq: afterSeq,
+      } satisfies SessionEventsRead;
+      const response = await this.readSessionEvents(
+        sessionId,
+        read,
+        requestOptions
+      );
+
+      events = concatSessionEvents(events, response.events);
+      if (!toSessionEventSlice(read, response).hasMore) {
+        return { events, hasMore: false };
+      }
+
+      const nextAfterSeq = response.events.at(-1)?.seq;
+      if (nextAfterSeq === undefined) {
+        return { events, hasMore: false };
+      }
+
+      afterSeq = nextAfterSeq;
+    }
+  }
+
+  getLatestSessionEvents(
+    sessionId: string,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSessionEventSlice(
+      sessionId,
+      { kind: "latest", limit },
+      requestOptions
+    );
+  }
+
+  getSessionEventsBefore(
+    sessionId: string,
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSessionEventSlice(
+      sessionId,
+      { kind: "before", limit, seq },
+      requestOptions
+    );
+  }
+
+  getSessionEventsAfter(
+    sessionId: string,
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSessionEventSlice(
+      sessionId,
+      { kind: "after", limit, seq },
+      requestOptions
     );
   }
 
@@ -408,6 +498,7 @@ export class Starcite {
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
@@ -447,6 +538,7 @@ export class Starcite {
       transport: this.buildSessionTransport(tokenResponse.token),
       cache: this.cache,
       record,
+      attachMode: input.attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(
         this.appendOptions,
         input.appendOptions
@@ -465,7 +557,8 @@ export class Starcite {
   private sessionFromToken(
     token: string,
     appendOptions?: SessionAppendOptions,
-    refreshToken?: SessionTokenRefreshHandler
+    refreshToken?: SessionTokenRefreshHandler,
+    attachMode?: SessionAttachMode
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
     const sessionId = decoded.sessionId;
@@ -482,6 +575,7 @@ export class Starcite {
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
       cache: this.cache,
+      attachMode: attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
       refreshToken,
     });
@@ -501,6 +595,32 @@ export class Starcite {
       bearerToken: token,
       socketManager,
     };
+  }
+
+  private readSessionEventSlice(
+    sessionId: string,
+    read: SessionEventsRead,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice> {
+    return this.readSessionEvents(sessionId, read, requestOptions).then(
+      (response) => toSessionEventSlice(read, response)
+    );
+  }
+
+  private readSessionEvents(
+    sessionId: string,
+    read: SessionEventsRead,
+    requestOptions?: RequestOptions
+  ) {
+    return request(
+      this.transport,
+      `/sessions/${sessionId}/events${toSessionEventsQuerySuffix(read)}`,
+      {
+        method: "GET",
+        signal: requestOptions?.signal,
+      },
+      sessionEventsResponseSchema()
+    );
   }
 
   private createSession(input: {

@@ -1,4 +1,4 @@
-import type { TailEvent } from "@starcite/sdk";
+import type { SessionHandle, TailEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
@@ -9,12 +9,9 @@ import {
   isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
-import {
-  type StarciteSessionLike,
-  useStarciteSession,
-} from "./use-starcite-session";
+import { useStarciteSession } from "./use-starcite-session";
 
-export type { StarciteSessionLike as StarciteChatSession } from "./use-starcite-session";
+export type { SessionHandle as StarciteChatSession } from "@starcite/sdk";
 
 type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
   TMessage,
@@ -31,7 +28,7 @@ export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | SendUserMessageInput<TMessage>;
 
 export interface UseStarciteChatOptions {
-  session: StarciteSessionLike | null | undefined;
+  session: SessionHandle | null | undefined;
   id?: string;
   userMessageSource?: string;
   onError?: (error: Error) => void;
@@ -102,7 +99,12 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 ): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
 
-  const { events, append } = useStarciteSession({ session, id, onError });
+  const { events, append } = useStarciteSession({
+    session,
+    id,
+    read: "all",
+    onError,
+  });
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");

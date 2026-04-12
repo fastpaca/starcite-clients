@@ -110,7 +110,6 @@ describe("SessionLog", () => {
 
     log.restore({
       cursor: 6,
-      events: [makeEvent(6, "frame-6", 6)],
       lastSeq: 6,
     });
 
@@ -119,7 +118,7 @@ describe("SessionLog", () => {
       lastSeq: 6,
       syncing: false,
     });
-    expect(log.state(false).events.map((event) => event.seq)).toEqual([6]);
+    expect(log.state(false).events).toEqual([]);
   });
 
   it("replays retained history to new subscribers", () => {
@@ -128,9 +127,12 @@ describe("SessionLog", () => {
 
     log.applyBatch([makeEvent(1), makeEvent(2), makeEvent(3)]);
 
-    log.subscribe((event) => {
-      replayedSeqs.push(event.seq);
-    });
+    log.subscribe(
+      (event) => {
+        replayedSeqs.push(event.seq);
+      },
+      { replay: true }
+    );
 
     expect(replayedSeqs).toEqual([1, 2, 3]);
   });
@@ -158,27 +160,51 @@ describe("SessionLog", () => {
     expect(observedSeqs).toEqual([3]);
   });
 
+  it("observes fetched reads without emitting live events", () => {
+    const log = new SessionLog();
+    const observedSeqs: number[] = [];
+
+    log.subscribe((event) => {
+      observedSeqs.push(event.seq);
+    });
+
+    const applied = log.observeRead({
+      events: [makeEvent(9, "frame-9", 9), makeEvent(10, "frame-10", 10)],
+      next_cursor: 10,
+      last_seq: 10,
+    });
+
+    expect(applied.map((event) => event.seq)).toEqual([9, 10]);
+    expect(observedSeqs).toEqual([]);
+    expect(log.state(false)).toMatchObject({
+      cursor: 10,
+      lastSeq: 10,
+      syncing: false,
+    });
+    expect(log.events.map((event) => event.seq)).toEqual([9, 10]);
+  });
+
+  it("can checkpoint cursor state without persisting materialized events", () => {
+    const log = new SessionLog();
+
+    log.observeRead({
+      events: [makeEvent(5, "frame-5", 5)],
+      next_cursor: 5,
+      last_seq: 5,
+    });
+
+    expect(log.checkpoint()).toEqual({
+      cursor: 5,
+      lastSeq: 5,
+    });
+  });
+
   it("does not retain partial state when checkpoint validation fails", () => {
     const log = new SessionLog();
 
     expect(() => {
       log.restore({
-        lastSeq: 1,
-        events: [makeEvent(2, "invalid cached event")],
-      });
-    }).toThrow(StarciteError);
-
-    expect(log.lastSeq).toBe(0);
-    expect(log.events).toEqual([]);
-  });
-
-  it("does not retain partial state when a restored checkpoint has any invalid seq", () => {
-    const log = new SessionLog();
-
-    expect(() => {
-      log.restore({
-        lastSeq: 2,
-        events: [makeEvent(1), makeEvent(3), makeEvent(4)],
+        lastSeq: -1,
       });
     }).toThrow(StarciteError);
 

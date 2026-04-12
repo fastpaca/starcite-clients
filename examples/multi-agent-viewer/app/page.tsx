@@ -59,6 +59,7 @@ async function fetchToken(sessionId?: string) {
 export default function Page() {
   const { sessionId, session, error, retry, setError } = useViewerSession();
   const { events, append } = useStarciteSession({
+    read: "all",
     session,
     onError: (nextError) => setError(nextError.message),
   });

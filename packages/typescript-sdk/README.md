@@ -246,7 +246,7 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
-  cache: new MemorySessionCache(), // retained events + numeric tail cursor + append outbox persistence
+  cache: new MemorySessionCache(), // numeric tail cursor + append outbox persistence
 });
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
@@ -292,6 +292,10 @@ await starcite.updateSession(aliceSession.id, {
 });
 await starcite.archiveSession(aliceSession.id);
 await starcite.unarchiveSession(aliceSession.id);
+await starcite.getAllSessionEvents(aliceSession.id);
+await starcite.getLatestSessionEvents(aliceSession.id, 50);
+await starcite.getSessionEventsBefore(aliceSession.id, 125, 50);
+await starcite.getSessionEventsAfter(aliceSession.id, 125, 50);
 
 // Client-side: wraps existing JWT (sync, no network calls)
 const session = starcite.session({
@@ -311,13 +315,13 @@ const session = starcite.session({
 session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
-session.log; // SessionLog — best-effort committed mirror of backend state
+session.state(); // SessionSnapshot — best-effort local snapshot
 
-// ── Session log ─────────────────────────────────────────────────────────────
-
-session.log.events; // readonly TailEvent[] — ordered committed events retained for replay
-session.log.cursor; // TailCursor | undefined — numeric resume cursor from the backend
-session.log.lastSeq; // number
+// Canonical durable reads
+await session.all(); // full durable history
+await session.latest(50); // latest 50 events
+await session.before(125, 50); // previous 50 events before seq 125
+await session.after(125, 50); // next 50 events after seq 125
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -344,19 +348,19 @@ await session.refreshAuth(); // manually retry the configured refreshToken callb
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
-// Late subscribers get synchronous replay of retained committed state, then live updates.
+// By default listeners are live-only and attach the background tail lazily on first subscription.
 const unsub = session.on("event", (event, context) => {
   console.log(event.seq);
   console.log(context.phase); // "replay" | "live"
 });
 
-// Skip retained replay and only receive future live events.
-const stopLiveOnly = session.on(
+// Opt into replaying the locally materialized sparse cache.
+const stopWithReplay = session.on(
   "event",
   (event) => {
     console.log(event.type);
   },
-  { replay: false }
+  { replay: true }
 );
 
 // Stream, append, schema, and cache errors are surfaced here.
@@ -371,8 +375,11 @@ session.on("gap", (gap) => {
 });
 
 unsub();
-stopLiveOnly();
+stopWithReplay();
 unsubErr();
+
+// Deprecated legacy alias: same durable read as session.all().
+await session.events();
 
 // ── Teardown ────────────────────────────────────────────────────────────────
 
@@ -381,22 +388,28 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 ## Session Event Semantics
 
-- `session.on("event", listener)` replays retained `session.events()` synchronously by default, then continues with live events from the `tail:<sessionId>` channel.
+- `session.all()` fetches the full durable history. It is explicit because it can be expensive on long sessions.
+- `session.latest(limit)` fetches the newest `limit` events.
+- `session.before(seq, limit)` fetches up to `limit` events with `event.seq < seq`.
+- `session.after(seq, limit)` fetches up to `limit` events with `event.seq > seq`.
+- All durable read methods return `{ events, hasMore }`, where `events` are always ascending by `seq`.
+- `session.on("event", listener)` starts the tail stream lazily on first use and is live-only by default.
 - The second callback argument is `{ phase: "replay" | "live" }`.
-- Pass `{ replay: false }` to skip retained replay and only receive future live events.
+- Pass `{ replay: true }` to replay the locally materialized sparse cache before continuing with live events.
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
+- `session.events()` is deprecated. It is an alias for `session.all()`.
 - When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
 - If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
 ## Session Caches
 
-`new Starcite({ cache })` accepts a `SessionCache` for cursor, retained events,
-and the append outbox across session rebinds.
+`new Starcite({ cache })` accepts a `SessionCache` for cursor and append outbox
+state across session rebinds.
 
-- No default cache is configured. When omitted, startup catch-up replays from
-  channel cursor `0`.
+- No default cache is configured. When omitted, fresh sessions start without a
+  durable cursor and live subscriptions join in live-only mode.
 - Bring your own by implementing:
   - `read(sessionId)`
   - `write(sessionId, { log?, outbox?, metadata? })`

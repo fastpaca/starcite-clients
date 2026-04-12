@@ -870,7 +870,7 @@ describe("Starcite", () => {
     );
   });
 
-  it("reconciles restored pending appends against retained committed events before auto-flush", async () => {
+  it("auto-flushes restored pending appends when cache only restores checkpoint state", async () => {
     const sessionToken = makeTailSessionToken(
       "ses_reconciled_outbox",
       "writer"
@@ -882,18 +882,6 @@ describe("Starcite", () => {
       log: {
         cursor: 1,
         lastSeq: 1,
-        events: [
-          {
-            seq: 1,
-            cursor: 1,
-            type: "content",
-            payload: { text: "persist me" },
-            actor: "agent:writer",
-            producer_id: producerId,
-            producer_seq: 1,
-            idempotency_key: "persisted-append",
-          },
-        ],
       },
       outbox: {
         producerId,
@@ -916,6 +904,11 @@ describe("Starcite", () => {
         status: "idle",
       },
     });
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ seq: 1, last_seq: 1, deduped: false }), {
+        status: 201,
+      })
+    );
 
     const starcite = new Starcite({
       baseUrl: "http://localhost:4000",
@@ -929,7 +922,11 @@ describe("Starcite", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitForValues(fetchMock.mock.calls, 1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await waitForCondition(() => {
+      return cache.read("ses_reconciled_outbox")?.outbox?.pending.length === 0;
+    }, "checkpoint-restored append queue to flush");
     expect(restoredSession.appendState()).toEqual(
       expect.objectContaining({
         status: "idle",
@@ -1652,6 +1649,52 @@ describe("Starcite", () => {
         method: "GET",
       })
     );
+  });
+
+  it("fetches durable session event windows", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          events: [
+            {
+              seq: 9,
+              cursor: 9,
+              type: "content",
+              payload: { text: "latest" },
+              actor: "agent:planner",
+              producer_id: "producer:planner",
+              producer_seq: 9,
+            },
+          ],
+          next_cursor: 9,
+          last_seq: 9,
+        }),
+        { status: 200 }
+      )
+    );
+
+    const starcite = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+
+    const slice = await starcite.getSessionEventsAfter("ses_lookup", 8, 25);
+
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[1]).toEqual(
+      expect.objectContaining({
+        method: "GET",
+      })
+    );
+    const requestUrl = new URL(`${fetchCall?.[0]}`);
+    expect(`${requestUrl.origin}${requestUrl.pathname}`).toBe(
+      "http://localhost:4000/v1/sessions/ses_lookup/events"
+    );
+    expect(requestUrl.searchParams.get("from_seq")).toBe("8");
+    expect(requestUrl.searchParams.get("direction")).toBe("head");
+    expect(requestUrl.searchParams.get("limit")).toBe("25");
+    expect(slice.events.map((event) => event.seq)).toEqual([9]);
+    expect(slice.hasMore).toBe(false);
   });
 
   it("patches session headers with expected_version", async () => {

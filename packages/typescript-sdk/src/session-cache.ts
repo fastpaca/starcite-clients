@@ -5,18 +5,15 @@ import {
   type SessionCache,
   type SessionCacheEntry,
   TailCursorSchema,
-  type TailEvent,
-  TailEventSchema,
 } from "./types";
 
 const SessionLogCheckpointSchema = z.object({
   lastSeq: z.number().int().nonnegative(),
   cursor: TailCursorSchema.optional(),
-  events: z.array(TailEventSchema),
 });
 
 const SessionCacheMetadataSchema = z.object({
-  schemaVersion: z.literal(5),
+  schemaVersion: z.union([z.literal(5), z.literal(6)]),
   cachedAtMs: z.number().int().nonnegative(),
 });
 
@@ -51,30 +48,26 @@ export interface SessionCacheOptions {
 /**
  * Construction options for {@link WebStorageSessionCache}.
  */
-export interface WebStorageSessionCacheOptions<
-  TEvent extends TailEvent = TailEvent,
-> extends SessionCacheOptions {
+export interface WebStorageSessionCacheOptions extends SessionCacheOptions {
   /**
    * Optional schema for validating persisted cache entries.
    *
    * When omitted, a default schema validates canonical cache entries.
    */
-  entrySchema?: z.ZodType<SessionCacheEntry<TEvent>>;
+  entrySchema?: z.ZodType<SessionCacheEntry>;
 }
 
 /**
  * Default in-memory session cache.
  */
-export class MemorySessionCache<TEvent extends TailEvent = TailEvent>
-  implements SessionCache<TEvent>
-{
-  private readonly sessions = new Map<string, SessionCacheEntry<TEvent>>();
+export class MemorySessionCache implements SessionCache {
+  private readonly sessions = new Map<string, SessionCacheEntry>();
 
-  read(sessionId: string): SessionCacheEntry<TEvent> | undefined {
+  read(sessionId: string): SessionCacheEntry | undefined {
     return this.sessions.get(sessionId);
   }
 
-  write(sessionId: string, entry: SessionCacheEntry<TEvent>): void {
+  write(sessionId: string, entry: SessionCacheEntry): void {
     this.sessions.set(sessionId, entry);
   }
 
@@ -86,16 +79,14 @@ export class MemorySessionCache<TEvent extends TailEvent = TailEvent>
 /**
  * Session cache backed by a Web Storage-compatible object.
  */
-export class WebStorageSessionCache<TEvent extends TailEvent = TailEvent>
-  implements SessionCache<TEvent>
-{
+export class WebStorageSessionCache implements SessionCache {
   private readonly storage: StarciteWebStorage;
   private readonly keyForSession: (sessionId: string) => string;
-  private readonly entrySchema: z.ZodType<SessionCacheEntry<TEvent>>;
+  private readonly entrySchema: z.ZodType<SessionCacheEntry>;
 
   constructor(
     storage: StarciteWebStorage,
-    options: WebStorageSessionCacheOptions<TEvent> = {}
+    options: WebStorageSessionCacheOptions = {}
   ) {
     this.storage = storage;
     const prefix = options.keyPrefix ?? "starcite";
@@ -104,12 +95,10 @@ export class WebStorageSessionCache<TEvent extends TailEvent = TailEvent>
       ((sessionId) => `${prefix}:${sessionId}:sessionCache`);
     this.entrySchema =
       options.entrySchema ??
-      (SessionCacheEntrySchema as unknown as z.ZodType<
-        SessionCacheEntry<TEvent>
-      >);
+      (SessionCacheEntrySchema as unknown as z.ZodType<SessionCacheEntry>);
   }
 
-  read(sessionId: string): SessionCacheEntry<TEvent> | undefined {
+  read(sessionId: string): SessionCacheEntry | undefined {
     const raw = this.storage.getItem(this.keyForSession(sessionId));
     if (raw === null) {
       return undefined;
@@ -132,7 +121,7 @@ export class WebStorageSessionCache<TEvent extends TailEvent = TailEvent>
     return parsed.data;
   }
 
-  write(sessionId: string, entry: SessionCacheEntry<TEvent>): void {
+  write(sessionId: string, entry: SessionCacheEntry): void {
     this.storage.setItem(this.keyForSession(sessionId), JSON.stringify(entry));
   }
 
@@ -144,10 +133,8 @@ export class WebStorageSessionCache<TEvent extends TailEvent = TailEvent>
 /**
  * Session cache backed by browser local storage.
  */
-export class LocalStorageSessionCache<
-  TEvent extends TailEvent = TailEvent,
-> extends WebStorageSessionCache<TEvent> {
-  constructor(options: WebStorageSessionCacheOptions<TEvent> = {}) {
+export class LocalStorageSessionCache extends WebStorageSessionCache {
+  constructor(options: WebStorageSessionCacheOptions = {}) {
     if (typeof localStorage === "undefined") {
       throw new StarciteError(
         "localStorage is not available in this runtime. Use WebStorageSessionCache with a custom storage adapter."
@@ -160,10 +147,8 @@ export class LocalStorageSessionCache<
 /**
  * Session cache backed by browser session storage.
  */
-export class SessionStorageSessionCache<
-  TEvent extends TailEvent = TailEvent,
-> extends WebStorageSessionCache<TEvent> {
-  constructor(options: WebStorageSessionCacheOptions<TEvent> = {}) {
+export class SessionStorageSessionCache extends WebStorageSessionCache {
+  constructor(options: WebStorageSessionCacheOptions = {}) {
     if (typeof sessionStorage === "undefined") {
       throw new StarciteError(
         "sessionStorage is not available in this runtime. Use WebStorageSessionCache with a custom storage adapter."

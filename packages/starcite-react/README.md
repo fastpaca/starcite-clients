@@ -70,9 +70,9 @@ export function Timeline({ token }: { token: string }) {
 }
 ```
 
-`useStarciteSession` reads from `session.events()` and refreshes from
-`session.on("event", ..., { replay: false })`, so the retained session log
-stays the source of truth.
+`useStarciteSession` mirrors the session's current local event state and can
+optionally issue one explicit `session.all()` read on connect before merging
+future `session.on("event")` updates into the same view.
 
 ## `useStarciteChat`
 
@@ -134,6 +134,7 @@ after the session is bound.
 
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
+- `read` (optional): `"all"` to issue one explicit `session.all()` read on connect; defaults to `false`
 - `onError` (optional): callback for surfaced session `error` events
 - Returns `{ events, append }`
 
@@ -147,15 +148,16 @@ after the session is bound.
 
 ## Behavior
 
-- Uses `session.events()` as the durable source of truth for chat state.
-- Refreshes from live `session.on("event", ..., { replay: false })` updates and only consumes:
+- `useStarciteSession` starts from `session.state().events`, optionally issues `session.all()` once, then merges live `session.on("event", ..., { replay: false })` updates.
+- `useStarciteChat` uses the same `session.all()` preload automatically, then only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`
+- `useStarciteChat` does not expose raw event windowing. It always projects durable chat history from `session.all()` plus live updates.
 - Appends outgoing user messages as strict chat envelopes.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Terminal append failures pause the SDK outbox by default; inspect `session.appendState()` and use `session.resumeAppendQueue()` or `session.resetAppendQueue()` for operational recovery.
-- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and retained events remain the source of truth.
+- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and the local sparse view continues from the refreshed cursor.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
 
 ## Exports
@@ -163,7 +165,6 @@ after the session is bound.
 - `useStarciteSession`
 - `UseStarciteSessionOptions`
 - `UseStarciteSessionResult`
-- `StarciteSessionLike`
 - `useStarciteChat`
 - `UseStarciteChatOptions`
 - `UseStarciteChatResult`

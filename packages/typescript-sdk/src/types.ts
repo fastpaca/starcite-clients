@@ -152,6 +152,19 @@ export const TailEventSchema = z.object({
 export type TailEvent = z.infer<typeof TailEventSchema>;
 
 /**
+ * Durable history slice returned by session event reads.
+ */
+export const SessionEventSliceSchema = z.object({
+  events: z.array(TailEventSchema),
+  hasMore: z.boolean(),
+});
+
+/**
+ * Inferred TypeScript type for {@link SessionEventSliceSchema}.
+ */
+export type SessionEventSlice = z.infer<typeof SessionEventSliceSchema>;
+
+/**
  * Listener dispatch phase for `session.on("event")`.
  */
 export type SessionEventPhase = "replay" | "live";
@@ -179,9 +192,9 @@ export type SessionEventListener<TEvent extends TailEvent = TailEvent> = (
  */
 export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
   /**
-   * Whether retained in-memory events should be replayed to this listener.
+   * Whether locally materialized in-memory events should be replayed to this listener.
    *
-   * Defaults to `true`.
+   * Defaults to `false`.
    */
   replay?: boolean;
   /**
@@ -194,6 +207,36 @@ export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
    * Optional filter for `agent:<name>` events.
    */
   agent?: string;
+}
+
+/**
+ * Narrow public session surface for direct consumers and integrations.
+ */
+export interface SessionHandle {
+  readonly id: string;
+  append(input: SessionAppendInput): Promise<AppendResult>;
+  all(requestOptions?: RequestOptions): Promise<SessionEventSlice>;
+  latest(
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice>;
+  before(
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice>;
+  after(
+    seq: number,
+    limit: number,
+    requestOptions?: RequestOptions
+  ): Promise<SessionEventSlice>;
+  state(): SessionSnapshot;
+  on(
+    eventName: "event",
+    listener: SessionEventListener,
+    options?: SessionOnEventOptions<TailEvent>
+  ): () => void;
+  on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
 /**
@@ -220,12 +263,16 @@ export const TailTokenExpiredPayloadSchema = z.object({
   reason: z.literal("token_expired"),
 });
 
+export type SessionAttachMode = "on-demand" | "eager";
+
 /**
  * Snapshot of a session's canonical in-memory log state.
  */
 export interface SessionSnapshot {
   /**
-   * Ordered events currently retained in memory.
+   * Ordered events currently materialized in memory.
+   *
+   * This can be a sparse subset of the full session history.
    */
   events: TailEvent[];
   /**
@@ -474,7 +521,7 @@ export type SessionAppendStoreState = z.infer<
 /**
  * Serializable checkpoint for one materialized session log.
  */
-export interface SessionLogCheckpoint<TEvent extends TailEvent = TailEvent> {
+export interface SessionLogCheckpoint {
   /**
    * Highest committed sequence observed for this session.
    */
@@ -483,10 +530,6 @@ export interface SessionLogCheckpoint<TEvent extends TailEvent = TailEvent> {
    * Exact tail resume cursor for continuing replay.
    */
   cursor?: TailCursor;
-  /**
-   * Retained committed events snapshot used for immediate replay.
-   */
-  events: TEvent[];
 }
 
 /**
@@ -496,7 +539,7 @@ export interface SessionCacheMetadata {
   /**
    * Cache entry schema version.
    */
-  schemaVersion: 5;
+  schemaVersion: 5 | 6;
   /**
    * Unix epoch milliseconds when this entry was written.
    */
@@ -506,11 +549,11 @@ export interface SessionCacheMetadata {
 /**
  * Persisted cache entry for one session.
  */
-export interface SessionCacheEntry<TEvent extends TailEvent = TailEvent> {
+export interface SessionCacheEntry {
   /**
    * Optional warm-start checkpoint for the session log.
    */
-  log?: SessionLogCheckpoint<TEvent>;
+  log?: SessionLogCheckpoint;
   /**
    * Optional persisted append outbox + producer state.
    */
@@ -522,11 +565,11 @@ export interface SessionCacheEntry<TEvent extends TailEvent = TailEvent> {
 }
 
 /**
- * Persistence interface for session resume cache + retained events.
+ * Persistence interface for session resume cursor + append outbox state.
  */
-export interface SessionCache<TEvent extends TailEvent = TailEvent> {
-  read(sessionId: string): SessionCacheEntry<TEvent> | undefined;
-  write(sessionId: string, entry: SessionCacheEntry<TEvent>): void;
+export interface SessionCache {
+  read(sessionId: string): SessionCacheEntry | undefined;
+  write(sessionId: string, entry: SessionCacheEntry): void;
   clear?(sessionId: string): void;
 }
 
@@ -598,11 +641,18 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Optional session cache used for resume state + retained event persistence.
+   * Optional session cache used for resume state + append outbox persistence.
    *
-   * When omitted, fresh attaches replay from the start of the server tail.
+   * When omitted, sessions start without a durable local cursor.
    */
   cache?: SessionCache;
+  /**
+   * Whether sessions should attach the tail channel immediately on construction.
+   *
+   * Defaults to `"on-demand"`, which waits until listeners or pending appends
+   * need live sync.
+   */
+  sessionAttachMode?: SessionAttachMode;
   /**
    * Default append queue behavior for sessions created by this client.
    */

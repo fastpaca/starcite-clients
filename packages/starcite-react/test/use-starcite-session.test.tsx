@@ -1,9 +1,11 @@
 import type {
   AppendResult,
+  RequestOptions,
   SessionAppendInput,
   SessionEventContext,
   SessionEventListener,
   SessionOnEventOptions,
+  SessionSnapshot,
   TailEvent,
 } from "@starcite/sdk";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -15,6 +17,7 @@ class FakeSession {
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
   private readonly eventLog: TailEvent[] = [];
+  private stateEventsOverride: readonly TailEvent[] | undefined;
   private nextSeq = 1;
 
   constructor(id: string) {
@@ -25,8 +28,66 @@ class FakeSession {
     return Promise.resolve({ deduped: false, seq: this.nextSeq });
   }
 
-  events(): readonly TailEvent[] {
-    return [...this.eventLog];
+  all(
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: false }> {
+    return Promise.resolve({
+      events: [...this.eventLog],
+      hasMore: false,
+    });
+  }
+
+  latest(
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog.slice(-limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: events[0] !== undefined && events[0].seq > 1,
+    });
+  }
+
+  before(
+    seq: number,
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog
+      .filter((event) => event.seq < seq)
+      .slice(-limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: events[0] !== undefined && events[0].seq > 1,
+    });
+  }
+
+  after(
+    seq: number,
+    limit: number,
+    _requestOptions?: RequestOptions
+  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
+    const events = this.eventLog
+      .filter((event) => event.seq > seq)
+      .slice(0, limit);
+    return Promise.resolve({
+      events: [...events],
+      hasMore: (events.at(-1)?.seq ?? seq) < (this.eventLog.at(-1)?.seq ?? 0),
+    });
+  }
+
+  state(): SessionSnapshot {
+    return {
+      append: undefined,
+      cursor: this.eventLog.at(-1)?.cursor,
+      events: [...(this.stateEventsOverride ?? this.eventLog)],
+      lastSeq: this.eventLog.at(-1)?.seq ?? 0,
+      syncing: false,
+    };
+  }
+
+  setStateEvents(events: readonly TailEvent[]): void {
+    this.stateEventsOverride = [...events];
   }
 
   on(
@@ -80,7 +141,7 @@ class FakeSession {
 }
 
 describe("useStarciteSession", () => {
-  it("surfaces retained events and forwards session errors", async () => {
+  it("surfaces live events and forwards session errors", async () => {
     const session = new FakeSession("ses_session_hook");
     const errors: string[] = [];
     const { result } = renderHook(() =>
@@ -101,6 +162,26 @@ describe("useStarciteSession", () => {
       expect(result.current.events).toHaveLength(1);
     });
     expect(errors).toEqual(["refresh failed"]);
+  });
+
+  it('can read "all" before binding live updates', async () => {
+    const session = new FakeSession("ses_window_hook");
+    act(() => {
+      session.emitEvent("first");
+      session.emitEvent("second");
+    });
+    session.setStateEvents([]);
+
+    const { result } = renderHook(() =>
+      useStarciteSession({
+        read: "all",
+        session,
+      })
+    );
+
+    await waitFor(() => {
+      expect(result.current.events.map((event) => event.seq)).toEqual([1, 2]);
+    });
   });
 
   it("resets retained events when the session key changes", async () => {

@@ -1,5 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
+import type { SessionEventsResponse } from "./session-events";
 import type {
   SessionLogCheckpoint,
   SessionSnapshot,
@@ -40,11 +41,28 @@ export class SessionLog {
     const applied: TailEvent[] = [];
 
     for (const event of batch) {
-      if (this.apply(event)) {
+      if (this.apply(event, { emit: true })) {
         applied.push(event);
-        this.emitter.emit("event", event, { replayed: false });
       }
     }
+
+    return applied;
+  }
+
+  observeRead(response: SessionEventsResponse): TailEvent[] {
+    const applied: TailEvent[] = [];
+
+    for (const event of response.events) {
+      if (this.apply(event, { emit: false })) {
+        applied.push(event);
+      }
+    }
+
+    this.appliedSeq = Math.max(this.appliedSeq, response.last_seq);
+    this.appliedCursor =
+      this.appliedCursor === undefined
+        ? response.next_cursor
+        : Math.max(this.appliedCursor, response.next_cursor);
 
     return applied;
   }
@@ -56,37 +74,15 @@ export class SessionLog {
       );
     }
 
-    let latestEvent: TailEvent | undefined;
-    const nextEventsBySeq = new Map<number, TailEvent>();
-
-    for (const event of checkpoint.events) {
-      if (event.seq > checkpoint.lastSeq) {
-        throw new StarciteError(
-          `Session cache checkpoint contains event seq ${event.seq} above lastSeq ${checkpoint.lastSeq}`
-        );
-      }
-
-      if (latestEvent === undefined || event.seq > latestEvent.seq) {
-        latestEvent = event;
-      }
-
-      nextEventsBySeq.set(event.seq, event);
-    }
-
     this.eventBySeq.clear();
-    for (const [seq, event] of nextEventsBySeq) {
-      this.eventBySeq.set(seq, event);
-    }
-
     this.appliedSeq = checkpoint.lastSeq;
-    this.appliedCursor = checkpoint.cursor ?? latestEvent?.cursor;
+    this.appliedCursor = checkpoint.cursor;
   }
 
   checkpoint(): SessionLogCheckpoint {
     return {
       lastSeq: this.appliedSeq,
       cursor: this.appliedCursor,
-      events: this.orderedEvents(),
     };
   }
 
@@ -97,7 +93,7 @@ export class SessionLog {
     ) => void,
     options: { replay?: boolean } = {}
   ): () => void {
-    if (options.replay ?? true) {
+    if (options.replay ?? false) {
       for (const event of this.orderedEvents()) {
         listener(event, { replayed: true });
       }
@@ -134,7 +130,7 @@ export class SessionLog {
     this.appliedCursor = cursor;
   }
 
-  private apply(event: TailEvent): boolean {
+  private apply(event: TailEvent, options: { emit: boolean }): boolean {
     const previousLastSeq = this.appliedSeq;
     this.eventBySeq.set(event.seq, event);
 
@@ -145,6 +141,11 @@ export class SessionLog {
     ) {
       this.appliedCursor = event.cursor;
     }
+
+    if (options.emit) {
+      this.emitter.emit("event", event, { replayed: false });
+    }
+
     return true;
   }
 }

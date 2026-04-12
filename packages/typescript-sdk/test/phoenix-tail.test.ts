@@ -762,7 +762,6 @@ describe("Phoenix Tail Transport", () => {
     cache.write("ses_beta", {
       log: {
         cursor: 6,
-        events: [],
         lastSeq: 6,
       },
     });
@@ -815,7 +814,7 @@ describe("Phoenix Tail Transport", () => {
 
     const alphaChannel = await waitForChannel("tail:ses_alpha");
     const betaChannel = await waitForChannel("tail:ses_beta");
-    expect(alphaChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(alphaChannel.joinCalls[0]).toEqual({ live_only: true });
     expect(betaChannel.joinCalls[0]).toEqual({ cursor: 6 });
 
     alphaSocket?.emitOpen();
@@ -858,6 +857,98 @@ describe("Phoenix Tail Transport", () => {
     stopBeta();
     alpha.disconnect();
     beta.disconnect();
+  });
+
+  it("does not attach a session tail until live sync is requested", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_lazy_attach") });
+
+    expect(phoenixMock.MockPhoenixSocket.instances).toHaveLength(0);
+
+    const seen: number[] = [];
+    const stopEvents = session.on("event", (event) => {
+      seen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_lazy_attach");
+    expect(channel.joinCalls[0]).toEqual({ live_only: true });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    expect(seen).toEqual([1]);
+
+    stopEvents();
+    session.disconnect();
+  });
+
+  it("does not persist materialized events in the session cache unless opted in", async () => {
+    const cache = new MemorySessionCache();
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+      cache,
+    }).session({ token: makeSessionToken("ses_sparse_cache") });
+
+    const stopEvents = session.on("event", () => undefined);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_sparse_cache");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    expect(cache.read("ses_sparse_cache")?.log).toEqual({
+      cursor: 1,
+      lastSeq: 1,
+    });
+
+    stopEvents();
+    session.disconnect();
+  });
+
+  it("does not persist materialized events even when multiple events have been seen", async () => {
+    const cache = new MemorySessionCache();
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+      cache,
+    }).session({ token: makeSessionToken("ses_persist_cache") });
+
+    const stopEvents = session.on("event", () => undefined);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_persist_cache");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [
+        makeEvent(1, "agent:planner", 1),
+        makeEvent(2, "agent:planner", 2),
+      ],
+    });
+    await flush();
+
+    expect(cache.read("ses_persist_cache")?.log).toEqual({
+      cursor: 2,
+      lastSeq: 2,
+    });
+
+    stopEvents();
+    session.disconnect();
   });
 
   it("keeps same-session identity subscribers isolated so one listener still receives follow-up events after another disconnects", async () => {
@@ -913,8 +1004,8 @@ describe("Phoenix Tail Transport", () => {
       "tail:ses_shared",
       2
     );
-    expect(plannerChannel.joinCalls[0]).toEqual({ cursor: 0 });
-    expect(reviewerChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(plannerChannel.joinCalls[0]).toEqual({ live_only: true });
+    expect(reviewerChannel.joinCalls[0]).toEqual({ live_only: true });
 
     plannerSocket?.emitOpen();
     reviewerSocket?.emitOpen();
@@ -1057,10 +1148,12 @@ describe("Phoenix Tail Transport", () => {
     const coordinator = await client.session({
       identity: client.agent({ id: "coordinator" }),
       id: "ses_followup",
+      attachMode: "eager",
     });
     const worker = await client.session({
       identity: client.agent({ id: "worker" }),
       id: "ses_followup",
+      attachMode: "eager",
     });
 
     const coordinatorSeen: number[] = [];
@@ -1071,21 +1164,22 @@ describe("Phoenix Tail Transport", () => {
     await waitForSocketCount(2);
     const coordinatorSocket = phoenixMock.MockPhoenixSocket.instances[0];
     const workerSocket = phoenixMock.MockPhoenixSocket.instances[1];
-    const [coordinatorChannel, workerChannel] = await waitForChannels(
-      "tail:ses_followup",
-      2
-    );
+    await waitForChannels("tail:ses_followup", 2);
+    const coordinatorChannel = coordinatorSocket?.channels[0];
+    const workerChannel = workerSocket?.channels[0];
+    expect(coordinatorChannel).toBeDefined();
+    expect(workerChannel).toBeDefined();
 
     coordinatorSocket?.emitOpen();
     workerSocket?.emitOpen();
-    coordinatorChannel.emitJoinOk({});
-    workerChannel.emitJoinOk({});
+    coordinatorChannel?.emitJoinOk({});
+    workerChannel?.emitJoinOk({});
 
     const firstUserEvent = makeEvent(1, "user:alice", 1);
-    coordinatorChannel.emit("events", {
+    coordinatorChannel?.emit("events", {
       events: [firstUserEvent],
     });
-    workerChannel.emit("events", {
+    workerChannel?.emit("events", {
       events: [firstUserEvent],
     });
     await flush();
@@ -1095,15 +1189,15 @@ describe("Phoenix Tail Transport", () => {
       makeEvent(3, "agent:worker", 3),
       makeEvent(4, "agent:worker", 4),
     ];
-    coordinatorChannel.emit("events", {
+    coordinatorChannel?.emit("events", {
       events: workerBurst,
     });
-    workerChannel.emit("events", {
+    workerChannel?.emit("events", {
       events: workerBurst,
     });
     await flush();
 
-    coordinatorChannel.emit("events", {
+    coordinatorChannel?.emit("events", {
       events: [makeEvent(5, "user:alice", 5)],
     });
     await flush();
@@ -1115,12 +1209,11 @@ describe("Phoenix Tail Transport", () => {
     worker.disconnect();
   });
 
-  it("joins from the stored cursor and replays retained events to late listeners", async () => {
+  it("joins from the stored cursor and replays retained events to late listeners when requested", async () => {
     const cache = new MemorySessionCache();
     cache.write("ses_replay", {
       log: {
         cursor: 4,
-        events: [],
         lastSeq: 4,
       },
     });
@@ -1152,9 +1245,13 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    const stopSecond = session.on("event", (event) => {
-      secondSeen.push(event.seq);
-    });
+    const stopSecond = session.on(
+      "event",
+      (event) => {
+        secondSeen.push(event.seq);
+      },
+      { replay: true }
+    );
     await flush();
 
     expect(firstSeen).toEqual([5, 6]);
@@ -1165,15 +1262,11 @@ describe("Phoenix Tail Transport", () => {
     session.disconnect();
   });
 
-  it("classifies server corrections for retained events as live updates", async () => {
+  it("classifies server corrections for checkpoint-restored seqs as live updates", async () => {
     const cache = new MemorySessionCache();
     cache.write("ses_updates", {
       log: {
         cursor: 6,
-        events: [
-          makeEvent(5, "agent:planner", 5),
-          makeEvent(6, "agent:planner", 6),
-        ],
         lastSeq: 6,
       },
     });
@@ -1185,13 +1278,17 @@ describe("Phoenix Tail Transport", () => {
     }).session({ token: makeSessionToken("ses_updates") });
 
     const seen: Array<{ phase: string; seq: number; text: string }> = [];
-    const stopEvents = session.on("event", (event, context) => {
-      seen.push({
-        phase: context.phase,
-        seq: event.seq,
-        text: `${event.payload.text ?? ""}`,
-      });
-    });
+    const stopEvents = session.on(
+      "event",
+      (event, context) => {
+        seen.push({
+          phase: context.phase,
+          seq: event.seq,
+          text: `${event.payload.text ?? ""}`,
+        });
+      },
+      { replay: true }
+    );
 
     await waitForSocketCount(1);
     const socket = phoenixMock.MockPhoenixSocket.instances[0];
@@ -1209,8 +1306,6 @@ describe("Phoenix Tail Transport", () => {
     await flush();
 
     expect(seen).toEqual([
-      { phase: "replay", seq: 5, text: "event-5" },
-      { phase: "replay", seq: 6, text: "event-6" },
       { phase: "live", seq: 5, text: "corrected-event-5" },
     ]);
 
@@ -1517,7 +1612,7 @@ describe("Phoenix Tail Transport", () => {
       { phase: "live", seq: 2 },
     ]);
     expect(session.identity.id).toBe("planner-refreshed");
-    expect(session.events().map((event) => event.seq)).toEqual([1, 2]);
+    expect(session.state().events.map((event) => event.seq)).toEqual([1, 2]);
 
     stopError();
     stopEvents();
@@ -1681,7 +1776,7 @@ describe("Phoenix Tail Transport", () => {
     await flush();
 
     expect(errors).toEqual([]);
-    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: 0 });
+    expect(channel.rejoinCalls.at(-1)).toEqual({ live_only: true });
 
     channel.emitJoinOk({});
     channel.emit("events", {
@@ -1721,7 +1816,7 @@ describe("Phoenix Tail Transport", () => {
     stopEvents();
   });
 
-  it("cleans up channels per session and disconnects session-scoped sockets when each handle disconnects", async () => {
+  it("cleans up eagerly attached channels per session and disconnects session-scoped sockets when each handle disconnects", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(makeSessionRecord("ses_one"))
@@ -1735,8 +1830,16 @@ describe("Phoenix Tail Transport", () => {
       fetch: fetchMock,
     });
     const identity = client.agent({ id: "planner" });
-    const one = await client.session({ identity, id: "ses_one" });
-    const two = await client.session({ identity, id: "ses_two" });
+    const one = await client.session({
+      identity,
+      id: "ses_one",
+      attachMode: "eager",
+    });
+    const two = await client.session({
+      identity,
+      id: "ses_two",
+      attachMode: "eager",
+    });
 
     await waitForSocketCount(2);
     const oneSocket = phoenixMock.MockPhoenixSocket.instances[0];
