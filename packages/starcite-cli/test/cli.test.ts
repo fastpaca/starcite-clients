@@ -405,6 +405,20 @@ describe("starcite CLI", () => {
 
   it("create disconnects the temporary session before exiting", async () => {
     const { logger, info } = makeLogger();
+    session.mockImplementationOnce(
+      (input: { id?: string }) =>
+        ({
+          ...fakeSession,
+          id: input.id ?? fakeSession.id,
+          record:
+            input.id === undefined
+              ? fakeSession.record
+              : {
+                  id: input.id,
+                  title: "Draft contract",
+                },
+        }) as never
+    );
     const program = buildProgram({
       logger,
       createClient: () => createFakeClient(),
