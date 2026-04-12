@@ -170,7 +170,6 @@ describe("multi-agent viewer example page", () => {
     });
     expect(mockState.useStarciteSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        read: "all",
         session: expect.objectContaining({
           id: "ses_swarm",
         }),

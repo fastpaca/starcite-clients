@@ -152,19 +152,6 @@ export const TailEventSchema = z.object({
 export type TailEvent = z.infer<typeof TailEventSchema>;
 
 /**
- * Durable history slice returned by session event reads.
- */
-export const SessionEventSliceSchema = z.object({
-  events: z.array(TailEventSchema),
-  hasMore: z.boolean(),
-});
-
-/**
- * Inferred TypeScript type for {@link SessionEventSliceSchema}.
- */
-export type SessionEventSlice = z.infer<typeof SessionEventSliceSchema>;
-
-/**
  * Listener dispatch phase for `session.on("event")`.
  */
 export type SessionEventPhase = "replay" | "live";
@@ -215,21 +202,11 @@ export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
 export interface SessionHandle {
   readonly id: string;
   append(input: SessionAppendInput): Promise<AppendResult>;
-  all(requestOptions?: RequestOptions): Promise<SessionEventSlice>;
-  latest(
-    limit: number,
+  range(
+    fromSeq: number,
+    toSeq: number,
     requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice>;
-  before(
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice>;
-  after(
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice>;
+  ): Promise<readonly TailEvent[]>;
   state(): SessionSnapshot;
   on(
     eventName: "event",
@@ -519,9 +496,31 @@ export type SessionAppendStoreState = z.infer<
 >;
 
 /**
- * Serializable checkpoint for one materialized session log.
+ * Serializable sparse coverage range for one materialized session history.
  */
-export interface SessionLogCheckpoint {
+export interface SessionHistoryRangeCheckpoint {
+  /**
+   * First covered sequence in this materialized range.
+   */
+  fromSeq: number;
+  /**
+   * Last covered sequence in this materialized range.
+   */
+  toSeq: number;
+  /**
+   * Replay cursor immediately before `fromSeq`, when known.
+   */
+  beforeCursor?: TailCursor;
+  /**
+   * Replay cursor at `toSeq`, when known.
+   */
+  afterCursor?: TailCursor;
+}
+
+/**
+ * Serializable checkpoint for one materialized session history.
+ */
+export interface SessionHistoryCheckpoint {
   /**
    * Highest committed sequence observed for this session.
    */
@@ -530,6 +529,14 @@ export interface SessionLogCheckpoint {
    * Exact tail resume cursor for continuing replay.
    */
   cursor?: TailCursor;
+  /**
+   * Sparse materialized events retained locally.
+   */
+  events?: TailEvent[];
+  /**
+   * Exact seq coverage of the retained sparse events.
+   */
+  ranges?: SessionHistoryRangeCheckpoint[];
 }
 
 /**
@@ -539,7 +546,7 @@ export interface SessionCacheMetadata {
   /**
    * Cache entry schema version.
    */
-  schemaVersion: 5 | 6;
+  schemaVersion: 5 | 6 | 7;
   /**
    * Unix epoch milliseconds when this entry was written.
    */
@@ -551,9 +558,13 @@ export interface SessionCacheMetadata {
  */
 export interface SessionCacheEntry {
   /**
-   * Optional warm-start checkpoint for the session log.
+   * Optional warm-start checkpoint for the session history.
    */
-  log?: SessionLogCheckpoint;
+  history?: SessionHistoryCheckpoint;
+  /**
+   * Legacy warm-start checkpoint for the session log.
+   */
+  log?: SessionHistoryCheckpoint;
   /**
    * Optional persisted append outbox + producer state.
    */

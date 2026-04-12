@@ -11,8 +11,6 @@ export interface UseStarciteSessionOptions {
   session: SessionHandle | null | undefined;
   /** Reset key — changing this resets state. Defaults to `session.id`. */
   id?: string;
-  /** Optional initial durable history read to issue on connect. */
-  read?: "all" | false;
   onError?: (error: Error) => void;
 }
 
@@ -52,14 +50,13 @@ function toHookError(error: unknown): Error {
 export function useStarciteSession(
   options: UseStarciteSessionOptions
 ): UseStarciteSessionResult {
-  const { session, id, read = false, onError } = options;
+  const { session, id, onError } = options;
   const resetKey = id ?? session?.id ?? "__none__";
 
   const [events, setEvents] = useState<readonly TailEvent[]>([]);
 
-  const sessionKeyRef = useRef(resetKey);
+  const resetKeyRef = useRef(resetKey);
   const onErrorRef = useRef(onError);
-  const loadVersionRef = useRef(0);
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -70,23 +67,15 @@ export function useStarciteSession(
   }, []);
 
   useEffect(() => {
-    sessionKeyRef.current = resetKey;
-    loadVersionRef.current += 1;
+    resetKeyRef.current = resetKey;
     setEvents([]);
 
     if (!session) {
       return;
     }
 
-    const loadVersion = loadVersionRef.current;
     let offEvent = NOOP_UNSUBSCRIBE;
     let offError = NOOP_UNSUBSCRIBE;
-    const isStale = (): boolean => {
-      return (
-        sessionKeyRef.current !== resetKey ||
-        loadVersionRef.current !== loadVersion
-      );
-    };
 
     const bindLiveListeners = (): void => {
       offEvent = session.on("event", onEvent, { replay: false });
@@ -97,31 +86,12 @@ export function useStarciteSession(
 
     setEvents(session.state().events);
     bindLiveListeners();
-    if (read === "all") {
-      session
-        .all()
-        .then((slice) => {
-          if (isStale()) {
-            return;
-          }
-
-          setEvents((current) => mergeEvents(current, slice.events));
-        })
-        .catch((error) => {
-          if (isStale()) {
-            return;
-          }
-
-          onErrorRef.current?.(toHookError(error));
-        });
-    }
 
     return () => {
-      loadVersionRef.current += 1;
       offEvent();
       offError();
     };
-  }, [onEvent, read, session, resetKey]);
+  }, [onEvent, session, resetKey]);
 
   const append = useCallback(
     (input: SessionAppendInput) =>

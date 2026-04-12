@@ -9,18 +9,15 @@ import {
 } from "./errors";
 import type { StarciteIdentity } from "./identity";
 import {
-  concatSessionEvents,
-  type SessionEventsRead,
-  sessionEventsResponseSchema,
-  toSessionEventSlice,
-  toSessionEventsQuerySuffix,
-} from "./session-events";
-import { SessionLog, type SessionLogSubscriptionContext } from "./session-log";
+  SessionHistory,
+  type SessionHistorySubscriptionContext,
+} from "./session-history";
 import {
   type RejoinableChannel,
   readJoinFailureReason,
+  SocketManager,
 } from "./socket-manager";
-import { request, type TransportConfig } from "./transport";
+import { type TransportConfig, toWebSocketBaseUrl } from "./transport";
 import {
   type AppendResult,
   type RequestOptions,
@@ -34,7 +31,6 @@ import {
   type SessionCacheEntry,
   type SessionEventContext,
   type SessionEventListener,
-  type SessionEventSlice,
   type SessionGapListener,
   type SessionHandle,
   type SessionOnEventOptions,
@@ -42,6 +38,7 @@ import {
   type SessionSnapshot,
   type SessionTokenRefreshHandler,
   type SessionTokenRefreshReason,
+  type TailCursor,
   type TailEvent,
   TailEventSchema,
   type TailGap,
@@ -52,8 +49,6 @@ import {
 const TailEventsPayloadSchema = z.object({
   events: z.array(TailEventSchema),
 });
-
-const READ_ALL_PAGE_LIMIT = 1000;
 
 /**
  * Construction options for a `StarciteSession`.
@@ -76,6 +71,12 @@ interface SessionLifecycleEvents {
   gap: (gap: TailGap) => void;
 }
 
+interface SessionRangeBackfillJob {
+  fromSeq: number;
+  toSeq: number;
+  promise: Promise<void>;
+}
+
 /**
  * Session-scoped client bound to a specific identity and session token.
  *
@@ -94,19 +95,21 @@ export class StarciteSession implements SessionHandle {
   private currentIdentity: StarciteIdentity;
   private authRefreshTask: Promise<void> | undefined;
 
-  readonly log: SessionLog;
+  private readonly history: SessionHistory;
   private readonly cache: SessionCache | undefined;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
   private readonly eventSubscriptions = new Map<
     SessionEventListener,
     () => void
   >();
+  private readonly backfillJobs: SessionRangeBackfillJob[] = [];
   private keepTailAttached = false;
   private tailChannel: RejoinableChannel | undefined;
   private tailEventBindingRef = 0;
   private tailGapBindingRef = 0;
   private tailTokenExpiredBindingRef = 0;
   private closeTailChannel: (() => void) | undefined;
+  private nextTailBatchCursor: TailCursor | undefined;
 
   constructor(options: StarciteSessionOptions) {
     this.id = options.id;
@@ -117,7 +120,7 @@ export class StarciteSession implements SessionHandle {
     this.cache = options.cache;
     this.refreshTokenHandler = options.refreshToken;
     this.keepTailAttached = (options.attachMode ?? "on-demand") === "eager";
-    this.log = new SessionLog();
+    this.history = new SessionHistory();
 
     this.outbox = new AppendQueue({
       sessionId: options.id,
@@ -154,8 +157,8 @@ export class StarciteSession implements SessionHandle {
       }
       const pendingBefore = this.outbox.pendingCount;
       this.outbox.reconcileWithCommittedEvents(
-        this.log.events,
-        this.log.lastSeq
+        this.history.events,
+        this.history.lastSeq
       );
       if (this.outbox.pendingCount !== pendingBefore) {
         this.persistCacheEntry();
@@ -188,61 +191,16 @@ export class StarciteSession implements SessionHandle {
     return this.outbox.append(input, options?.signal);
   }
 
-  async all(requestOptions?: RequestOptions): Promise<SessionEventSlice> {
-    let afterSeq = 0;
-    let events: TailEvent[] = [];
-
-    while (true) {
-      const response = await this.readEvents(
-        { kind: "after", limit: READ_ALL_PAGE_LIMIT, seq: afterSeq },
-        requestOptions
-      );
-      events = concatSessionEvents(events, response.events);
-
-      if (
-        !toSessionEventSlice(
-          { kind: "after", limit: READ_ALL_PAGE_LIMIT, seq: afterSeq },
-          response
-        ).hasMore
-      ) {
-        return {
-          events,
-          hasMore: false,
-        };
-      }
-
-      const nextAfterSeq = response.events.at(-1)?.seq;
-      if (nextAfterSeq === undefined) {
-        return {
-          events,
-          hasMore: false,
-        };
-      }
-      afterSeq = nextAfterSeq;
+  range(
+    fromSeq: number,
+    toSeq: number,
+    requestOptions?: RequestOptions
+  ): Promise<readonly TailEvent[]> {
+    if (this.history.isRangeCovered(fromSeq, toSeq)) {
+      return Promise.resolve(this.history.readRange(fromSeq, toSeq));
     }
-  }
 
-  latest(
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSlice({ kind: "latest", limit }, requestOptions);
-  }
-
-  before(
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSlice({ kind: "before", limit, seq }, requestOptions);
-  }
-
-  after(
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSlice({ kind: "after", limit, seq }, requestOptions);
+    return this.readRangeInternal(fromSeq, toSeq, requestOptions);
   }
 
   /**
@@ -274,7 +232,7 @@ export class StarciteSession implements SessionHandle {
 
         const dispatch = (
           event: TailEvent,
-          logContext: SessionLogSubscriptionContext
+          historyContext: SessionHistorySubscriptionContext
         ): void => {
           const parsedEvent = this.parseOnEvent(event, eventOptions);
           if (!parsedEvent) {
@@ -282,7 +240,7 @@ export class StarciteSession implements SessionHandle {
           }
 
           const classifiedContext: SessionEventContext = {
-            phase: logContext.replayed ? "replay" : "live",
+            phase: historyContext.replayed ? "replay" : "live",
           };
 
           try {
@@ -294,7 +252,7 @@ export class StarciteSession implements SessionHandle {
           }
         };
 
-        const unsubscribe = this.log.subscribe(dispatch, { replay });
+        const unsubscribe = this.history.subscribe(dispatch, { replay });
         this.eventSubscriptions.set(eventListener, unsubscribe);
       }
 
@@ -430,52 +388,54 @@ export class StarciteSession implements SessionHandle {
    */
   state(): SessionSnapshot {
     return {
-      ...this.log.state(this.tailChannel !== undefined),
+      ...this.history.state(this.tailChannel !== undefined),
       append: this.outbox.state(),
     };
   }
 
-  /**
-   * Fetches the complete durable session history.
-   *
-   * @deprecated Use `all()` instead.
-   */
-  events(requestOptions?: RequestOptions): Promise<SessionEventSlice> {
-    return this.all(requestOptions);
-  }
-
-  private async readSlice(
-    read: SessionEventsRead,
+  private async readRangeInternal(
+    fromSeq: number,
+    toSeq: number,
     requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return toSessionEventSlice(
-      read,
-      await this.readEvents(read, requestOptions)
-    );
-  }
+  ): Promise<readonly TailEvent[]> {
+    if (this.history.isRangeCovered(fromSeq, toSeq)) {
+      return this.history.readRange(fromSeq, toSeq);
+    }
 
-  private async readEvents(
-    read: SessionEventsRead,
-    requestOptions?: RequestOptions
-  ) {
-    const response = await request(
-      this.transport,
-      `/sessions/${this.id}/events${toSessionEventsQuerySuffix(read)}`,
-      {
-        method: "GET",
-        signal: requestOptions?.signal,
-      },
-      sessionEventsResponseSchema()
-    );
+    while (!this.history.isRangeCovered(fromSeq, toSeq)) {
+      const missingRange = this.history.firstMissingRange(fromSeq, toSeq);
+      if (!missingRange) {
+        break;
+      }
 
-    this.log.observeRead(response);
-    this.outbox.reconcileWithCommittedEvents(
-      response.events,
-      response.last_seq
-    );
-    this.persistCacheEntry();
-    this.reconcileChannelAttachment();
-    return response;
+      const existingJob = this.backfillJobs.find((job) => {
+        return (
+          job.fromSeq <= missingRange.toSeq &&
+          job.toSeq + 1 >= missingRange.fromSeq
+        );
+      });
+      if (existingJob) {
+        await this.awaitJob(existingJob.promise, requestOptions?.signal);
+        continue;
+      }
+
+      const job = this.startRangeBackfill(
+        missingRange.fromSeq,
+        missingRange.toSeq
+      );
+      this.backfillJobs.push(job);
+
+      try {
+        await this.awaitJob(job.promise, requestOptions?.signal);
+      } finally {
+        const jobIndex = this.backfillJobs.indexOf(job);
+        if (jobIndex >= 0) {
+          this.backfillJobs.splice(jobIndex, 1);
+        }
+      }
+    }
+
+    return this.history.readRange(fromSeq, toSeq);
   }
 
   private parseOnEvent<TEvent extends TailEvent>(
@@ -567,11 +527,15 @@ export class StarciteSession implements SessionHandle {
       }
 
       try {
-        const appliedEvents = this.log.applyBatch(result.data.events);
+        const appliedEvents = this.history.applyLiveBatch(
+          result.data.events,
+          this.nextTailBatchCursor
+        );
+        this.nextTailBatchCursor = result.data.events.at(-1)?.cursor;
         if (appliedEvents.length > 0) {
           this.outbox.reconcileWithCommittedEvents(
             appliedEvents,
-            this.log.lastSeq
+            this.history.lastSeq
           );
           this.persistCacheEntry();
         }
@@ -586,13 +550,14 @@ export class StarciteSession implements SessionHandle {
         return;
       }
 
-      this.log.advanceCursor(result.data.next_cursor);
+      this.history.markObservedCursor(result.data.next_cursor);
       this.persistCacheEntry();
 
       if (this.lifecycle.listenerCount("gap") > 0) {
         this.lifecycle.emit("gap", result.data);
       }
 
+      this.nextTailBatchCursor = result.data.next_cursor;
       channel.rejoin();
     });
 
@@ -651,15 +616,148 @@ export class StarciteSession implements SessionHandle {
   }
 
   private tailChannelParams(): Record<string, unknown> {
-    if (this.log.cursor !== undefined) {
-      return { cursor: this.log.cursor };
+    if (this.history.cursor !== undefined) {
+      this.nextTailBatchCursor = this.history.cursor;
+      return { cursor: this.history.cursor };
     }
 
     if (this.keepTailAttached) {
+      this.nextTailBatchCursor = 0;
       return { cursor: 0 };
     }
 
+    this.nextTailBatchCursor = undefined;
     return { live_only: true };
+  }
+
+  private startRangeBackfill(
+    fromSeq: number,
+    toSeq: number
+  ): SessionRangeBackfillJob {
+    const anchor = this.history.anchorBeforeSeq(fromSeq);
+    const socketManager = new SocketManager({
+      socketUrl: `${toWebSocketBaseUrl(this.transport.baseUrl)}/socket`,
+      token: this.currentToken,
+    });
+    const managedChannel = socketManager.openChannel<RejoinableChannel>({
+      topic: `tail:${this.id}`,
+      params: { cursor: anchor.cursor },
+    });
+    const channel = managedChannel.channel;
+
+    let currentCursor = anchor.cursor;
+    let observedSeq = anchor.seq;
+    let pendingGapAfterSeq: number | undefined;
+    let finished = false;
+    let eventsBindingRef = 0;
+    let gapBindingRef = 0;
+    let tokenExpiredBindingRef = 0;
+
+    const finish = (callback: () => void): void => {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      channel.off("events", eventsBindingRef);
+      channel.off("gap", gapBindingRef);
+      channel.off("token_expired", tokenExpiredBindingRef);
+      managedChannel.close();
+      callback();
+    };
+
+    const promise = new Promise<void>((resolve, reject) => {
+      const fail = (error: Error): void => {
+        finish(() => {
+          reject(error);
+        });
+      };
+
+      eventsBindingRef = channel.on("events", (payload) => {
+        const result = TailEventsPayloadSchema.safeParse(payload);
+        if (!result.success) {
+          return;
+        }
+
+        const batch = result.data.events;
+        if (batch.length === 0) {
+          return;
+        }
+
+        const mergedBatch = this.mergeRangeBackfillBatch(
+          batch,
+          currentCursor,
+          observedSeq
+        );
+        if (mergedBatch instanceof Error) {
+          fail(mergedBatch);
+          return;
+        }
+
+        currentCursor = mergedBatch.currentCursor;
+        observedSeq = mergedBatch.observedSeq;
+
+        if (
+          this.rangeBackfillHasUnrecoverableGap(
+            pendingGapAfterSeq,
+            batch,
+            fromSeq,
+            toSeq
+          )
+        ) {
+          fail(this.rangeBackfillGapError(fromSeq, toSeq));
+          return;
+        }
+
+        pendingGapAfterSeq = undefined;
+        if (this.history.isRangeCovered(fromSeq, toSeq)) {
+          finish(resolve);
+        }
+      });
+
+      gapBindingRef = channel.on("gap", (payload) => {
+        const result = TailGapSchema.safeParse(payload);
+        if (!result.success) {
+          return;
+        }
+
+        this.history.markObservedCursor(result.data.next_cursor);
+        this.persistCacheEntry();
+        pendingGapAfterSeq = observedSeq;
+        currentCursor = result.data.next_cursor;
+        channel.rejoin();
+      });
+
+      tokenExpiredBindingRef = channel.on("token_expired", () => {
+        fail(
+          new StarciteTokenExpiredError(
+            `Tail replay token expired for session '${this.id}'.`,
+            {
+              closeReason: "token_expired",
+              sessionId: this.id,
+            }
+          )
+        );
+      });
+
+      channel.join().receive("error", (payload) => {
+        fail(
+          new StarciteTailError(
+            `Tail replay failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
+            {
+              sessionId: this.id,
+              stage: "connect",
+            }
+          )
+        );
+      });
+    });
+
+    return {
+      fromSeq,
+      toSeq,
+      promise,
+    };
   }
 
   private refreshAuthInternal(
@@ -770,8 +868,9 @@ export class StarciteSession implements SessionHandle {
     }
 
     try {
-      if (cachedEntry.log) {
-        this.log.restore(cachedEntry.log);
+      const historyCheckpoint = cachedEntry.history ?? cachedEntry.log;
+      if (historyCheckpoint) {
+        this.history.restore(historyCheckpoint);
       }
       return true;
     } catch {
@@ -787,10 +886,10 @@ export class StarciteSession implements SessionHandle {
 
     try {
       this.cache.write(this.id, {
-        log: this.log.checkpoint(),
+        history: this.history.checkpoint(),
         outbox: this.outbox.serializeState(),
         metadata: {
-          schemaVersion: 6,
+          schemaVersion: 7,
           cachedAtMs: Date.now(),
         },
       });
@@ -811,5 +910,89 @@ export class StarciteSession implements SessionHandle {
     } catch {
       // Ignore cache-clear failures; the live stream can still recover state.
     }
+  }
+
+  private mergeRangeBackfillBatch(
+    batch: readonly TailEvent[],
+    currentCursor: TailCursor,
+    observedSeq: number
+  ): { currentCursor: TailCursor; observedSeq: number } | Error {
+    try {
+      this.history.applyBackfillBatch(batch, currentCursor);
+      const nextCursor = batch.at(-1)?.cursor ?? currentCursor;
+      const nextObservedSeq = batch.at(-1)?.seq ?? observedSeq;
+      this.history.markObservedCursor(nextCursor);
+      this.persistCacheEntry();
+      return {
+        currentCursor: nextCursor,
+        observedSeq: nextObservedSeq,
+      };
+    } catch (error) {
+      return this.toError(error);
+    }
+  }
+
+  private rangeBackfillHasUnrecoverableGap(
+    pendingGapAfterSeq: number | undefined,
+    batch: readonly TailEvent[],
+    fromSeq: number,
+    toSeq: number
+  ): boolean {
+    if (pendingGapAfterSeq === undefined) {
+      return false;
+    }
+
+    const firstSeq = batch[0]?.seq;
+    if (firstSeq === undefined || firstSeq <= pendingGapAfterSeq + 1) {
+      return false;
+    }
+
+    return fromSeq <= firstSeq - 1 && toSeq > pendingGapAfterSeq;
+  }
+
+  private rangeBackfillGapError(
+    fromSeq: number,
+    toSeq: number
+  ): StarciteTailError {
+    return new StarciteTailError(
+      `Tail replay could not cover requested seq range ${fromSeq}-${toSeq} for session '${this.id}'.`,
+      {
+        sessionId: this.id,
+        stage: "gap",
+      }
+    );
+  }
+
+  private awaitJob(
+    promise: Promise<void>,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
+    if (!signal) {
+      return promise;
+    }
+
+    if (signal.aborted) {
+      return Promise.reject(new StarciteError("Session range read aborted."));
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const abort = (): void => {
+        signal.removeEventListener("abort", abort);
+        reject(new StarciteError("Session range read aborted."));
+      };
+
+      signal.addEventListener("abort", abort, { once: true });
+
+      promise.then(
+        () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        },
+        (error) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        }
+      );
+    });
   }
 }

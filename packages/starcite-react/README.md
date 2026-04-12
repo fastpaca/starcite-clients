@@ -70,9 +70,9 @@ export function Timeline({ token }: { token: string }) {
 }
 ```
 
-`useStarciteSession` mirrors the session's current local event state and can
-optionally issue one explicit `session.all()` read on connect before merging
-future `session.on("event")` updates into the same view.
+`useStarciteSession` mirrors the session's current local event state and merges
+future `session.on("event")` updates into the same view. It does not issue any
+implicit history reads.
 
 ## `useStarciteChat`
 
@@ -134,7 +134,6 @@ after the session is bound.
 
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
-- `read` (optional): `"all"` to issue one explicit `session.all()` read on connect; defaults to `false`
 - `onError` (optional): callback for surfaced session `error` events
 - Returns `{ events, append }`
 
@@ -148,11 +147,11 @@ after the session is bound.
 
 ## Behavior
 
-- `useStarciteSession` starts from `session.state().events`, optionally issues `session.all()` once, then merges live `session.on("event", ..., { replay: false })` updates.
-- `useStarciteChat` uses the same `session.all()` preload automatically, then only consumes:
+- `useStarciteSession` starts from `session.state().events` and merges live `session.on("event", ..., { replay: false })` updates.
+- `useStarciteChat` projects from that same local session state and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`
-- `useStarciteChat` does not expose raw event windowing. It always projects durable chat history from `session.all()` plus live updates.
+- `useStarciteChat` does not perform implicit durable history reads. If you need prior events on a fresh attach, materialize them into the session through the SDK cache or an explicit server-side `session.range(...)` flow.
 - Appends outgoing user messages as strict chat envelopes.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { StarciteError } from "../src/errors";
-import { SessionLog } from "../src/session-log";
+import { SessionHistory } from "../src/session-history";
 import type { TailCursor, TailEvent } from "../src/types";
 
 function makeEvent(
@@ -19,115 +19,140 @@ function makeEvent(
   };
 }
 
-describe("SessionLog", () => {
-  it("applies contiguous batches and exposes snapshot state", () => {
-    const log = new SessionLog();
+describe("SessionHistory", () => {
+  it("applies contiguous live batches and exposes snapshot state", () => {
+    const history = new SessionHistory();
 
-    const applied = log.applyBatch([
+    const applied = history.applyLiveBatch([
       makeEvent(1, "frame-1", 1),
       makeEvent(2, "frame-2", 2),
     ]);
 
     expect(applied.map((event) => event.seq)).toEqual([1, 2]);
-    expect(log.lastSeq).toBe(2);
-    expect(log.state(false)).toMatchObject({
+    expect(history.lastSeq).toBe(2);
+    expect(history.state(false)).toMatchObject({
       cursor: 2,
       lastSeq: 2,
       syncing: false,
     });
-    expect(log.state(false).events.map((event) => event.seq)).toEqual([1, 2]);
+    expect(history.state(false).events.map((event) => event.seq)).toEqual([
+      1, 2,
+    ]);
+    expect(history.readRange(1, 2).map((event) => event.seq)).toEqual([1, 2]);
   });
 
-  it("anchors the log on the first observed event even when the sequence starts later", () => {
-    const log = new SessionLog();
-    const applied = log.applyBatch([makeEvent(2, "frame-2", 2)]);
+  it("anchors sparse retained ranges even when the first observed seq starts later", () => {
+    const history = new SessionHistory();
+    const applied = history.applyLiveBatch([makeEvent(2, "frame-2", 2)]);
 
     expect(applied.map((event) => event.seq)).toEqual([2]);
-    expect(log.state(false)).toMatchObject({
+    expect(history.state(false)).toMatchObject({
       cursor: 2,
       lastSeq: 2,
       syncing: false,
     });
+    expect(history.isRangeCovered(2, 2)).toBe(true);
+    expect(history.isRangeCovered(1, 2)).toBe(false);
   });
 
-  it("accepts later observed events without requiring contiguous history", () => {
-    const log = new SessionLog();
-    log.applyBatch([makeEvent(2)]);
-    const applied = log.applyBatch([makeEvent(4)]);
+  it("accepts sparse later events without pretending the gap is covered", () => {
+    const history = new SessionHistory();
+    history.applyLiveBatch([makeEvent(2)]);
+    const applied = history.applyLiveBatch([makeEvent(4)]);
 
     expect(applied.map((event) => event.seq)).toEqual([4]);
-    expect(log.state(false).events.map((event) => event.seq)).toEqual([2, 4]);
-    expect(log.lastSeq).toBe(4);
+    expect(history.state(false).events.map((event) => event.seq)).toEqual([
+      2, 4,
+    ]);
+    expect(history.lastSeq).toBe(4);
+    expect(history.firstMissingRange(2, 4)).toEqual({
+      fromSeq: 3,
+      toSeq: 3,
+    });
   });
 
   it("overwrites same-seq redeliveries with server truth", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
 
-    log.applyBatch([makeEvent(1)]);
-    const applied = log.applyBatch([makeEvent(1, "updated")]);
+    history.applyLiveBatch([makeEvent(1)]);
+    const applied = history.applyLiveBatch([makeEvent(1, "updated")]);
 
     expect(applied.map((event) => event.seq)).toEqual([1]);
-    expect(log.state(false).events).toEqual([makeEvent(1, "updated")]);
+    expect(history.state(false).events).toEqual([makeEvent(1, "updated")]);
   });
 
   it("applies mixed existing/new batches and returns all applied events", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
 
-    log.applyBatch([makeEvent(1), makeEvent(2)]);
-    const applied = log.applyBatch([makeEvent(2), makeEvent(3), makeEvent(4)]);
+    history.applyLiveBatch([makeEvent(1), makeEvent(2)]);
+    const applied = history.applyLiveBatch([
+      makeEvent(2),
+      makeEvent(3),
+      makeEvent(4),
+    ]);
 
     expect(applied.map((event) => event.seq)).toEqual([2, 3, 4]);
-    expect(log.state(false).events.map((event) => event.seq)).toEqual([
+    expect(history.state(false).events.map((event) => event.seq)).toEqual([
       1, 2, 3, 4,
     ]);
   });
 
   it("keeps exposed history sorted by seq even when events arrive out of order", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
 
-    log.applyBatch([makeEvent(5), makeEvent(3), makeEvent(4)]);
+    history.applyLiveBatch([makeEvent(5), makeEvent(3), makeEvent(4)]);
 
-    expect(log.state(false).events.map((event) => event.seq)).toEqual([
+    expect(history.state(false).events.map((event) => event.seq)).toEqual([
       3, 4, 5,
     ]);
-    expect(log.events.map((event) => event.seq)).toEqual([3, 4, 5]);
+    expect(history.events.map((event) => event.seq)).toEqual([3, 4, 5]);
   });
 
   it("overwrites previously retained events when the server sends updated truth", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
 
-    log.applyBatch([makeEvent(1, "first")]);
-    const applied = log.applyBatch([makeEvent(1, "different payload")]);
+    history.applyLiveBatch([makeEvent(1, "first")]);
+    const applied = history.applyLiveBatch([makeEvent(1, "different payload")]);
 
     expect(applied.map((event) => event.seq)).toEqual([1]);
-    expect(log.state(false).events).toEqual([
+    expect(history.state(false).events).toEqual([
       makeEvent(1, "different payload"),
     ]);
   });
 
-  it("restores sparse cached checkpoints without requiring contiguous retained events", () => {
-    const log = new SessionLog();
+  it("restores sparse cached checkpoints with explicit coverage ranges", () => {
+    const history = new SessionHistory();
 
-    log.restore({
+    history.restore({
       cursor: 6,
       lastSeq: 6,
+      events: [makeEvent(2, "frame-2", 2), makeEvent(5, "frame-5", 5)],
+      ranges: [
+        { fromSeq: 2, toSeq: 2, afterCursor: 2 },
+        { fromSeq: 5, toSeq: 5, afterCursor: 5 },
+      ],
     });
 
-    expect(log.state(false)).toMatchObject({
+    expect(history.state(false)).toMatchObject({
       cursor: 6,
       lastSeq: 6,
       syncing: false,
     });
-    expect(log.state(false).events).toEqual([]);
+    expect(history.state(false).events.map((event) => event.seq)).toEqual([
+      2, 5,
+    ]);
+    expect(history.isRangeCovered(2, 2)).toBe(true);
+    expect(history.isRangeCovered(5, 5)).toBe(true);
+    expect(history.isRangeCovered(2, 5)).toBe(false);
   });
 
   it("replays retained history to new subscribers", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
     const replayedSeqs: number[] = [];
 
-    log.applyBatch([makeEvent(1), makeEvent(2), makeEvent(3)]);
+    history.applyLiveBatch([makeEvent(1), makeEvent(2), makeEvent(3)]);
 
-    log.subscribe(
+    history.subscribe(
       (event) => {
         replayedSeqs.push(event.seq);
       },
@@ -138,12 +163,12 @@ describe("SessionLog", () => {
   });
 
   it("supports non-replay subscriptions for future events only", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
     const observedSeqs: number[] = [];
 
-    log.applyBatch([makeEvent(1), makeEvent(2)]);
+    history.applyLiveBatch([makeEvent(1), makeEvent(2)]);
 
-    const unsubscribe = log.subscribe(
+    const unsubscribe = history.subscribe(
       (event) => {
         observedSeqs.push(event.seq);
       },
@@ -152,63 +177,70 @@ describe("SessionLog", () => {
 
     expect(observedSeqs).toEqual([]);
 
-    log.applyBatch([makeEvent(3)]);
+    history.applyLiveBatch([makeEvent(3)]);
     expect(observedSeqs).toEqual([3]);
 
     unsubscribe();
-    log.applyBatch([makeEvent(4)]);
+    history.applyLiveBatch([makeEvent(4)]);
     expect(observedSeqs).toEqual([3]);
   });
 
-  it("observes fetched reads without emitting live events", () => {
-    const log = new SessionLog();
+  it("applies backfill batches without emitting live events", () => {
+    const history = new SessionHistory();
     const observedSeqs: number[] = [];
 
-    log.subscribe((event) => {
+    history.subscribe((event) => {
       observedSeqs.push(event.seq);
     });
 
-    const applied = log.observeRead({
-      events: [makeEvent(9, "frame-9", 9), makeEvent(10, "frame-10", 10)],
-      next_cursor: 10,
-      last_seq: 10,
-    });
+    const applied = history.applyBackfillBatch(
+      [makeEvent(9, "frame-9", 9), makeEvent(10, "frame-10", 10)],
+      8
+    );
 
     expect(applied.map((event) => event.seq)).toEqual([9, 10]);
     expect(observedSeqs).toEqual([]);
-    expect(log.state(false)).toMatchObject({
+    history.markObservedCursor(10);
+    expect(history.state(false)).toMatchObject({
       cursor: 10,
       lastSeq: 10,
       syncing: false,
     });
-    expect(log.events.map((event) => event.seq)).toEqual([9, 10]);
+    expect(history.events.map((event) => event.seq)).toEqual([9, 10]);
+    expect(history.anchorBeforeSeq(11)).toEqual({ cursor: 10, seq: 10 });
   });
 
-  it("can checkpoint cursor state without persisting materialized events", () => {
-    const log = new SessionLog();
+  it("checkpoints sparse materialized events and coverage ranges", () => {
+    const history = new SessionHistory();
+    history.applyBackfillBatch([makeEvent(5, "frame-5", 5)], 4);
+    history.markObservedCursor(5);
 
-    log.observeRead({
-      events: [makeEvent(5, "frame-5", 5)],
-      next_cursor: 5,
-      last_seq: 5,
-    });
-
-    expect(log.checkpoint()).toEqual({
+    expect(history.checkpoint()).toEqual({
       cursor: 5,
       lastSeq: 5,
+      events: [makeEvent(5, "frame-5", 5)],
+      ranges: [{ fromSeq: 5, toSeq: 5, beforeCursor: 4, afterCursor: 5 }],
     });
   });
 
   it("does not retain partial state when checkpoint validation fails", () => {
-    const log = new SessionLog();
+    const history = new SessionHistory();
 
     expect(() => {
-      log.restore({
+      history.restore({
         lastSeq: -1,
       });
     }).toThrow(StarciteError);
 
-    expect(log.lastSeq).toBe(0);
-    expect(log.events).toEqual([]);
+    expect(history.lastSeq).toBe(0);
+    expect(history.events).toEqual([]);
+  });
+
+  it("rejects invalid range requests at the invariant boundary", () => {
+    const history = new SessionHistory();
+
+    expect(() => history.isRangeCovered(0, 1)).toThrow(StarciteError);
+    expect(() => history.firstMissingRange(3, 2)).toThrow(StarciteError);
+    expect(() => history.anchorBeforeSeq(0)).toThrow(StarciteError);
   });
 });

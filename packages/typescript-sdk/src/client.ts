@@ -4,13 +4,6 @@ import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
 import { StarciteSession } from "./session";
 import {
-  concatSessionEvents,
-  type SessionEventsRead,
-  sessionEventsResponseSchema,
-  toSessionEventSlice,
-  toSessionEventsQuerySuffix,
-} from "./session-events";
-import {
   type RejoinableChannel,
   readJoinFailureReason,
   SocketManager,
@@ -34,7 +27,6 @@ import {
   type SessionArchivedFilter,
   type SessionAttachMode,
   type SessionCache,
-  type SessionEventSlice,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -48,7 +40,6 @@ import {
   type SessionTokenRefreshHandler,
   type SessionUpdateInput,
   type StarciteOptions,
-  type TailEvent,
 } from "./types";
 
 /**
@@ -96,8 +87,6 @@ interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
   lifecycle: (event: LifecycleEventEnvelope) => void;
   error: (error: Error) => void;
 }
-
-const READ_ALL_PAGE_LIMIT = 1000;
 
 /**
  * Tenant-scoped Starcite client.
@@ -358,77 +347,6 @@ export class Starcite {
     );
   }
 
-  async getAllSessionEvents(
-    sessionId: string,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    let afterSeq = 0;
-    let events: TailEvent[] = [];
-
-    while (true) {
-      const read = {
-        kind: "after",
-        limit: READ_ALL_PAGE_LIMIT,
-        seq: afterSeq,
-      } satisfies SessionEventsRead;
-      const response = await this.readSessionEvents(
-        sessionId,
-        read,
-        requestOptions
-      );
-
-      events = concatSessionEvents(events, response.events);
-      if (!toSessionEventSlice(read, response).hasMore) {
-        return { events, hasMore: false };
-      }
-
-      const nextAfterSeq = response.events.at(-1)?.seq;
-      if (nextAfterSeq === undefined) {
-        return { events, hasMore: false };
-      }
-
-      afterSeq = nextAfterSeq;
-    }
-  }
-
-  getLatestSessionEvents(
-    sessionId: string,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSessionEventSlice(
-      sessionId,
-      { kind: "latest", limit },
-      requestOptions
-    );
-  }
-
-  getSessionEventsBefore(
-    sessionId: string,
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSessionEventSlice(
-      sessionId,
-      { kind: "before", limit, seq },
-      requestOptions
-    );
-  }
-
-  getSessionEventsAfter(
-    sessionId: string,
-    seq: number,
-    limit: number,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSessionEventSlice(
-      sessionId,
-      { kind: "after", limit, seq },
-      requestOptions
-    );
-  }
-
   /**
    * Updates mutable session header fields.
    */
@@ -595,32 +513,6 @@ export class Starcite {
       bearerToken: token,
       socketManager,
     };
-  }
-
-  private readSessionEventSlice(
-    sessionId: string,
-    read: SessionEventsRead,
-    requestOptions?: RequestOptions
-  ): Promise<SessionEventSlice> {
-    return this.readSessionEvents(sessionId, read, requestOptions).then(
-      (response) => toSessionEventSlice(read, response)
-    );
-  }
-
-  private readSessionEvents(
-    sessionId: string,
-    read: SessionEventsRead,
-    requestOptions?: RequestOptions
-  ) {
-    return request(
-      this.transport,
-      `/sessions/${sessionId}/events${toSessionEventsQuerySuffix(read)}`,
-      {
-        method: "GET",
-        signal: requestOptions?.signal,
-      },
-      sessionEventsResponseSchema()
-    );
   }
 
   private createSession(input: {

@@ -1651,52 +1651,6 @@ describe("Starcite", () => {
     );
   });
 
-  it("fetches durable session event windows", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          events: [
-            {
-              seq: 9,
-              cursor: 9,
-              type: "content",
-              payload: { text: "latest" },
-              actor: "agent:planner",
-              producer_id: "producer:planner",
-              producer_seq: 9,
-            },
-          ],
-          next_cursor: 9,
-          last_seq: 9,
-        }),
-        { status: 200 }
-      )
-    );
-
-    const starcite = new Starcite({
-      baseUrl: "http://localhost:4000",
-      fetch: fetchMock,
-    });
-
-    const slice = await starcite.getSessionEventsAfter("ses_lookup", 8, 25);
-
-    const fetchCall = fetchMock.mock.calls[0];
-    expect(fetchCall?.[1]).toEqual(
-      expect.objectContaining({
-        method: "GET",
-      })
-    );
-    const requestUrl = new URL(`${fetchCall?.[0]}`);
-    expect(`${requestUrl.origin}${requestUrl.pathname}`).toBe(
-      "http://localhost:4000/v1/sessions/ses_lookup/events"
-    );
-    expect(requestUrl.searchParams.get("from_seq")).toBe("8");
-    expect(requestUrl.searchParams.get("direction")).toBe("head");
-    expect(requestUrl.searchParams.get("limit")).toBe("25");
-    expect(slice.events.map((event) => event.seq)).toEqual([9]);
-    expect(slice.hasMore).toBe(false);
-  });
-
   it("patches session headers with expected_version", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

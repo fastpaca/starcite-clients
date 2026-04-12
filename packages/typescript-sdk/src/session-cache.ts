@@ -5,20 +5,31 @@ import {
   type SessionCache,
   type SessionCacheEntry,
   TailCursorSchema,
+  TailEventSchema,
 } from "./types";
 
-const SessionLogCheckpointSchema = z.object({
+const SessionHistoryRangeCheckpointSchema = z.object({
+  fromSeq: z.number().int().positive(),
+  toSeq: z.number().int().positive(),
+  beforeCursor: TailCursorSchema.optional(),
+  afterCursor: TailCursorSchema.optional(),
+});
+
+const SessionHistoryCheckpointSchema = z.object({
   lastSeq: z.number().int().nonnegative(),
   cursor: TailCursorSchema.optional(),
+  events: z.array(TailEventSchema).optional(),
+  ranges: z.array(SessionHistoryRangeCheckpointSchema).optional(),
 });
 
 const SessionCacheMetadataSchema = z.object({
-  schemaVersion: z.union([z.literal(5), z.literal(6)]),
+  schemaVersion: z.union([z.literal(5), z.literal(6), z.literal(7)]),
   cachedAtMs: z.number().int().nonnegative(),
 });
 
 const SessionCacheEntrySchema = z.object({
-  log: SessionLogCheckpointSchema.optional(),
+  history: SessionHistoryCheckpointSchema.optional(),
+  log: SessionHistoryCheckpointSchema.optional(),
   outbox: SessionAppendStoreStateSchema.optional(),
   metadata: SessionCacheMetadataSchema.optional(),
 });

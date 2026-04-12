@@ -102,7 +102,6 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   const { events, append } = useStarciteSession({
     session,
     id,
-    read: "all",
     onError,
   });
 

@@ -24,8 +24,8 @@ starcite.on("session.created", (event) => {
         return;
       }
 
-      const history = await session.all();
-      const messages = await toUIMessagesFromEvents(history.events);
+      const events = await session.range(1, sessionEvent.seq);
+      const messages = await toUIMessagesFromEvents(events);
       if (messages.length === 0) {
         return;
       }

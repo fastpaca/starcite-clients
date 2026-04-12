@@ -1,6 +1,5 @@
 import type {
   AppendResult,
-  RequestOptions,
   SessionAppendInput,
   SessionEventContext,
   SessionEventListener,
@@ -28,52 +27,12 @@ class FakeSession {
     return Promise.resolve({ deduped: false, seq: this.nextSeq });
   }
 
-  all(
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: false }> {
-    return Promise.resolve({
-      events: [...this.eventLog],
-      hasMore: false,
-    });
-  }
-
-  latest(
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog.slice(-limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: events[0] !== undefined && events[0].seq > 1,
-    });
-  }
-
-  before(
-    seq: number,
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog
-      .filter((event) => event.seq < seq)
-      .slice(-limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: events[0] !== undefined && events[0].seq > 1,
-    });
-  }
-
-  after(
-    seq: number,
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog
-      .filter((event) => event.seq > seq)
-      .slice(0, limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: (events.at(-1)?.seq ?? seq) < (this.eventLog.at(-1)?.seq ?? 0),
-    });
+  range(fromSeq: number, toSeq: number): Promise<readonly TailEvent[]> {
+    return Promise.resolve(
+      this.eventLog.filter(
+        (event) => event.seq >= fromSeq && event.seq <= toSeq
+      )
+    );
   }
 
   state(): SessionSnapshot {
@@ -164,17 +123,15 @@ describe("useStarciteSession", () => {
     expect(errors).toEqual(["refresh failed"]);
   });
 
-  it('can read "all" before binding live updates', async () => {
+  it("starts from the current materialized session state", async () => {
     const session = new FakeSession("ses_window_hook");
     act(() => {
       session.emitEvent("first");
       session.emitEvent("second");
     });
-    session.setStateEvents([]);
 
     const { result } = renderHook(() =>
       useStarciteSession({
-        read: "all",
         session,
       })
     );

@@ -34,10 +34,10 @@ Open `http://localhost:3000`.
 5. Client builds a session from the token and calls `useStarciteChat({ session, id: sessionId })`.
 6. `sendMessage(...)` durably appends the user event to Starcite.
 7. A server-only module imported by `app/layout.tsx` listens for `session.created` with `starcite.on(...)`, treats this single demo agent as the owner of every new session, then binds those sessions with `starcite.session({ identity, id })`.
-8. When a live `chat.user.message` event arrives, that listener reads `session.all()`, runs `streamText(...)`, and appends assistant chunks back into the same session.
+8. When a live `chat.user.message` event arrives, that listener reads `session.range(1, sessionEvent.seq)`, runs `streamText(...)`, and appends assistant chunks back into the same session.
 9. The hook updates from durable `session.on("event")` events as the assistant chunks arrive.
 
-The example uses `session.all()` on purpose. Chat output is stored as assistant chunk events, so bounded raw event windows can cut through the middle of a message and produce incomplete reconstruction.
+The example uses an exact seq-bounded read on purpose. Chat output is stored as assistant chunk events, so the server reconstructs history through the triggering user event's `seq`, which includes prior completed turns without pulling in the response it is about to generate.
 
 ## Current limitation
 

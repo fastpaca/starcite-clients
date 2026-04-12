@@ -910,9 +910,13 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    expect(cache.read("ses_sparse_cache")?.log).toEqual({
+    expect(cache.read("ses_sparse_cache")?.history).toEqual({
       cursor: 1,
       lastSeq: 1,
+      events: [makeEvent(1, "agent:planner", 1)],
+      ranges: [
+        { fromSeq: 1, toSeq: 1, beforeCursor: undefined, afterCursor: 1 },
+      ],
     });
 
     stopEvents();
@@ -942,9 +946,16 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    expect(cache.read("ses_persist_cache")?.log).toEqual({
+    expect(cache.read("ses_persist_cache")?.history).toEqual({
       cursor: 2,
       lastSeq: 2,
+      events: [
+        makeEvent(1, "agent:planner", 1),
+        makeEvent(2, "agent:planner", 2),
+      ],
+      ranges: [
+        { fromSeq: 1, toSeq: 2, beforeCursor: undefined, afterCursor: 2 },
+      ],
     });
 
     stopEvents();

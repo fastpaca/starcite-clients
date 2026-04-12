@@ -292,10 +292,6 @@ await starcite.updateSession(aliceSession.id, {
 });
 await starcite.archiveSession(aliceSession.id);
 await starcite.unarchiveSession(aliceSession.id);
-await starcite.getAllSessionEvents(aliceSession.id);
-await starcite.getLatestSessionEvents(aliceSession.id, 50);
-await starcite.getSessionEventsBefore(aliceSession.id, 125, 50);
-await starcite.getSessionEventsAfter(aliceSession.id, 125, 50);
 
 // Client-side: wraps existing JWT (sync, no network calls)
 const session = starcite.session({
@@ -317,11 +313,8 @@ session.token; // string
 session.identity; // StarciteIdentity
 session.state(); // SessionSnapshot — best-effort local snapshot
 
-// Canonical durable reads
-await session.all(); // full durable history
-await session.latest(50); // latest 50 events
-await session.before(125, 50); // previous 50 events before seq 125
-await session.after(125, 50); // next 50 events after seq 125
+// Exact seq-bounded read
+await session.range(1, 125); // committed events 1..125 inclusive
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -378,9 +371,6 @@ unsub();
 stopWithReplay();
 unsubErr();
 
-// Deprecated legacy alias: same durable read as session.all().
-await session.events();
-
 // ── Teardown ────────────────────────────────────────────────────────────────
 
 session.disconnect(); // stops WS immediately, removes all listeners
@@ -388,18 +378,15 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 ## Session Event Semantics
 
-- `session.all()` fetches the full durable history. It is explicit because it can be expensive on long sessions.
-- `session.latest(limit)` fetches the newest `limit` events.
-- `session.before(seq, limit)` fetches up to `limit` events with `event.seq < seq`.
-- `session.after(seq, limit)` fetches up to `limit` events with `event.seq > seq`.
-- All durable read methods return `{ events, hasMore }`, where `events` are always ascending by `seq`.
+- `session.range(fromSeq, toSeq)` returns the exact committed interval `fromSeq..toSeq` inclusive.
+- Range reads are powered by the same sparse local history used for live subscriptions. Missing gaps are replayed on demand through the tail transport and merged into the canonical local cache.
+- Callers must provide a concrete upper bound. In practice this usually comes from an event you already have in hand, such as the current user event's `seq`.
 - `session.on("event", listener)` starts the tail stream lazily on first use and is live-only by default.
 - The second callback argument is `{ phase: "replay" | "live" }`.
 - Pass `{ replay: true }` to replay the locally materialized sparse cache before continuing with live events.
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
-- `session.events()` is deprecated. It is an alias for `session.all()`.
 - When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
 - If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
@@ -412,7 +399,7 @@ state across session rebinds.
   durable cursor and live subscriptions join in live-only mode.
 - Bring your own by implementing:
   - `read(sessionId)`
-  - `write(sessionId, { log?, outbox?, metadata? })`
+  - `write(sessionId, { history?, outbox?, metadata? })`
   - optional `clear(sessionId)`
 - `MemorySessionCache`, `WebStorageSessionCache`, and `LocalStorageSessionCache`
   support the same contract.

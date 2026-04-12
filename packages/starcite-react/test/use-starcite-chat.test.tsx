@@ -1,5 +1,4 @@
 import type {
-  RequestOptions,
   SessionAppendInput,
   SessionEventContext,
   SessionEventListener,
@@ -38,52 +37,12 @@ class FakeSession implements StarciteChatSession {
     this.nextSeq = (seedEvents.at(-1)?.seq ?? 0) + 1;
   }
 
-  all(
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: false }> {
-    return Promise.resolve({
-      events: [...this.eventLog],
-      hasMore: false,
-    });
-  }
-
-  latest(
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog.slice(-limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: events[0] !== undefined && events[0].seq > 1,
-    });
-  }
-
-  before(
-    seq: number,
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog
-      .filter((event) => event.seq < seq)
-      .slice(-limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: events[0] !== undefined && events[0].seq > 1,
-    });
-  }
-
-  after(
-    seq: number,
-    limit: number,
-    _requestOptions?: RequestOptions
-  ): Promise<{ events: TailEvent[]; hasMore: boolean }> {
-    const events = this.eventLog
-      .filter((event) => event.seq > seq)
-      .slice(0, limit);
-    return Promise.resolve({
-      events: [...events],
-      hasMore: (events.at(-1)?.seq ?? seq) < (this.eventLog.at(-1)?.seq ?? 0),
-    });
+  range(fromSeq: number, toSeq: number): Promise<readonly TailEvent[]> {
+    return Promise.resolve(
+      this.eventLog.filter(
+        (event) => event.seq >= fromSeq && event.seq <= toSeq
+      )
+    );
   }
 
   state(): SessionSnapshot {
