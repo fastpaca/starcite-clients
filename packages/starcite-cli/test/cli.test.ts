@@ -403,6 +403,32 @@ describe("starcite CLI", () => {
     expect(info).toEqual(["ses_demo"]);
   });
 
+  it("create disconnects the temporary session before exiting", async () => {
+    const { logger, info } = makeLogger();
+    const program = buildProgram({
+      logger,
+      createClient: () => createFakeClient(),
+    });
+
+    await program.parseAsync(
+      [
+        "--config-dir",
+        configDir,
+        "--token",
+        serviceToken,
+        "create",
+        "--id",
+        "ses_demo",
+      ],
+      {
+        from: "user",
+      }
+    );
+
+    expect(info).toEqual(["ses_demo"]);
+    expect(fakeSession.disconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("--version prints the CLI version", async () => {
     const output: string[] = [];
     const program = buildProgram({

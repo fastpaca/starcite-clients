@@ -30,11 +30,14 @@ export async function runCreateCommand(
     title: parsed["--title"],
     metadata,
   });
+  try {
+    if (resolved.json) {
+      runtime.writeJsonOutput(session.record ?? { id: session.id }, true);
+      return;
+    }
 
-  if (resolved.json) {
-    runtime.writeJsonOutput(session.record ?? { id: session.id }, true);
-    return;
+    runtime.logger.info(session.id);
+  } finally {
+    session.disconnect();
   }
-
-  runtime.logger.info(session.id);
 }
