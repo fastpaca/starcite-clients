@@ -83,6 +83,8 @@ function mergeAppendOptions(
   };
 }
 
+const FRESH_SESSION_GRACE_MS = 30_000;
+
 interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
   lifecycle: (event: LifecycleEventEnvelope) => void;
   error: (error: Error) => void;
@@ -107,6 +109,7 @@ export class Starcite {
   private readonly sessionAttachMode: SessionAttachMode;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
+  private readonly freshSessionHints = new Map<string, number>();
   private lifecycleChannel: RejoinableChannel | undefined;
   private closeLifecycleChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
@@ -456,6 +459,7 @@ export class Starcite {
       transport: this.buildSessionTransport(tokenResponse.token),
       sessionStore: this.sessionStore,
       record,
+      initialTailCursor: this.initialTailCursorFor(sessionId),
       attachMode: input.attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(
         this.appendOptions,
@@ -615,6 +619,9 @@ export class Starcite {
 
     const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
     if (parsed.success) {
+      if (parsed.data.kind === "session.created") {
+        this.rememberFreshSession(parsed.data.session_id);
+      }
       // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
       this.lifecycle.emit(parsed.data.kind, parsed.data as any);
       return;
@@ -663,6 +670,31 @@ export class Starcite {
     queueMicrotask(() => {
       throw error;
     });
+  }
+
+  private rememberFreshSession(sessionId: string): void {
+    const now = Date.now();
+    this.freshSessionHints.set(sessionId, now);
+
+    for (const [knownSessionId, createdAtMs] of this.freshSessionHints) {
+      if (now - createdAtMs > FRESH_SESSION_GRACE_MS) {
+        this.freshSessionHints.delete(knownSessionId);
+      }
+    }
+  }
+
+  private initialTailCursorFor(sessionId: string): 0 | undefined {
+    const createdAtMs = this.freshSessionHints.get(sessionId);
+    if (createdAtMs === undefined) {
+      return undefined;
+    }
+
+    if (Date.now() - createdAtMs > FRESH_SESSION_GRACE_MS) {
+      this.freshSessionHints.delete(sessionId);
+      return undefined;
+    }
+
+    return 0;
   }
 }
 

@@ -63,6 +63,7 @@ export interface StarciteSessionOptions {
   transport: TransportConfig;
   sessionStore?: SessionStore;
   record?: SessionRecord;
+  initialTailCursor?: TailCursor;
   appendOptions?: SessionAppendOptions;
   refreshToken?: SessionTokenRefreshHandler;
   attachMode?: SessionAttachMode;
@@ -94,6 +95,7 @@ export class StarciteSession implements SessionHandle {
   private readonly transport: TransportConfig;
   private readonly outbox: AppendQueue;
   private readonly refreshTokenHandler: SessionTokenRefreshHandler | undefined;
+  private readonly initialTailCursor: TailCursor | undefined;
   private currentToken: string;
   private currentIdentity: StarciteIdentity;
   private authRefreshTask: Promise<void> | undefined;
@@ -121,6 +123,7 @@ export class StarciteSession implements SessionHandle {
     this.transport = options.transport;
     this.record = options.record;
     this.sessionStore = options.sessionStore;
+    this.initialTailCursor = options.initialTailCursor;
     this.refreshTokenHandler = options.refreshToken;
     this.keepTailAttached = (options.attachMode ?? "on-demand") === "eager";
     this.history = new SessionHistory();
@@ -611,6 +614,11 @@ export class StarciteSession implements SessionHandle {
     if (this.history.cursor !== undefined) {
       this.nextTailBatchCursor = this.history.cursor;
       return { cursor: this.history.cursor };
+    }
+
+    if (this.initialTailCursor !== undefined) {
+      this.nextTailBatchCursor = this.initialTailCursor;
+      return { cursor: this.initialTailCursor };
     }
 
     if (this.keepTailAttached) {

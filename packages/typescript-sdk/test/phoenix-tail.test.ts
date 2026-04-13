@@ -905,6 +905,82 @@ describe("Phoenix Tail Transport", () => {
     session.disconnect();
   });
 
+  it("replays fresh lifecycle-created sessions from cursor zero without changing app usage", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "session_exists",
+            message: "Session already exists",
+          }),
+          { status: 409, statusText: "Conflict" }
+        )
+      )
+      .mockResolvedValueOnce(
+        makeTokenResponse("ses_fresh_listener", "planner")
+      );
+
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const seen: number[] = [];
+    let responderSession: Awaited<ReturnType<Starcite["session"]>> | undefined;
+    let stopResponder: (() => void) | undefined;
+    let bindResponder: Promise<void> | undefined;
+
+    const stopCreated = client.on("session.created", (event) => {
+      bindResponder = client
+        .session({
+          identity: client.agent({ id: "planner" }),
+          id: event.session_id,
+        })
+        .then((session) => {
+          responderSession = session;
+          stopResponder = responderSession.on("event", (nextEvent) => {
+            seen.push(nextEvent.seq);
+          });
+        });
+    });
+
+    await waitForSocketCount(1);
+    const lifecycleSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const lifecycleChannel = await waitForChannel("lifecycle");
+    lifecycleSocket?.emitOpen();
+    lifecycleChannel.emitJoinOk({});
+    lifecycleChannel.emit("lifecycle", {
+      event: {
+        kind: "session.created",
+        session_id: "ses_fresh_listener",
+        tenant_id: "tenant-alpha",
+        title: null,
+        metadata: {},
+        created_at: "2026-03-27T12:00:00Z",
+      },
+    });
+    await bindResponder;
+
+    await waitForSocketCount(2);
+    const responderSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const responderChannel = await waitForChannel("tail:ses_fresh_listener");
+    expect(responderChannel.joinCalls[0]).toEqual({ cursor: 0 });
+
+    responderSocket?.emitOpen();
+    responderChannel.emitJoinOk({});
+    responderChannel.emit("events", {
+      events: [makeEvent(1, "user:alice", 1)],
+    });
+    await flush();
+
+    expect(seen).toEqual([1]);
+
+    stopResponder?.();
+    responderSession?.disconnect();
+    stopCreated();
+  });
+
   it("persists warm event data inside the opaque session store when one is configured", async () => {
     const sessionStore = new MemorySessionStore();
     const session = new Starcite({
