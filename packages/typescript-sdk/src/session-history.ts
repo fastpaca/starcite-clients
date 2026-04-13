@@ -1,12 +1,6 @@
 import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
-import type {
-  SessionHistoryCheckpoint,
-  SessionHistoryRangeCheckpoint,
-  SessionSnapshot,
-  TailCursor,
-  TailEvent,
-} from "./types";
+import type { SessionSnapshot, TailCursor, TailEvent } from "./types";
 
 interface SessionHistoryEvents {
   event: (event: TailEvent, context: SessionHistorySubscriptionContext) => void;
@@ -26,6 +20,20 @@ interface SessionHistoryRange {
   toSeq: number;
   beforeCursor?: TailCursor;
   afterCursor?: TailCursor;
+}
+
+export interface SessionHistoryCoverage {
+  fromSeq: number;
+  toSeq: number;
+  beforeCursor?: TailCursor;
+  afterCursor?: TailCursor;
+}
+
+export interface SessionHistoryStoreSnapshot {
+  lastSeq: number;
+  cursor?: TailCursor;
+  events?: readonly TailEvent[];
+  coverage?: readonly SessionHistoryCoverage[];
 }
 
 function assertValidRange(fromSeq: number, toSeq: number): void {
@@ -81,9 +89,7 @@ function toMergedRanges(
   return merged;
 }
 
-function toCheckpointRange(
-  range: SessionHistoryRange
-): SessionHistoryRangeCheckpoint {
+function toCheckpointRange(range: SessionHistoryRange): SessionHistoryCoverage {
   return {
     fromSeq: range.fromSeq,
     toSeq: range.toSeq,
@@ -106,39 +112,45 @@ export class SessionHistory {
   private observedLastSeq = 0;
   private observedCursor: TailCursor | undefined;
 
-  restore(checkpoint: SessionHistoryCheckpoint): void {
-    if (!Number.isInteger(checkpoint.lastSeq) || checkpoint.lastSeq < 0) {
+  restore(snapshot: SessionHistoryStoreSnapshot): void {
+    const { lastSeq } = snapshot;
+    if (!Number.isInteger(lastSeq) || lastSeq < 0) {
       throw new StarciteError(
-        "Session cache checkpoint lastSeq must be a non-negative integer"
+        "Stored session state lastSeq must be a non-negative integer."
       );
     }
 
     this.eventBySeq.clear();
     this.ranges = [];
-    this.observedLastSeq = checkpoint.lastSeq;
-    this.observedCursor = checkpoint.cursor;
+    this.observedLastSeq = lastSeq;
+    this.observedCursor = snapshot.cursor;
 
-    const events = checkpoint.events ?? [];
+    const events = snapshot.events ?? [];
     for (const event of normalizeBatch(events)) {
       this.eventBySeq.set(event.seq, event);
     }
 
-    const checkpointRanges =
-      checkpoint.ranges?.map((range) => ({
+    const restoredRanges =
+      snapshot.coverage?.map((range) => ({
         fromSeq: range.fromSeq,
         toSeq: range.toSeq,
         beforeCursor: range.beforeCursor,
         afterCursor: range.afterCursor,
       })) ?? this.deriveRangesFromEvents(events);
-    this.ranges = toMergedRanges(checkpointRanges);
+    this.ranges = toMergedRanges(restoredRanges);
   }
 
-  checkpoint(): SessionHistoryCheckpoint {
+  snapshot(): SessionHistoryStoreSnapshot | undefined {
+    if (this.observedLastSeq === 0 && this.observedCursor === undefined) {
+      return undefined;
+    }
+
     return {
       lastSeq: this.observedLastSeq,
       cursor: this.observedCursor,
-      events: this.events,
-      ranges: this.ranges.map(toCheckpointRange),
+      events: this.eventBySeq.size > 0 ? this.events : undefined,
+      coverage:
+        this.ranges.length > 0 ? this.ranges.map(toCheckpointRange) : undefined,
     };
   }
 
@@ -199,10 +211,7 @@ export class SessionHistory {
 
   isRangeCovered(fromSeq: number, toSeq: number): boolean {
     assertValidRange(fromSeq, toSeq);
-    const range = this.ranges.find((candidate) => {
-      return candidate.fromSeq <= fromSeq && candidate.toSeq >= toSeq;
-    });
-    return range !== undefined;
+    return this.findCoveringRange(fromSeq, toSeq) !== undefined;
   }
 
   firstMissingRange(
@@ -235,7 +244,7 @@ export class SessionHistory {
 
   readRange(fromSeq: number, toSeq: number): TailEvent[] {
     assertValidRange(fromSeq, toSeq);
-    if (!this.isRangeCovered(fromSeq, toSeq)) {
+    if (!this.findCoveringRange(fromSeq, toSeq)) {
       throw new StarciteError(
         `Session history does not cover seq range ${fromSeq}-${toSeq}.`
       );
@@ -291,6 +300,15 @@ export class SessionHistory {
     }
 
     return { cursor: 0, seq: 0 };
+  }
+
+  private findCoveringRange(
+    fromSeq: number,
+    toSeq: number
+  ): SessionHistoryRange | undefined {
+    return this.ranges.find((range) => {
+      return range.fromSeq <= fromSeq && range.toSeq >= toSeq;
+    });
   }
 
   private applyBatch(

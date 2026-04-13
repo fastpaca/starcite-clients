@@ -318,6 +318,32 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("error");
   });
 
+  it("resets submitted status when switching to a different session", async () => {
+    const firstSession = new FakeSession("ses_old");
+    const secondSession = new FakeSession("ses_new");
+    const { result, rerender } = renderHook(
+      ({ session }) => useStarciteChat({ session }),
+      {
+        initialProps: { session: firstSession },
+      }
+    );
+
+    await act(async () => {
+      await result.current.sendMessage({ text: "hello" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("submitted");
+    });
+
+    rerender({ session: secondSession });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("ready");
+    });
+    expect(result.current.messages).toEqual([]);
+  });
+
   it("rejects non-user sendMessage payloads before appending", async () => {
     const session = new FakeSession("ses_invalid_outgoing_role");
     const { result } = renderHook(() => useStarciteChat({ session }));

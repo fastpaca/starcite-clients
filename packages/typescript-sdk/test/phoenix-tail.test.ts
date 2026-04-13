@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Starcite } from "../src/client";
 import { StarciteTailError, StarciteTokenExpiredError } from "../src/errors";
-import { MemorySessionCache } from "../src/session-cache";
+import {
+  decodeSessionStoreValue,
+  encodeSessionStoreValue,
+  MemorySessionStore,
+} from "../src/session-store";
 
 const phoenixMock = vi.hoisted(() => {
   class MockPush {
@@ -311,6 +315,14 @@ const phoenixMock = vi.hoisted(() => {
 
   return { MockPhoenixChannel, MockPhoenixSocket };
 });
+
+function readStoredState(
+  sessionStore: MemorySessionStore,
+  sessionId: string
+): ReturnType<typeof decodeSessionStoreValue> {
+  const storedValue = sessionStore.read(sessionId);
+  return storedValue ? decodeSessionStoreValue(storedValue) : undefined;
+}
 
 const INVALID_FROZEN_PAYLOAD_MESSAGE = /^Invalid session\.frozen payload:/;
 
@@ -758,13 +770,16 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("uses session-scoped Phoenix sockets for identity-backed sessions and rejoins each topic from its own cursor", async () => {
-    const cache = new MemorySessionCache();
-    cache.write("ses_beta", {
-      log: {
-        cursor: 6,
-        lastSeq: 6,
-      },
-    });
+    const sessionStore = new MemorySessionStore();
+    sessionStore.write(
+      "ses_beta",
+      encodeSessionStoreValue({
+        history: {
+          cursor: 6,
+          lastSeq: 6,
+        },
+      })
+    );
 
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -777,7 +792,7 @@ describe("Phoenix Tail Transport", () => {
       apiKey: makeApiKey(),
       baseUrl: "http://localhost:4000",
       fetch: fetchMock,
-      cache,
+      sessionStore,
     });
     const identity = client.agent({ id: "planner" });
     const alpha = await client.session({ identity, id: "ses_alpha" });
@@ -890,12 +905,12 @@ describe("Phoenix Tail Transport", () => {
     session.disconnect();
   });
 
-  it("does not persist materialized events in the session cache unless opted in", async () => {
-    const cache = new MemorySessionCache();
+  it("persists warm event data inside the opaque session store when one is configured", async () => {
+    const sessionStore = new MemorySessionStore();
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      cache,
+      sessionStore,
     }).session({ token: makeSessionToken("ses_sparse_cache") });
 
     const stopEvents = session.on("event", () => undefined);
@@ -910,25 +925,32 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    expect(cache.read("ses_sparse_cache")?.history).toEqual({
-      cursor: 1,
-      lastSeq: 1,
-      events: [makeEvent(1, "agent:planner", 1)],
-      ranges: [
-        { fromSeq: 1, toSeq: 1, beforeCursor: undefined, afterCursor: 1 },
-      ],
-    });
+    expect(readStoredState(sessionStore, "ses_sparse_cache")).toEqual(
+      expect.objectContaining({
+        version: 2,
+        cursor: 1,
+        lastSeq: 1,
+        outbox: expect.objectContaining({
+          pending: [],
+          status: "idle",
+        }),
+        events: [makeEvent(1, "agent:planner", 1)],
+        coverage: [
+          { fromSeq: 1, toSeq: 1, beforeCursor: undefined, afterCursor: 1 },
+        ],
+      })
+    );
 
     stopEvents();
     session.disconnect();
   });
 
-  it("does not persist materialized events even when multiple events have been seen", async () => {
-    const cache = new MemorySessionCache();
+  it("keeps persisted warm event state merged across multiple observed events", async () => {
+    const sessionStore = new MemorySessionStore();
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      cache,
+      sessionStore,
     }).session({ token: makeSessionToken("ses_persist_cache") });
 
     const stopEvents = session.on("event", () => undefined);
@@ -946,17 +968,24 @@ describe("Phoenix Tail Transport", () => {
     });
     await flush();
 
-    expect(cache.read("ses_persist_cache")?.history).toEqual({
-      cursor: 2,
-      lastSeq: 2,
-      events: [
-        makeEvent(1, "agent:planner", 1),
-        makeEvent(2, "agent:planner", 2),
-      ],
-      ranges: [
-        { fromSeq: 1, toSeq: 2, beforeCursor: undefined, afterCursor: 2 },
-      ],
-    });
+    expect(readStoredState(sessionStore, "ses_persist_cache")).toEqual(
+      expect.objectContaining({
+        version: 2,
+        cursor: 2,
+        lastSeq: 2,
+        outbox: expect.objectContaining({
+          pending: [],
+          status: "idle",
+        }),
+        events: [
+          makeEvent(1, "agent:planner", 1),
+          makeEvent(2, "agent:planner", 2),
+        ],
+        coverage: [
+          { fromSeq: 1, toSeq: 2, beforeCursor: undefined, afterCursor: 2 },
+        ],
+      })
+    );
 
     stopEvents();
     session.disconnect();
@@ -1221,18 +1250,21 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("joins from the stored cursor and replays retained events to late listeners when requested", async () => {
-    const cache = new MemorySessionCache();
-    cache.write("ses_replay", {
-      log: {
-        cursor: 4,
-        lastSeq: 4,
-      },
-    });
+    const sessionStore = new MemorySessionStore();
+    sessionStore.write(
+      "ses_replay",
+      encodeSessionStoreValue({
+        history: {
+          cursor: 4,
+          lastSeq: 4,
+        },
+      })
+    );
 
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      cache,
+      sessionStore,
     }).session({ token: makeSessionToken("ses_replay") });
 
     const firstSeen: number[] = [];
@@ -1274,18 +1306,21 @@ describe("Phoenix Tail Transport", () => {
   });
 
   it("classifies server corrections for checkpoint-restored seqs as live updates", async () => {
-    const cache = new MemorySessionCache();
-    cache.write("ses_updates", {
-      log: {
-        cursor: 6,
-        lastSeq: 6,
-      },
-    });
+    const sessionStore = new MemorySessionStore();
+    sessionStore.write(
+      "ses_updates",
+      encodeSessionStoreValue({
+        history: {
+          cursor: 6,
+          lastSeq: 6,
+        },
+      })
+    );
 
     const session = new Starcite({
       baseUrl: "http://localhost:4000",
       fetch: vi.fn<typeof fetch>(),
-      cache,
+      sessionStore,
     }).session({ token: makeSessionToken("ses_updates") });
 
     const seen: Array<{ phase: string; seq: number; text: string }> = [];

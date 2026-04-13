@@ -16,7 +16,6 @@ class FakeSession {
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
   private readonly eventLog: TailEvent[] = [];
-  private stateEventsOverride: readonly TailEvent[] | undefined;
   private nextSeq = 1;
 
   constructor(id: string) {
@@ -39,14 +38,10 @@ class FakeSession {
     return {
       append: undefined,
       cursor: this.eventLog.at(-1)?.cursor,
-      events: [...(this.stateEventsOverride ?? this.eventLog)],
+      events: [...this.eventLog],
       lastSeq: this.eventLog.at(-1)?.seq ?? 0,
       syncing: false,
     };
-  }
-
-  setStateEvents(events: readonly TailEvent[]): void {
-    this.stateEventsOverride = [...events];
   }
 
   on(

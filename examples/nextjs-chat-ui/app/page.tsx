@@ -2,7 +2,7 @@
 
 import { useStarciteChat } from "@starcite/react";
 import {
-  LocalStorageSessionCache,
+  LocalStorageSessionStore,
   Starcite,
   type StarciteSession,
 } from "@starcite/sdk";
@@ -47,10 +47,10 @@ export default function Page() {
         baseUrl:
           process.env.NEXT_PUBLIC_STARCITE_BASE_URL ||
           "https://api.starcite.io",
-        cache:
+        sessionStore:
           typeof window === "undefined"
             ? undefined
-            : new LocalStorageSessionCache({
+            : new LocalStorageSessionStore({
                 keyPrefix: "starcite:nextjs-chat-ui",
               }),
       })

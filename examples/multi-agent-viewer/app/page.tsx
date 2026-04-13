@@ -2,7 +2,7 @@
 
 import { useStarciteSession } from "@starcite/react";
 import {
-  LocalStorageSessionCache,
+  LocalStorageSessionStore,
   Starcite,
   type StarciteSession,
   type TailEvent,
@@ -172,10 +172,10 @@ function createBrowserClient() {
   return new Starcite({
     baseUrl:
       process.env.NEXT_PUBLIC_STARCITE_BASE_URL ?? "https://api.starcite.io",
-    cache:
+    sessionStore:
       typeof window === "undefined"
         ? undefined
-        : new LocalStorageSessionCache({
+        : new LocalStorageSessionStore({
             keyPrefix: "starcite:multi-agent-viewer",
           }),
   });

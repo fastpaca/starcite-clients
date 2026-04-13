@@ -98,6 +98,7 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   options: UseStarciteChatOptions
 ): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
+  const sessionKey = id ?? session?.id ?? "__none__";
 
   const { events, append } = useStarciteSession({
     session,
@@ -107,7 +108,15 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
+  const sessionKeyRef = useRef(sessionKey);
   const versionRef = useRef(0);
+
+  useEffect(() => {
+    sessionKeyRef.current = sessionKey;
+    versionRef.current += 1;
+    setMessages([]);
+    setStatus("ready");
+  }, [sessionKey]);
 
   // Project events → UIMessage[] (async because of readUIMessageStream)
   useEffect(() => {

@@ -26,7 +26,6 @@ import {
   type SessionAppendOptions,
   type SessionArchivedFilter,
   type SessionAttachMode,
-  type SessionCache,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -37,6 +36,7 @@ import {
   SessionListPageSchema,
   type SessionRecord,
   SessionRecordSchema,
+  type SessionStore,
   type SessionTokenRefreshHandler,
   type SessionUpdateInput,
   type StarciteOptions,
@@ -103,7 +103,7 @@ export class Starcite {
   private readonly inferredTenantId?: string;
   private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
-  private readonly cache: SessionCache | undefined;
+  private readonly sessionStore: SessionStore | undefined;
   private readonly sessionAttachMode: SessionAttachMode;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
@@ -133,7 +133,7 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
     this.apiKey = apiKey;
-    this.cache = options.cache;
+    this.sessionStore = options.sessionStore;
     this.sessionAttachMode = options.sessionAttachMode ?? "on-demand";
     this.appendOptions = options.appendOptions;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
@@ -454,7 +454,7 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token),
-      cache: this.cache,
+      sessionStore: this.sessionStore,
       record,
       attachMode: input.attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(
@@ -492,7 +492,7 @@ export class Starcite {
       token,
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
-      cache: this.cache,
+      sessionStore: this.sessionStore,
       attachMode: attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
       refreshToken,

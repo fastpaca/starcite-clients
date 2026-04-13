@@ -127,7 +127,7 @@ describe("SessionHistory", () => {
       cursor: 6,
       lastSeq: 6,
       events: [makeEvent(2, "frame-2", 2), makeEvent(5, "frame-5", 5)],
-      ranges: [
+      coverage: [
         { fromSeq: 2, toSeq: 2, afterCursor: 2 },
         { fromSeq: 5, toSeq: 5, afterCursor: 5 },
       ],
@@ -210,16 +210,16 @@ describe("SessionHistory", () => {
     expect(history.anchorBeforeSeq(11)).toEqual({ cursor: 10, seq: 10 });
   });
 
-  it("checkpoints sparse materialized events and coverage ranges", () => {
+  it("exports a single stored snapshot for durable state and warm events", () => {
     const history = new SessionHistory();
     history.applyBackfillBatch([makeEvent(5, "frame-5", 5)], 4);
     history.markObservedCursor(5);
 
-    expect(history.checkpoint()).toEqual({
+    expect(history.snapshot()).toEqual({
       cursor: 5,
       lastSeq: 5,
       events: [makeEvent(5, "frame-5", 5)],
-      ranges: [{ fromSeq: 5, toSeq: 5, beforeCursor: 4, afterCursor: 5 }],
+      coverage: [{ fromSeq: 5, toSeq: 5, beforeCursor: 4, afterCursor: 5 }],
     });
   });
 

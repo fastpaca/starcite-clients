@@ -201,7 +201,10 @@ export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
  */
 export interface SessionHandle {
   readonly id: string;
-  append(input: SessionAppendInput): Promise<AppendResult>;
+  append(
+    input: SessionAppendInput,
+    options?: RequestOptions
+  ): Promise<AppendResult>;
   range(
     fromSeq: number,
     toSeq: number,
@@ -243,7 +246,7 @@ export const TailTokenExpiredPayloadSchema = z.object({
 export type SessionAttachMode = "on-demand" | "eager";
 
 /**
- * Snapshot of a session's canonical in-memory log state.
+ * Snapshot of a session's canonical in-memory event state.
  */
 export interface SessionSnapshot {
   /**
@@ -251,7 +254,7 @@ export interface SessionSnapshot {
    *
    * This can be a sparse subset of the full session history.
    */
-  events: TailEvent[];
+  events: readonly TailEvent[];
   /**
    * Highest committed sequence observed for this session.
    */
@@ -349,9 +352,9 @@ export interface SessionAppendOptions {
    */
   retryPolicy?: SessionAppendRetryPolicy;
   /**
-   * Whether queued appends should be persisted through the configured session cache.
+   * Whether queued appends should be persisted through the configured session store.
    *
-   * Defaults to `true` when a cache is configured.
+   * Defaults to `true` when a session store is configured.
    */
   persist?: boolean;
   /**
@@ -496,91 +499,14 @@ export type SessionAppendStoreState = z.infer<
 >;
 
 /**
- * Serializable sparse coverage range for one materialized session history.
+ * Opaque persistence interface for durable session state.
+ *
+ * The SDK owns the serialized format. Consumers should treat stored values as
+ * opaque strings.
  */
-export interface SessionHistoryRangeCheckpoint {
-  /**
-   * First covered sequence in this materialized range.
-   */
-  fromSeq: number;
-  /**
-   * Last covered sequence in this materialized range.
-   */
-  toSeq: number;
-  /**
-   * Replay cursor immediately before `fromSeq`, when known.
-   */
-  beforeCursor?: TailCursor;
-  /**
-   * Replay cursor at `toSeq`, when known.
-   */
-  afterCursor?: TailCursor;
-}
-
-/**
- * Serializable checkpoint for one materialized session history.
- */
-export interface SessionHistoryCheckpoint {
-  /**
-   * Highest committed sequence observed for this session.
-   */
-  lastSeq: number;
-  /**
-   * Exact tail resume cursor for continuing replay.
-   */
-  cursor?: TailCursor;
-  /**
-   * Sparse materialized events retained locally.
-   */
-  events?: TailEvent[];
-  /**
-   * Exact seq coverage of the retained sparse events.
-   */
-  ranges?: SessionHistoryRangeCheckpoint[];
-}
-
-/**
- * Operational metadata for one persisted cache entry.
- */
-export interface SessionCacheMetadata {
-  /**
-   * Cache entry schema version.
-   */
-  schemaVersion: 5 | 6 | 7;
-  /**
-   * Unix epoch milliseconds when this entry was written.
-   */
-  cachedAtMs: number;
-}
-
-/**
- * Persisted cache entry for one session.
- */
-export interface SessionCacheEntry {
-  /**
-   * Optional warm-start checkpoint for the session history.
-   */
-  history?: SessionHistoryCheckpoint;
-  /**
-   * Legacy warm-start checkpoint for the session log.
-   */
-  log?: SessionHistoryCheckpoint;
-  /**
-   * Optional persisted append outbox + producer state.
-   */
-  outbox?: SessionAppendStoreState;
-  /**
-   * Optional metadata for versioning and operational introspection.
-   */
-  metadata?: SessionCacheMetadata;
-}
-
-/**
- * Persistence interface for session resume cursor + append outbox state.
- */
-export interface SessionCache {
-  read(sessionId: string): SessionCacheEntry | undefined;
-  write(sessionId: string, entry: SessionCacheEntry): void;
+export interface SessionStore {
+  read(sessionId: string): string | undefined;
+  write(sessionId: string, value: string): void;
   clear?(sessionId: string): void;
 }
 
@@ -652,11 +578,11 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Optional session cache used for resume state + append outbox persistence.
+   * Optional session store used for durable resume state + append outbox persistence.
    *
    * When omitted, sessions start without a durable local cursor.
    */
-  cache?: SessionCache;
+  sessionStore?: SessionStore;
   /**
    * Whether sessions should attach the tail channel immediately on construction.
    *

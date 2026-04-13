@@ -13,6 +13,10 @@ import {
   type SessionHistorySubscriptionContext,
 } from "./session-history";
 import {
+  decodeSessionStoreValue,
+  encodeSessionStoreValue,
+} from "./session-store";
+import {
   type RejoinableChannel,
   readJoinFailureReason,
   SocketManager,
@@ -27,8 +31,6 @@ import {
   type SessionAppendOptions,
   type SessionAppendQueueState,
   type SessionAttachMode,
-  type SessionCache,
-  type SessionCacheEntry,
   type SessionEventContext,
   type SessionEventListener,
   type SessionGapListener,
@@ -36,6 +38,7 @@ import {
   type SessionOnEventOptions,
   type SessionRecord,
   type SessionSnapshot,
+  type SessionStore,
   type SessionTokenRefreshHandler,
   type SessionTokenRefreshReason,
   type TailCursor,
@@ -58,7 +61,7 @@ export interface StarciteSessionOptions {
   token: string;
   identity: StarciteIdentity;
   transport: TransportConfig;
-  cache?: SessionCache;
+  sessionStore?: SessionStore;
   record?: SessionRecord;
   appendOptions?: SessionAppendOptions;
   refreshToken?: SessionTokenRefreshHandler;
@@ -96,7 +99,7 @@ export class StarciteSession implements SessionHandle {
   private authRefreshTask: Promise<void> | undefined;
 
   private readonly history: SessionHistory;
-  private readonly cache: SessionCache | undefined;
+  private readonly sessionStore: SessionStore | undefined;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
   private readonly eventSubscriptions = new Map<
     SessionEventListener,
@@ -117,7 +120,7 @@ export class StarciteSession implements SessionHandle {
     this.currentIdentity = options.identity;
     this.transport = options.transport;
     this.record = options.record;
-    this.cache = options.cache;
+    this.sessionStore = options.sessionStore;
     this.refreshTokenHandler = options.refreshToken;
     this.keepTailAttached = (options.attachMode ?? "on-demand") === "eager";
     this.history = new SessionHistory();
@@ -126,14 +129,14 @@ export class StarciteSession implements SessionHandle {
       sessionId: options.id,
       transport: options.transport,
       appendOptions: options.appendOptions,
-      persist: this.cache !== undefined,
+      persist: this.sessionStore !== undefined,
       onUnauthorized: async (error) => {
         await this.refreshAuthInternal("unauthorized", error, {
           emitFailure: true,
         });
       },
       onStateChange: () => {
-        this.persistCacheEntry();
+        this.persistStoredState();
         this.reconcileChannelAttachment();
       },
       onError: (error) => this.emitStreamError(error),
@@ -150,10 +153,10 @@ export class StarciteSession implements SessionHandle {
       },
     });
 
-    const cachedEntry = this.readCachedEntry();
-    if (this.restoreCachedState(cachedEntry)) {
-      if (cachedEntry?.outbox) {
-        this.outbox.restoreState(cachedEntry.outbox);
+    const storedState = this.readStoredState();
+    if (this.restoreStoredState(storedState)) {
+      if (storedState?.outbox) {
+        this.outbox.restoreState(storedState.outbox);
       }
       const pendingBefore = this.outbox.pendingCount;
       this.outbox.reconcileWithCommittedEvents(
@@ -161,7 +164,7 @@ export class StarciteSession implements SessionHandle {
         this.history.lastSeq
       );
       if (this.outbox.pendingCount !== pendingBefore) {
-        this.persistCacheEntry();
+        this.persistStoredState();
       }
     }
 
@@ -196,11 +199,7 @@ export class StarciteSession implements SessionHandle {
     toSeq: number,
     requestOptions?: RequestOptions
   ): Promise<readonly TailEvent[]> {
-    if (this.history.isRangeCovered(fromSeq, toSeq)) {
-      return Promise.resolve(this.history.readRange(fromSeq, toSeq));
-    }
-
-    return this.readRangeInternal(fromSeq, toSeq, requestOptions);
+    return this.readRange(fromSeq, toSeq, requestOptions);
   }
 
   /**
@@ -224,71 +223,69 @@ export class StarciteSession implements SessionHandle {
       | ((error: Error) => void),
     options?: SessionOnEventOptions
   ): () => void {
-    if (eventName === "event") {
-      const eventListener = listener as SessionEventListener;
-      if (!this.eventSubscriptions.has(eventListener)) {
-        const eventOptions = options as SessionOnEventOptions | undefined;
-        const replay = eventOptions?.replay ?? false;
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    const typedListener = listener as any;
 
-        const dispatch = (
-          event: TailEvent,
-          historyContext: SessionHistorySubscriptionContext
-        ): void => {
-          const parsedEvent = this.parseOnEvent(event, eventOptions);
-          if (!parsedEvent) {
-            return;
-          }
+    switch (eventName) {
+      case "event": {
+        if (!this.eventSubscriptions.has(typedListener)) {
+          const eventOptions = options as SessionOnEventOptions | undefined;
+          const replay = eventOptions?.replay ?? false;
 
-          const classifiedContext: SessionEventContext = {
-            phase: historyContext.replayed ? "replay" : "live",
+          const dispatch = (
+            event: TailEvent,
+            historyContext: SessionHistorySubscriptionContext
+          ): void => {
+            const parsedEvent = this.parseOnEvent(event, eventOptions);
+            if (!parsedEvent) {
+              return;
+            }
+
+            const context: SessionEventContext = {
+              phase: historyContext.replayed ? "replay" : "live",
+            };
+
+            try {
+              this.observeListenerResult(typedListener(parsedEvent, context));
+            } catch (error) {
+              this.emitStreamError(error);
+            }
           };
 
-          try {
-            this.observeListenerResult(
-              eventListener(parsedEvent, classifiedContext)
-            );
-          } catch (error) {
-            this.emitStreamError(error);
-          }
-        };
+          this.eventSubscriptions.set(
+            typedListener,
+            this.history.subscribe(dispatch, { replay })
+          );
+        }
 
-        const unsubscribe = this.history.subscribe(dispatch, { replay });
-        this.eventSubscriptions.set(eventListener, unsubscribe);
+        this.ensureChannelAttached();
+        return () => {
+          this.off("event", typedListener);
+        };
       }
 
-      this.ensureChannelAttached();
+      case "gap":
+        this.ensureChannelAttached();
+        this.lifecycle.on("gap", typedListener);
+        return () => {
+          this.off("gap", typedListener);
+        };
 
-      return () => {
-        this.off("event", eventListener);
-      };
+      case "append":
+        this.lifecycle.on("append", typedListener);
+        return () => {
+          this.off("append", typedListener);
+        };
+
+      case "error":
+        this.lifecycle.on("error", typedListener);
+        return () => {
+          this.off(eventName, typedListener);
+        };
+
+      default:
+        throw new StarciteError(`Unsupported event name '${eventName}'`);
     }
-
-    if (eventName === "append") {
-      const appendListener = listener as SessionAppendListener;
-      this.lifecycle.on("append", appendListener);
-      return () => {
-        this.off("append", appendListener);
-      };
-    }
-
-    if (eventName === "gap") {
-      const gapListener = listener as SessionGapListener;
-      this.lifecycle.on("gap", gapListener);
-      this.ensureChannelAttached();
-      return () => {
-        this.off("gap", gapListener);
-      };
-    }
-
-    if (eventName === "error") {
-      const errorListener = listener as (error: Error) => void;
-      this.lifecycle.on("error", errorListener);
-      return () => {
-        this.off("error", errorListener);
-      };
-    }
-
-    throw new StarciteError(`Unsupported event name '${eventName}'`);
   }
 
   /**
@@ -306,37 +303,38 @@ export class StarciteSession implements SessionHandle {
       | SessionGapListener
       | ((error: Error) => void)
   ): void {
-    if (eventName === "event") {
-      const eventListener = listener as SessionEventListener;
-      const unsubscribe = this.eventSubscriptions.get(eventListener);
-      if (!unsubscribe) {
+    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
+    const typedListener = listener as any;
+
+    switch (eventName) {
+      case "event": {
+        const unsubscribe = this.eventSubscriptions.get(typedListener);
+        if (!unsubscribe) {
+          return;
+        }
+
+        this.eventSubscriptions.delete(typedListener);
+        unsubscribe();
+        this.detachTailChannelIfIdle();
         return;
       }
 
-      this.eventSubscriptions.delete(eventListener);
-      unsubscribe();
+      case "gap":
+        this.lifecycle.off("gap", typedListener);
+        this.detachTailChannelIfIdle();
+        return;
 
-      this.detachTailChannelIfIdle();
-      return;
+      case "append":
+        this.lifecycle.off("append", typedListener);
+        return;
+
+      case "error":
+        this.lifecycle.off("error", typedListener);
+        return;
+
+      default:
+        throw new StarciteError(`Unsupported event name '${eventName}'`);
     }
-
-    if (eventName === "append") {
-      this.lifecycle.off("append", listener as SessionAppendListener);
-      return;
-    }
-
-    if (eventName === "gap") {
-      this.lifecycle.off("gap", listener as SessionGapListener);
-      this.detachTailChannelIfIdle();
-      return;
-    }
-
-    if (eventName === "error") {
-      this.lifecycle.off("error", listener as (error: Error) => void);
-      return;
-    }
-
-    throw new StarciteError(`Unsupported event name '${eventName}'`);
   }
 
   /**
@@ -384,7 +382,7 @@ export class StarciteSession implements SessionHandle {
   }
 
   /**
-   * Returns a stable view of the current canonical in-memory log state.
+   * Returns a stable view of the current canonical in-memory event state.
    */
   state(): SessionSnapshot {
     return {
@@ -393,19 +391,15 @@ export class StarciteSession implements SessionHandle {
     };
   }
 
-  private async readRangeInternal(
+  private async readRange(
     fromSeq: number,
     toSeq: number,
     requestOptions?: RequestOptions
   ): Promise<readonly TailEvent[]> {
-    if (this.history.isRangeCovered(fromSeq, toSeq)) {
-      return this.history.readRange(fromSeq, toSeq);
-    }
-
-    while (!this.history.isRangeCovered(fromSeq, toSeq)) {
+    while (true) {
       const missingRange = this.history.firstMissingRange(fromSeq, toSeq);
       if (!missingRange) {
-        break;
+        return this.history.readRange(fromSeq, toSeq);
       }
 
       const existingJob = this.backfillJobs.find((job) => {
@@ -434,8 +428,6 @@ export class StarciteSession implements SessionHandle {
         }
       }
     }
-
-    return this.history.readRange(fromSeq, toSeq);
   }
 
   private parseOnEvent<TEvent extends TailEvent>(
@@ -537,7 +529,7 @@ export class StarciteSession implements SessionHandle {
             appliedEvents,
             this.history.lastSeq
           );
-          this.persistCacheEntry();
+          this.persistStoredState();
         }
       } catch (error) {
         this.emitStreamError(error);
@@ -551,7 +543,7 @@ export class StarciteSession implements SessionHandle {
       }
 
       this.history.markObservedCursor(result.data.next_cursor);
-      this.persistCacheEntry();
+      this.persistStoredState();
 
       if (this.lifecycle.listenerCount("gap") > 0) {
         this.lifecycle.emit("gap", result.data);
@@ -722,7 +714,7 @@ export class StarciteSession implements SessionHandle {
         }
 
         this.history.markObservedCursor(result.data.next_cursor);
-        this.persistCacheEntry();
+        this.persistStoredState();
         pendingGapAfterSeq = observedSeq;
         currentCursor = result.data.next_cursor;
         channel.rejoin();
@@ -848,67 +840,74 @@ export class StarciteSession implements SessionHandle {
     return new StarciteError(String(error));
   }
 
-  private readCachedEntry(): SessionCacheEntry | undefined {
-    if (!this.cache) {
+  private readStoredState(): ReturnType<typeof decodeSessionStoreValue> {
+    if (!this.sessionStore) {
       return undefined;
     }
 
     try {
-      return this.cache.read(this.id);
+      const storedValue = this.sessionStore.read(this.id);
+      if (storedValue === undefined) {
+        return undefined;
+      }
+
+      const storedState = decodeSessionStoreValue(storedValue);
+      if (storedState) {
+        return storedState;
+      }
+
+      this.clearStoredState();
+      return undefined;
     } catch {
       return undefined;
     }
   }
 
-  private restoreCachedState(
-    cachedEntry: SessionCacheEntry | undefined
+  private restoreStoredState(
+    storedState: ReturnType<typeof decodeSessionStoreValue>
   ): boolean {
-    if (cachedEntry === undefined) {
+    if (storedState === undefined) {
       return true;
     }
 
     try {
-      const historyCheckpoint = cachedEntry.history ?? cachedEntry.log;
-      if (historyCheckpoint) {
-        this.history.restore(historyCheckpoint);
-      }
+      this.history.restore(storedState);
       return true;
     } catch {
-      this.clearCachedState();
+      this.clearStoredState();
       return false;
     }
   }
 
-  private persistCacheEntry(): void {
-    if (!this.cache) {
+  private persistStoredState(): void {
+    if (!this.sessionStore) {
       return;
     }
 
     try {
-      this.cache.write(this.id, {
-        history: this.history.checkpoint(),
-        outbox: this.outbox.serializeState(),
-        metadata: {
-          schemaVersion: 7,
-          cachedAtMs: Date.now(),
-        },
-      });
+      this.sessionStore.write(
+        this.id,
+        encodeSessionStoreValue({
+          history: this.history.snapshot(),
+          outbox: this.outbox.serializeState(),
+        })
+      );
     } catch (error) {
-      const cacheError = new StarciteError(
-        `Session cache write failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
+      const storeError = new StarciteError(
+        `Session store write failed for session '${this.id}': ${error instanceof Error ? error.message : String(error)}`
       );
 
       if (this.lifecycle.listenerCount("error") > 0) {
-        this.lifecycle.emit("error", cacheError);
+        this.lifecycle.emit("error", storeError);
       }
     }
   }
 
-  private clearCachedState(): void {
+  private clearStoredState(): void {
     try {
-      this.cache?.clear?.(this.id);
+      this.sessionStore?.clear?.(this.id);
     } catch {
-      // Ignore cache-clear failures; the live stream can still recover state.
+      // Ignore store-clear failures; the live stream can still recover state.
     }
   }
 
@@ -922,7 +921,7 @@ export class StarciteSession implements SessionHandle {
       const nextCursor = batch.at(-1)?.cursor ?? currentCursor;
       const nextObservedSeq = batch.at(-1)?.seq ?? observedSeq;
       this.history.markObservedCursor(nextCursor);
-      this.persistCacheEntry();
+      this.persistStoredState();
       return {
         currentCursor: nextCursor,
         observedSeq: nextObservedSeq,

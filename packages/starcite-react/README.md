@@ -147,11 +147,11 @@ after the session is bound.
 
 ## Behavior
 
-- `useStarciteSession` starts from `session.state().events` and merges live `session.on("event", ..., { replay: false })` updates.
+- `useStarciteSession` treats `session.state().events` as the source of truth and re-syncs from it on each live event.
 - `useStarciteChat` projects from that same local session state and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`
-- `useStarciteChat` does not perform implicit durable history reads. If you need prior events on a fresh attach, materialize them into the session through the SDK cache or an explicit server-side `session.range(...)` flow.
+- `useStarciteChat` does not perform implicit durable history reads. If you need prior events on a fresh attach, materialize them into the session through the SDK session store or an explicit server-side `session.range(...)` flow.
 - Appends outgoing user messages as strict chat envelopes.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
