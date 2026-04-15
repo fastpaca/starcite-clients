@@ -226,65 +226,22 @@ export class StarciteSession implements SessionHandle {
       | ((error: Error) => void),
     options?: SessionOnEventOptions
   ): () => void {
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    const typedListener = listener as any;
-
     switch (eventName) {
       case "event": {
-        if (!this.eventSubscriptions.has(typedListener)) {
-          const eventOptions = options as SessionOnEventOptions | undefined;
-          const replay = eventOptions?.replay ?? false;
-
-          const dispatch = (
-            event: TailEvent,
-            historyContext: SessionHistorySubscriptionContext
-          ): void => {
-            const parsedEvent = this.parseOnEvent(event, eventOptions);
-            if (!parsedEvent) {
-              return;
-            }
-
-            const context: SessionEventContext = {
-              phase: historyContext.replayed ? "replay" : "live",
-            };
-
-            try {
-              this.observeListenerResult(typedListener(parsedEvent, context));
-            } catch (error) {
-              this.emitStreamError(error);
-            }
-          };
-
-          this.eventSubscriptions.set(
-            typedListener,
-            this.history.subscribe(dispatch, { replay })
-          );
-        }
-
-        this.ensureChannelAttached();
-        return () => {
-          this.off("event", typedListener);
-        };
+        return this.onEvent(
+          listener as SessionEventListener,
+          options as SessionOnEventOptions | undefined
+        );
       }
 
       case "gap":
-        this.ensureChannelAttached();
-        this.lifecycle.on("gap", typedListener);
-        return () => {
-          this.off("gap", typedListener);
-        };
+        return this.onGap(listener as SessionGapListener);
 
       case "append":
-        this.lifecycle.on("append", typedListener);
-        return () => {
-          this.off("append", typedListener);
-        };
+        return this.onAppend(listener as SessionAppendListener);
 
       case "error":
-        this.lifecycle.on("error", typedListener);
-        return () => {
-          this.off(eventName, typedListener);
-        };
+        return this.onError(listener as (error: Error) => void);
 
       default:
         throw new StarciteError(`Unsupported event name '${eventName}'`);
@@ -306,38 +263,104 @@ export class StarciteSession implements SessionHandle {
       | SessionGapListener
       | ((error: Error) => void)
   ): void {
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    const typedListener = listener as any;
-
     switch (eventName) {
       case "event": {
-        const unsubscribe = this.eventSubscriptions.get(typedListener);
-        if (!unsubscribe) {
-          return;
-        }
-
-        this.eventSubscriptions.delete(typedListener);
-        unsubscribe();
-        this.detachTailChannelIfIdle();
+        this.offEvent(listener as SessionEventListener);
         return;
       }
 
       case "gap":
-        this.lifecycle.off("gap", typedListener);
-        this.detachTailChannelIfIdle();
+        this.offGap(listener as SessionGapListener);
         return;
 
       case "append":
-        this.lifecycle.off("append", typedListener);
+        this.lifecycle.off("append", listener as SessionAppendListener);
         return;
 
       case "error":
-        this.lifecycle.off("error", typedListener);
+        this.lifecycle.off("error", listener as (error: Error) => void);
         return;
 
       default:
         throw new StarciteError(`Unsupported event name '${eventName}'`);
     }
+  }
+
+  private onEvent(
+    listener: SessionEventListener,
+    options: SessionOnEventOptions | undefined
+  ): () => void {
+    if (!this.eventSubscriptions.has(listener)) {
+      const replay = options?.replay ?? false;
+
+      const dispatch = (
+        event: TailEvent,
+        historyContext: SessionHistorySubscriptionContext
+      ): void => {
+        const parsedEvent = this.parseOnEvent(event, options);
+        if (!parsedEvent) {
+          return;
+        }
+
+        const context: SessionEventContext = {
+          phase: historyContext.replayed ? "replay" : "live",
+        };
+
+        try {
+          this.observeListenerResult(listener(parsedEvent, context));
+        } catch (error) {
+          this.emitStreamError(error);
+        }
+      };
+
+      this.eventSubscriptions.set(
+        listener,
+        this.history.subscribe(dispatch, { replay })
+      );
+    }
+
+    this.ensureChannelAttached();
+    return () => {
+      this.offEvent(listener);
+    };
+  }
+
+  private onGap(listener: SessionGapListener): () => void {
+    this.ensureChannelAttached();
+    this.lifecycle.on("gap", listener);
+    return () => {
+      this.offGap(listener);
+    };
+  }
+
+  private onAppend(listener: SessionAppendListener): () => void {
+    this.lifecycle.on("append", listener);
+    return () => {
+      this.lifecycle.off("append", listener);
+    };
+  }
+
+  private onError(listener: (error: Error) => void): () => void {
+    this.lifecycle.on("error", listener);
+    return () => {
+      this.lifecycle.off("error", listener);
+    };
+  }
+
+  private offEvent(listener: SessionEventListener): void {
+    const unsubscribe = this.eventSubscriptions.get(listener);
+    if (!unsubscribe) {
+      return;
+    }
+
+    this.eventSubscriptions.delete(listener);
+    unsubscribe();
+    this.detachTailChannelIfIdle();
+  }
+
+  private offGap(listener: SessionGapListener): void {
+    this.lifecycle.off("gap", listener);
+    this.detachTailChannelIfIdle();
   }
 
   /**
@@ -635,17 +658,17 @@ export class StarciteSession implements SessionHandle {
     toSeq: number
   ): SessionRangeBackfillJob {
     const anchor = this.history.anchorBeforeSeq(fromSeq);
+    let currentCursor = anchor.cursor;
     const socketManager = new SocketManager({
       socketUrl: `${toWebSocketBaseUrl(this.transport.baseUrl)}/socket`,
       token: this.currentToken,
     });
     const managedChannel = socketManager.openChannel<RejoinableChannel>({
       topic: `tail:${this.id}`,
-      params: { cursor: anchor.cursor },
+      params: () => ({ cursor: currentCursor }),
     });
     const channel = managedChannel.channel;
 
-    let currentCursor = anchor.cursor;
     let observedSeq = anchor.seq;
     let pendingGapAfterSeq: number | undefined;
     let finished = false;

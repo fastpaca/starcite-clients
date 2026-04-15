@@ -109,7 +109,7 @@ export class Starcite {
   private readonly sessionAttachMode: SessionAttachMode;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
-  private readonly freshSessionHints = new Map<string, number>();
+  private readonly freshSessionIds = new Set<string>();
   private lifecycleChannel: RejoinableChannel | undefined;
   private closeLifecycleChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
@@ -181,16 +181,48 @@ export class Starcite {
       );
     }
 
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    this.lifecycle.on(eventName, listener as any);
-    if (eventName !== "error") {
-      this.ensureLifecycleChannelAttached();
+    switch (eventName) {
+      case "lifecycle":
+        return this.onLifecycle(
+          listener as (event: LifecycleEventEnvelope) => void
+        );
+      case "error":
+        return this.onLifecycleError(listener as (error: Error) => void);
+      case "session.created":
+        return this.onSessionCreated(
+          listener as StarciteLifecycleEvents["session.created"]
+        );
+      case "session.updated":
+        return this.onSessionUpdated(
+          listener as StarciteLifecycleEvents["session.updated"]
+        );
+      case "session.archived":
+        return this.onSessionArchived(
+          listener as StarciteLifecycleEvents["session.archived"]
+        );
+      case "session.unarchived":
+        return this.onSessionUnarchived(
+          listener as StarciteLifecycleEvents["session.unarchived"]
+        );
+      case "session.hydrating":
+        return this.onSessionHydrating(
+          listener as StarciteLifecycleEvents["session.hydrating"]
+        );
+      case "session.activated":
+        return this.onSessionActivated(
+          listener as StarciteLifecycleEvents["session.activated"]
+        );
+      case "session.freezing":
+        return this.onSessionFreezing(
+          listener as StarciteLifecycleEvents["session.freezing"]
+        );
+      case "session.frozen":
+        return this.onSessionFrozen(
+          listener as StarciteLifecycleEvents["session.frozen"]
+        );
+      default:
+        throw new StarciteError(`Unsupported lifecycle event '${eventName}'`);
     }
-
-    return () => {
-      // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-      this.off(eventName as any, listener as any);
-    };
   }
 
   off<K extends SessionLifecycleEventName>(
@@ -209,11 +241,216 @@ export class Starcite {
       | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): void {
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    this.lifecycle.off(eventName, listener as any);
-    if (eventName !== "error") {
-      this.detachLifecycleChannelIfIdle();
+    switch (eventName) {
+      case "lifecycle":
+        this.offLifecycle(listener as (event: LifecycleEventEnvelope) => void);
+        return;
+      case "error":
+        this.lifecycle.off("error", listener as (error: Error) => void);
+        return;
+      case "session.created":
+        this.offSessionCreated(
+          listener as StarciteLifecycleEvents["session.created"]
+        );
+        return;
+      case "session.updated":
+        this.offSessionUpdated(
+          listener as StarciteLifecycleEvents["session.updated"]
+        );
+        return;
+      case "session.archived":
+        this.offSessionArchived(
+          listener as StarciteLifecycleEvents["session.archived"]
+        );
+        return;
+      case "session.unarchived":
+        this.offSessionUnarchived(
+          listener as StarciteLifecycleEvents["session.unarchived"]
+        );
+        return;
+      case "session.hydrating":
+        this.offSessionHydrating(
+          listener as StarciteLifecycleEvents["session.hydrating"]
+        );
+        return;
+      case "session.activated":
+        this.offSessionActivated(
+          listener as StarciteLifecycleEvents["session.activated"]
+        );
+        return;
+      case "session.freezing":
+        this.offSessionFreezing(
+          listener as StarciteLifecycleEvents["session.freezing"]
+        );
+        return;
+      case "session.frozen":
+        this.offSessionFrozen(
+          listener as StarciteLifecycleEvents["session.frozen"]
+        );
+        return;
+      default:
+        throw new StarciteError(`Unsupported lifecycle event '${eventName}'`);
     }
+  }
+
+  private onLifecycle(
+    listener: (event: LifecycleEventEnvelope) => void
+  ): () => void {
+    this.lifecycle.on("lifecycle", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offLifecycle(listener);
+    };
+  }
+
+  private onLifecycleError(listener: (error: Error) => void): () => void {
+    this.lifecycle.on("error", listener);
+    return () => {
+      this.lifecycle.off("error", listener);
+    };
+  }
+
+  private offLifecycle(
+    listener: (event: LifecycleEventEnvelope) => void
+  ): void {
+    this.lifecycle.off("lifecycle", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionCreated(
+    listener: StarciteLifecycleEvents["session.created"]
+  ): () => void {
+    this.lifecycle.on("session.created", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionCreated(listener);
+    };
+  }
+
+  private offSessionCreated(
+    listener: StarciteLifecycleEvents["session.created"]
+  ): void {
+    this.lifecycle.off("session.created", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionUpdated(
+    listener: StarciteLifecycleEvents["session.updated"]
+  ): () => void {
+    this.lifecycle.on("session.updated", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionUpdated(listener);
+    };
+  }
+
+  private offSessionUpdated(
+    listener: StarciteLifecycleEvents["session.updated"]
+  ): void {
+    this.lifecycle.off("session.updated", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionArchived(
+    listener: StarciteLifecycleEvents["session.archived"]
+  ): () => void {
+    this.lifecycle.on("session.archived", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionArchived(listener);
+    };
+  }
+
+  private offSessionArchived(
+    listener: StarciteLifecycleEvents["session.archived"]
+  ): void {
+    this.lifecycle.off("session.archived", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionUnarchived(
+    listener: StarciteLifecycleEvents["session.unarchived"]
+  ): () => void {
+    this.lifecycle.on("session.unarchived", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionUnarchived(listener);
+    };
+  }
+
+  private offSessionUnarchived(
+    listener: StarciteLifecycleEvents["session.unarchived"]
+  ): void {
+    this.lifecycle.off("session.unarchived", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionHydrating(
+    listener: StarciteLifecycleEvents["session.hydrating"]
+  ): () => void {
+    this.lifecycle.on("session.hydrating", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionHydrating(listener);
+    };
+  }
+
+  private offSessionHydrating(
+    listener: StarciteLifecycleEvents["session.hydrating"]
+  ): void {
+    this.lifecycle.off("session.hydrating", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionActivated(
+    listener: StarciteLifecycleEvents["session.activated"]
+  ): () => void {
+    this.lifecycle.on("session.activated", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionActivated(listener);
+    };
+  }
+
+  private offSessionActivated(
+    listener: StarciteLifecycleEvents["session.activated"]
+  ): void {
+    this.lifecycle.off("session.activated", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionFreezing(
+    listener: StarciteLifecycleEvents["session.freezing"]
+  ): () => void {
+    this.lifecycle.on("session.freezing", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionFreezing(listener);
+    };
+  }
+
+  private offSessionFreezing(
+    listener: StarciteLifecycleEvents["session.freezing"]
+  ): void {
+    this.lifecycle.off("session.freezing", listener);
+    this.detachLifecycleChannelIfIdle();
+  }
+
+  private onSessionFrozen(
+    listener: StarciteLifecycleEvents["session.frozen"]
+  ): () => void {
+    this.lifecycle.on("session.frozen", listener);
+    this.ensureLifecycleChannelAttached();
+    return () => {
+      this.offSessionFrozen(listener);
+    };
+  }
+
+  private offSessionFrozen(
+    listener: StarciteLifecycleEvents["session.frozen"]
+  ): void {
+    this.lifecycle.off("session.frozen", listener);
+    this.detachLifecycleChannelIfIdle();
   }
 
   /**
@@ -619,12 +856,35 @@ export class Starcite {
 
     const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
     if (parsed.success) {
-      if (parsed.data.kind === "session.created") {
-        this.rememberFreshSession(parsed.data.session_id);
+      switch (parsed.data.kind) {
+        case "session.created":
+          this.rememberFreshSession(parsed.data.session_id);
+          this.lifecycle.emit("session.created", parsed.data);
+          return;
+        case "session.updated":
+          this.lifecycle.emit("session.updated", parsed.data);
+          return;
+        case "session.archived":
+          this.lifecycle.emit("session.archived", parsed.data);
+          return;
+        case "session.unarchived":
+          this.lifecycle.emit("session.unarchived", parsed.data);
+          return;
+        case "session.hydrating":
+          this.lifecycle.emit("session.hydrating", parsed.data);
+          return;
+        case "session.activated":
+          this.lifecycle.emit("session.activated", parsed.data);
+          return;
+        case "session.freezing":
+          this.lifecycle.emit("session.freezing", parsed.data);
+          return;
+        case "session.frozen":
+          this.lifecycle.emit("session.frozen", parsed.data);
+          return;
+        default:
+          return;
       }
-      // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
-      this.lifecycle.emit(parsed.data.kind, parsed.data as any);
-      return;
     }
 
     const lifecycleKind = SessionLifecycleEventNameSchema.safeParse(
@@ -673,28 +933,15 @@ export class Starcite {
   }
 
   private rememberFreshSession(sessionId: string): void {
-    const now = Date.now();
-    this.freshSessionHints.set(sessionId, now);
-
-    for (const [knownSessionId, createdAtMs] of this.freshSessionHints) {
-      if (now - createdAtMs > FRESH_SESSION_GRACE_MS) {
-        this.freshSessionHints.delete(knownSessionId);
-      }
-    }
+    this.freshSessionIds.add(sessionId);
+    const cleanup = setTimeout(() => {
+      this.freshSessionIds.delete(sessionId);
+    }, FRESH_SESSION_GRACE_MS);
+    cleanup.unref?.();
   }
 
   private initialTailCursorFor(sessionId: string): 0 | undefined {
-    const createdAtMs = this.freshSessionHints.get(sessionId);
-    if (createdAtMs === undefined) {
-      return undefined;
-    }
-
-    if (Date.now() - createdAtMs > FRESH_SESSION_GRACE_MS) {
-      this.freshSessionHints.delete(sessionId);
-      return undefined;
-    }
-
-    return 0;
+    return this.freshSessionIds.has(sessionId) ? 0 : undefined;
   }
 }
 

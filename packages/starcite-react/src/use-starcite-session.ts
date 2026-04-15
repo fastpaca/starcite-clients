@@ -23,10 +23,6 @@ const NOOP_APPEND = (): Promise<AppendResult> =>
   Promise.resolve({ seq: -1, deduped: false });
 const EMPTY_EVENTS: readonly TailEvent[] = [];
 
-function toHookError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
-}
-
 export function useStarciteSession(
   options: UseStarciteSessionOptions
 ): UseStarciteSessionResult {
@@ -62,7 +58,9 @@ export function useStarciteSession(
       { replay: false }
     );
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(toHookError(error));
+      onErrorRef.current?.(
+        error instanceof Error ? error : new Error(String(error))
+      );
     });
 
     return () => {

@@ -981,6 +981,85 @@ describe("Phoenix Tail Transport", () => {
     stopCreated();
   });
 
+  it("backfills exact seq windows on demand through the tail transport", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_range_backfill") });
+
+    const rangePromise = session.range(3, 4);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_range_backfill");
+    expect(channel.joinCalls[0]).toEqual({ cursor: 0 });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [
+        makeEvent(1, "agent:planner", 1),
+        makeEvent(2, "agent:planner", 2),
+      ],
+    });
+    await flush();
+    channel.emit("events", {
+      events: [
+        makeEvent(3, "agent:planner", 3),
+        makeEvent(4, "agent:planner", 4),
+      ],
+    });
+
+    await expect(rangePromise).resolves.toEqual([
+      makeEvent(3, "agent:planner", 3),
+      makeEvent(4, "agent:planner", 4),
+    ]);
+
+    session.disconnect();
+  });
+
+  it("rejoins range backfills from next_cursor after a recoverable gap", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_range_gap") });
+
+    const rangePromise = session.range(4, 4);
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_range_gap");
+    expect(channel.joinCalls[0]).toEqual({ cursor: 0 });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    channel.emit("gap", {
+      committed_cursor: 3,
+      earliest_available_cursor: 3,
+      from_cursor: 1,
+      next_cursor: 3,
+      reason: "resume_invalidated",
+      type: "gap",
+    });
+    await flush();
+
+    expect(channel.rejoinCalls.at(-1)).toEqual({ cursor: 3 });
+
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(4, "agent:planner", 4)],
+    });
+
+    await expect(rangePromise).resolves.toEqual([
+      makeEvent(4, "agent:planner", 4),
+    ]);
+
+    session.disconnect();
+  });
+
   it("persists warm event data inside the opaque session store when one is configured", async () => {
     const sessionStore = new MemorySessionStore();
     const session = new Starcite({
