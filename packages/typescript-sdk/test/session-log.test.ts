@@ -152,8 +152,7 @@ describe("SessionHistory", () => {
 
     history.applyLiveBatch([makeEvent(1), makeEvent(2), makeEvent(3)]);
 
-    history.on(
-      "event",
+    history.observe(
       (event) => {
         replayedSeqs.push(event.seq);
       },
@@ -169,8 +168,7 @@ describe("SessionHistory", () => {
 
     history.applyLiveBatch([makeEvent(1), makeEvent(2)]);
 
-    const unsubscribe = history.on(
-      "event",
+    const unsubscribe = history.observe(
       (event) => {
         observedSeqs.push(event.seq);
       },
@@ -191,7 +189,7 @@ describe("SessionHistory", () => {
     const history = new SessionHistory();
     const observedSeqs: number[] = [];
 
-    history.on("event", (event) => {
+    history.observe((event) => {
       observedSeqs.push(event.seq);
     });
 

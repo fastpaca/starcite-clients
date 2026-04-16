@@ -85,6 +85,12 @@ interface SessionRangeBackfillJob {
   promise: Promise<void>;
 }
 
+interface TailChannelBindings {
+  onEvents?: (events: readonly TailEvent[]) => void;
+  onGap?: (gap: TailGap) => void;
+  onTokenExpired?: () => void;
+}
+
 /**
  * Session-scoped client bound to a specific identity and session token.
  *
@@ -113,10 +119,6 @@ export class StarciteSession implements SessionHandle {
   >();
   private readonly backfillJobs: SessionRangeBackfillJob[] = [];
   private keepTailAttached = false;
-  private tailChannel: RejoinableChannel | undefined;
-  private tailEventBindingRef = 0;
-  private tailGapBindingRef = 0;
-  private tailTokenExpiredBindingRef = 0;
   private closeTailChannel: (() => void) | undefined;
   private nextTailBatchCursor: TailCursor | undefined;
 
@@ -330,7 +332,7 @@ export class StarciteSession implements SessionHandle {
       };
 
       this.eventDispatchers.set(listener, dispatch);
-      this.history.on("event", dispatch, { replay });
+      this.history.observe(dispatch, { replay });
     }
 
     this.ensureChannelAttached();
@@ -370,7 +372,7 @@ export class StarciteSession implements SessionHandle {
     }
 
     this.eventDispatchers.delete(listener);
-    this.history.off("event", dispatch);
+    this.history.unobserve(dispatch);
     this.detachTailChannelIfIdle();
   }
 
@@ -381,7 +383,7 @@ export class StarciteSession implements SessionHandle {
     this.keepTailAttached = false;
     this.outbox.stop();
     for (const dispatch of this.eventDispatchers.values()) {
-      this.history.off("event", dispatch);
+      this.history.unobserve(dispatch);
     }
     this.eventDispatchers.clear();
     this.detachTailChannel();
@@ -423,7 +425,7 @@ export class StarciteSession implements SessionHandle {
    */
   state(): SessionSnapshot {
     return {
-      ...this.history.state(this.tailChannel !== undefined),
+      ...this.history.state(this.closeTailChannel !== undefined),
       append: this.outbox.state(),
     };
   }
@@ -533,7 +535,7 @@ export class StarciteSession implements SessionHandle {
 
   private ensureChannelAttached(): void {
     if (
-      this.tailChannel ||
+      this.closeTailChannel ||
       !this.shouldKeepChannelAttached() ||
       this.authRefreshTask
     ) {
@@ -546,68 +548,54 @@ export class StarciteSession implements SessionHandle {
         params: () => this.tailChannelParams(),
       });
     const channel = managedChannel.channel;
-    this.closeTailChannel = managedChannel.close;
-    this.tailChannel = channel;
-
-    this.tailEventBindingRef = channel.on("events", (payload) => {
-      const result = TailEventsPayloadSchema.safeParse(payload);
-      if (!result.success) {
-        return;
-      }
-
-      try {
-        const appliedEvents = this.history.applyLiveBatch(
-          result.data.events,
-          this.nextTailBatchCursor
-        );
-        this.nextTailBatchCursor = result.data.events.at(-1)?.cursor;
-        if (appliedEvents.length > 0) {
-          this.outbox.reconcileWithCommittedEvents(
-            appliedEvents,
-            this.history.lastSeq
+    const unbind = this.bindTailChannel(channel, {
+      onEvents: (events) => {
+        try {
+          const appliedEvents = this.history.applyLiveBatch(
+            events,
+            this.nextTailBatchCursor
           );
-          this.persistStoredState();
+          this.nextTailBatchCursor = events.at(-1)?.cursor;
+          if (appliedEvents.length > 0) {
+            this.outbox.reconcileWithCommittedEvents(
+              appliedEvents,
+              this.history.lastSeq
+            );
+            this.persistStoredState();
+          }
+        } catch (error) {
+          this.emitStreamError(error);
         }
-      } catch (error) {
-        this.emitStreamError(error);
-      }
-    });
+      },
+      onGap: (gap) => {
+        this.history.markObservedCursor(gap.next_cursor);
+        this.persistStoredState();
 
-    this.tailGapBindingRef = channel.on("gap", (payload) => {
-      const result = TailGapSchema.safeParse(payload);
-      if (!result.success) {
-        return;
-      }
-
-      this.history.markObservedCursor(result.data.next_cursor);
-      this.persistStoredState();
-
-      if (this.lifecycle.listenerCount("gap") > 0) {
-        this.lifecycle.emit("gap", result.data);
-      }
-
-      this.nextTailBatchCursor = result.data.next_cursor;
-      channel.rejoin();
-    });
-
-    this.tailTokenExpiredBindingRef = channel.on("token_expired", (payload) => {
-      const result = TailTokenExpiredPayloadSchema.safeParse(payload);
-      if (!result.success) {
-        return;
-      }
-
-      const error = new StarciteTokenExpiredError(
-        `Tail token expired for session '${this.id}'. Re-issue a session token and reconnect from the last processed cursor.`,
-        {
-          closeReason: result.data.reason,
-          sessionId: this.id,
+        if (this.lifecycle.listenerCount("gap") > 0) {
+          this.lifecycle.emit("gap", gap);
         }
-      );
-      this.detachTailChannel();
-      this.refreshAuthInternal("token_expired", error, {
-        emitFailure: true,
-      }).catch(() => undefined);
+
+        this.nextTailBatchCursor = gap.next_cursor;
+        channel.rejoin();
+      },
+      onTokenExpired: () => {
+        const error = new StarciteTokenExpiredError(
+          `Tail token expired for session '${this.id}'. Re-issue a session token and reconnect from the last processed cursor.`,
+          {
+            closeReason: "token_expired",
+            sessionId: this.id,
+          }
+        );
+        this.detachTailChannel();
+        this.refreshAuthInternal("token_expired", error, {
+          emitFailure: true,
+        }).catch(() => undefined);
+      },
     });
+    this.closeTailChannel = () => {
+      unbind();
+      managedChannel.close();
+    };
 
     channel.join().receive("error", (payload) => {
       const error = new StarciteTailError(
@@ -630,18 +618,9 @@ export class StarciteSession implements SessionHandle {
   }
 
   private detachTailChannel(): void {
-    if (this.tailChannel) {
-      this.tailChannel.off("events", this.tailEventBindingRef);
-      this.tailChannel.off("gap", this.tailGapBindingRef);
-      this.tailChannel.off("token_expired", this.tailTokenExpiredBindingRef);
-      this.tailChannel = undefined;
-    }
-
-    this.tailEventBindingRef = 0;
-    this.tailGapBindingRef = 0;
-    this.tailTokenExpiredBindingRef = 0;
-    this.closeTailChannel?.();
+    const closeTailChannel = this.closeTailChannel;
     this.closeTailChannel = undefined;
+    closeTailChannel?.();
   }
 
   private tailChannelParams(): Record<string, unknown> {
@@ -683,37 +662,10 @@ export class StarciteSession implements SessionHandle {
     let observedSeq = anchor.seq;
     let pendingGapAfterSeq: number | undefined;
     let finished = false;
-    let eventsBindingRef = 0;
-    let gapBindingRef = 0;
-    let tokenExpiredBindingRef = 0;
-
-    const finish = (callback: () => void): void => {
-      if (finished) {
-        return;
-      }
-
-      finished = true;
-      channel.off("events", eventsBindingRef);
-      channel.off("gap", gapBindingRef);
-      channel.off("token_expired", tokenExpiredBindingRef);
-      managedChannel.close();
-      callback();
-    };
-
-    const promise = new Promise<void>((resolve, reject) => {
-      const fail = (error: Error): void => {
-        finish(() => {
-          reject(error);
-        });
-      };
-
-      eventsBindingRef = channel.on("events", (payload) => {
-        const result = TailEventsPayloadSchema.safeParse(payload);
-        if (!result.success) {
-          return;
-        }
-
-        const batch = result.data.events;
+    let resolveBackfill: () => void = () => undefined;
+    let failBackfill: (error: Error) => void = () => undefined;
+    const unbind = this.bindTailChannel(channel, {
+      onEvents: (batch) => {
         if (batch.length === 0) {
           return;
         }
@@ -724,7 +676,7 @@ export class StarciteSession implements SessionHandle {
           observedSeq
         );
         if (mergedBatch instanceof Error) {
-          fail(mergedBatch);
+          failBackfill(mergedBatch);
           return;
         }
 
@@ -739,31 +691,24 @@ export class StarciteSession implements SessionHandle {
             toSeq
           )
         ) {
-          fail(this.rangeBackfillGapError(fromSeq, toSeq));
+          failBackfill(this.rangeBackfillGapError(fromSeq, toSeq));
           return;
         }
 
         pendingGapAfterSeq = undefined;
         if (this.history.isRangeCovered(fromSeq, toSeq)) {
-          finish(resolve);
+          finish(resolveBackfill);
         }
-      });
-
-      gapBindingRef = channel.on("gap", (payload) => {
-        const result = TailGapSchema.safeParse(payload);
-        if (!result.success) {
-          return;
-        }
-
-        this.history.markObservedCursor(result.data.next_cursor);
+      },
+      onGap: (gap) => {
+        this.history.markObservedCursor(gap.next_cursor);
         this.persistStoredState();
         pendingGapAfterSeq = observedSeq;
-        currentCursor = result.data.next_cursor;
+        currentCursor = gap.next_cursor;
         channel.rejoin();
-      });
-
-      tokenExpiredBindingRef = channel.on("token_expired", () => {
-        fail(
+      },
+      onTokenExpired: () => {
+        failBackfill(
           new StarciteTokenExpiredError(
             `Tail replay token expired for session '${this.id}'.`,
             {
@@ -772,10 +717,30 @@ export class StarciteSession implements SessionHandle {
             }
           )
         );
-      });
+      },
+    });
+
+    const finish = (callback: () => void): void => {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      unbind();
+      managedChannel.close();
+      callback();
+    };
+
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveBackfill = resolve;
+      failBackfill = (error: Error): void => {
+        finish(() => {
+          reject(error);
+        });
+      };
 
       channel.join().receive("error", (payload) => {
-        fail(
+        failBackfill(
           new StarciteTailError(
             `Tail replay failed for session '${this.id}': ${readJoinFailureReason(payload)}`,
             {
@@ -791,6 +756,48 @@ export class StarciteSession implements SessionHandle {
       fromSeq,
       toSeq,
       promise,
+    };
+  }
+
+  private bindTailChannel(
+    channel: RejoinableChannel,
+    bindings: TailChannelBindings
+  ): () => void {
+    const eventsBindingRef = bindings.onEvents
+      ? channel.on("events", (payload) => {
+          const result = TailEventsPayloadSchema.safeParse(payload);
+          if (result.success) {
+            bindings.onEvents?.(result.data.events);
+          }
+        })
+      : 0;
+    const gapBindingRef = bindings.onGap
+      ? channel.on("gap", (payload) => {
+          const result = TailGapSchema.safeParse(payload);
+          if (result.success) {
+            bindings.onGap?.(result.data);
+          }
+        })
+      : 0;
+    const tokenExpiredBindingRef = bindings.onTokenExpired
+      ? channel.on("token_expired", (payload) => {
+          const result = TailTokenExpiredPayloadSchema.safeParse(payload);
+          if (result.success) {
+            bindings.onTokenExpired?.();
+          }
+        })
+      : 0;
+
+    return () => {
+      if (eventsBindingRef > 0) {
+        channel.off("events", eventsBindingRef);
+      }
+      if (gapBindingRef > 0) {
+        channel.off("gap", gapBindingRef);
+      }
+      if (tokenExpiredBindingRef > 0) {
+        channel.off("token_expired", tokenExpiredBindingRef);
+      }
     };
   }
 
@@ -875,11 +882,7 @@ export class StarciteSession implements SessionHandle {
   }
 
   private toError(error: unknown): Error {
-    if (error instanceof Error) {
-      return error;
-    }
-
-    return new StarciteError(String(error));
+    return error instanceof Error ? error : new StarciteError(String(error));
   }
 
   private readStoredState(): ReturnType<typeof decodeSessionStoreValue> {

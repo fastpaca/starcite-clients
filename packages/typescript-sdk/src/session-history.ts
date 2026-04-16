@@ -1,10 +1,5 @@
-import EventEmitter from "eventemitter3";
 import { StarciteError } from "./errors";
 import type { SessionSnapshot, TailCursor, TailEvent } from "./types";
-
-interface SessionHistoryEvents {
-  event: (event: TailEvent, context: SessionHistoryEventContext) => void;
-}
 
 type SessionHistorySnapshot = Pick<
   SessionSnapshot,
@@ -14,6 +9,11 @@ type SessionHistorySnapshot = Pick<
 export interface SessionHistoryEventContext {
   replayed: boolean;
 }
+
+type SessionHistoryListener = (
+  event: TailEvent,
+  context: SessionHistoryEventContext
+) => void;
 
 interface SessionHistoryRange {
   fromSeq: number;
@@ -106,7 +106,7 @@ function toCheckpointRange(range: SessionHistoryRange): SessionHistoryCoverage {
  * separate phases.
  */
 export class SessionHistory {
-  private readonly emitter = new EventEmitter<SessionHistoryEvents>();
+  private readonly listeners = new Set<SessionHistoryListener>();
   private readonly eventBySeq = new Map<number, TailEvent>();
   private ranges: SessionHistoryRange[] = [];
   private observedLastSeq = 0;
@@ -130,14 +130,20 @@ export class SessionHistory {
       this.eventBySeq.set(event.seq, event);
     }
 
-    const restoredRanges =
-      snapshot.coverage?.map((range) => ({
+    if (events.length > 0 && snapshot.coverage === undefined) {
+      throw new StarciteError(
+        "Stored session history with events must include coverage."
+      );
+    }
+
+    this.ranges = toMergedRanges(
+      (snapshot.coverage ?? []).map((range) => ({
         fromSeq: range.fromSeq,
         toSeq: range.toSeq,
         beforeCursor: range.beforeCursor,
         afterCursor: range.afterCursor,
-      })) ?? this.deriveRangesFromEvents(events);
-    this.ranges = toMergedRanges(restoredRanges);
+      }))
+    );
   }
 
   snapshot(): SessionHistoryStoreSnapshot | undefined {
@@ -154,40 +160,24 @@ export class SessionHistory {
     };
   }
 
-  on(
-    eventName: "event",
-    listener: (event: TailEvent, context: SessionHistoryEventContext) => void,
+  observe(
+    listener: SessionHistoryListener,
     options: { replay?: boolean } = {}
   ): () => void {
-    if (eventName !== "event") {
-      throw new StarciteError(
-        `Unsupported session history event '${eventName}'.`
-      );
-    }
-
     if (options.replay ?? false) {
       for (const event of this.events) {
         listener(event, { replayed: true });
       }
     }
 
-    this.emitter.on("event", listener);
+    this.listeners.add(listener);
     return () => {
-      this.emitter.off("event", listener);
+      this.listeners.delete(listener);
     };
   }
 
-  off(
-    eventName: "event",
-    listener: (event: TailEvent, context: SessionHistoryEventContext) => void
-  ): void {
-    if (eventName !== "event") {
-      throw new StarciteError(
-        `Unsupported session history event '${eventName}'.`
-      );
-    }
-
-    this.emitter.off("event", listener);
+  unobserve(listener: SessionHistoryListener): void {
+    this.listeners.delete(listener);
   }
 
   state(syncing: boolean): SessionHistorySnapshot {
@@ -358,7 +348,9 @@ export class SessionHistory {
         this.eventBySeq.set(event.seq, event);
         applied.push(event);
         if (options.emit) {
-          this.emitter.emit("event", event, { replayed: false });
+          for (const listener of this.listeners) {
+            listener(event, { replayed: false });
+          }
         }
       }
 
@@ -409,48 +401,5 @@ export class SessionHistory {
     }
 
     return applied;
-  }
-
-  private deriveRangesFromEvents(
-    events: readonly TailEvent[]
-  ): SessionHistoryRange[] {
-    const normalized = normalizeBatch(events);
-    if (normalized.length === 0) {
-      return [];
-    }
-
-    const derived: SessionHistoryRange[] = [];
-    let current: TailEvent[] = [];
-
-    const flush = (): void => {
-      const first = current[0];
-      const last = current.at(-1);
-      if (!(first && last)) {
-        current = [];
-        return;
-      }
-
-      derived.push({
-        fromSeq: first.seq,
-        toSeq: last.seq,
-        beforeCursor: first.seq === 1 ? 0 : undefined,
-        afterCursor: last.cursor,
-      });
-      current = [];
-    };
-
-    for (const event of normalized) {
-      const previous = current.at(-1);
-      if (!previous || event.seq === previous.seq + 1) {
-        current.push(event);
-        continue;
-      }
-
-      flush();
-      current.push(event);
-    }
-
-    flush();
-    return derived;
   }
 }

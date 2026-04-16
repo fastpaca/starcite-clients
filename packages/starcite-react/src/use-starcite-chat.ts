@@ -1,6 +1,6 @@
 import type { SessionHandle, TailEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import {
   chatAssistantChunkEventType,
@@ -108,19 +108,25 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
-  const sessionKeyRef = useRef(sessionKey);
-  const versionRef = useRef(0);
 
   useEffect(() => {
-    sessionKeyRef.current = sessionKey;
-    versionRef.current += 1;
     setMessages([]);
     setStatus("ready");
+
+    if (sessionKey === "__none__") {
+      return;
+    }
   }, [sessionKey]);
 
   // Project events → UIMessage[] (async because of readUIMessageStream)
   useEffect(() => {
-    const version = ++versionRef.current;
+    let cancelled = false;
+
+    if (sessionKey === "__none__") {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     // Eagerly set streaming status from latest chunk
     const open = isAssistantOpen(events);
@@ -138,16 +144,17 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     const chatEvents = events.filter((e) => isChatEventType(e.type));
     toUIMessagesFromEvents<TMessage>(chatEvents)
       .then((msgs) => {
-        if (
-          versionRef.current === version &&
-          sessionKeyRef.current === sessionKey
-        ) {
+        if (!cancelled) {
           setMessages(msgs);
         }
       })
       .catch(() => {
         /* intentionally swallowed */
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [events, sessionKey]);
 
   const sendMessage = useCallback(

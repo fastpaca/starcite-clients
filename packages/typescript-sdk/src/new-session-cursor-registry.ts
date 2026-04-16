@@ -5,7 +5,7 @@ const DEFAULT_NEW_SESSION_CURSOR_GRACE_MS = 30_000;
  * attach can replay from cursor zero and avoid missing the opening event.
  */
 export class NewSessionCursorRegistry {
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly expiresAtBySessionId = new Map<string, number>();
   private readonly graceMs: number;
 
   constructor(graceMs = DEFAULT_NEW_SESSION_CURSOR_GRACE_MS) {
@@ -13,19 +13,20 @@ export class NewSessionCursorRegistry {
   }
 
   remember(sessionId: string): void {
-    const previousTimer = this.timers.get(sessionId);
-    if (previousTimer) {
-      clearTimeout(previousTimer);
-    }
-
-    const cleanup = setTimeout(() => {
-      this.timers.delete(sessionId);
-    }, this.graceMs);
-    cleanup.unref?.();
-    this.timers.set(sessionId, cleanup);
+    this.expiresAtBySessionId.set(sessionId, Date.now() + this.graceMs);
   }
 
   initialCursorFor(sessionId: string): 0 | undefined {
-    return this.timers.has(sessionId) ? 0 : undefined;
+    const expiresAt = this.expiresAtBySessionId.get(sessionId);
+    if (expiresAt === undefined) {
+      return undefined;
+    }
+
+    if (expiresAt <= Date.now()) {
+      this.expiresAtBySessionId.delete(sessionId);
+      return undefined;
+    }
+
+    return 0;
   }
 }

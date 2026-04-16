@@ -49,6 +49,12 @@ export function encodeSessionStoreValue(input: {
   history?: SessionHistoryStoreSnapshot;
   outbox?: z.infer<typeof SessionAppendStoreStateSchema>;
 }): string {
+  if (input.history?.events?.length && input.history.coverage === undefined) {
+    throw new StarciteError(
+      "Stored session history with events must include coverage."
+    );
+  }
+
   return JSON.stringify({
     version: SESSION_STORE_VERSION,
     lastSeq: input.history?.lastSeq ?? 0,

@@ -30,7 +30,6 @@ export function useStarciteSession(
   const resetKey = id ?? session?.id ?? "__none__";
 
   const [events, setEvents] = useState<readonly TailEvent[]>([]);
-  const resetKeyRef = useRef(resetKey);
   const onErrorRef = useRef(onError);
 
   useEffect(() => {
@@ -38,15 +37,19 @@ export function useStarciteSession(
   }, [onError]);
 
   useEffect(() => {
-    resetKeyRef.current = resetKey;
     setEvents([]);
+
+    if (resetKey === "__none__" && !session) {
+      return;
+    }
 
     if (!session) {
       return;
     }
 
+    let cancelled = false;
     const syncEvents = (): void => {
-      if (resetKeyRef.current !== resetKey) {
+      if (cancelled) {
         return;
       }
       setEvents(session.state().events);
@@ -60,13 +63,18 @@ export function useStarciteSession(
       },
       { replay: false }
     );
-    const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(error);
-    });
+    const offError = onErrorRef.current
+      ? session.on("error", (error: Error) => {
+          if (!cancelled) {
+            onErrorRef.current?.(error);
+          }
+        })
+      : undefined;
 
     return () => {
+      cancelled = true;
       offEvent();
-      offError();
+      offError?.();
     };
   }, [session, resetKey]);
 
