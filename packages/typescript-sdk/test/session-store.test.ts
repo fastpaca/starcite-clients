@@ -25,7 +25,7 @@ describe("WebStorageSessionStore", () => {
   it("round-trips opaque session state values through web storage", () => {
     const storage = new FakeStorage();
     const value = encodeSessionStoreValue({
-      history: {
+      timeline: {
         cursor: 3,
         lastSeq: 3,
         events: [

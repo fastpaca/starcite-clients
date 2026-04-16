@@ -72,7 +72,7 @@ export function Timeline({ token }: { token: string }) {
 
 `useStarciteSession` mirrors the session's current local event state and merges
 future `session.on("event")` updates into the same view. It does not issue any
-implicit history reads.
+implicit durable range reads.
 
 ## `useStarciteChat`
 
@@ -142,7 +142,7 @@ after the session is bound.
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `userMessageSource` (optional, default `"use-chat"`): source string for user append events
-- `onError` (optional): callback for append, projection, or surfaced session `error` events
+- `onError` (optional): callback for append or surfaced session `error` events
 - Returns `{ messages, sendMessage, status }`
 
 ## Behavior
@@ -151,7 +151,7 @@ after the session is bound.
 - `useStarciteChat` projects from that same local session state and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`
-- `useStarciteChat` does not perform implicit durable history reads. If you need prior events on a fresh attach, materialize them into the session through the SDK session store or an explicit server-side `session.range(...)` flow.
+- `useStarciteChat` does not perform implicit durable range reads. If you need prior events on a fresh attach, materialize them into the session through the SDK session store or an explicit server-side `session.range(...)` flow.
 - Appends outgoing user messages as strict chat envelopes.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
@@ -182,3 +182,4 @@ for server agents or custom transports:
 - `parseChatPayloadEnvelope(...)`
 - `appendUserMessageEvent(...)`
 - `appendAssistantChunkEvent(...)`
+- `appendAssistantTextMessage(...)`

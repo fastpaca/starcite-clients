@@ -37,7 +37,7 @@ Open `http://localhost:3000`.
 8. When a live `chat.user.message` event arrives, that listener reads `session.range(1, sessionEvent.seq)`, runs `streamText(...)`, and appends assistant chunks back into the same session.
 9. The hook updates from durable `session.on("event")` events as the assistant chunks arrive.
 
-The example uses an exact seq-bounded read on purpose. Chat output is stored as assistant chunk events, so the server reconstructs history through the triggering user event's `seq`, which includes prior completed turns without pulling in the response it is about to generate.
+The example uses an exact seq-bounded read on purpose. Chat output is stored as assistant chunk events, so the server reconstructs prior turns through the triggering user event's `seq`, which includes completed conversation state without pulling in the response it is about to generate.
 
 ## Current limitation
 
@@ -46,6 +46,6 @@ sessions created while the server process is running.
 
 ## Manual durability checks
 
-1. Cold load with an existing `sessionId`: full history should render after connect.
+1. Cold load with an existing `sessionId`: prior conversation state should render after connect.
 2. Send a new message in an existing session: status transitions (`submitted`/`streaming`/`ready`) and assistant output should stream in-place.
-3. Reload or reopen the page with the same `sessionId`: previously completed conversation history should still render.
+3. Reload or reopen the page with the same `sessionId`: previously completed conversation state should still render.

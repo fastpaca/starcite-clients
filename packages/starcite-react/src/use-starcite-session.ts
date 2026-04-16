@@ -37,12 +37,10 @@ export function useStarciteSession(
   }, [onError]);
 
   useEffect(() => {
-    setEvents([]);
+    setEvents(resetKey === "__none__" ? EMPTY_EVENTS : []);
+  }, [resetKey]);
 
-    if (resetKey === "__none__" && !session) {
-      return;
-    }
-
+  useEffect(() => {
     if (!session) {
       return;
     }
@@ -63,20 +61,18 @@ export function useStarciteSession(
       },
       { replay: false }
     );
-    const offError = onErrorRef.current
-      ? session.on("error", (error: Error) => {
-          if (!cancelled) {
-            onErrorRef.current?.(error);
-          }
-        })
-      : undefined;
+    const offError = session.on("error", (error: Error) => {
+      if (!cancelled) {
+        onErrorRef.current?.(error);
+      }
+    });
 
     return () => {
       cancelled = true;
       offEvent();
-      offError?.();
+      offError();
     };
-  }, [session, resetKey]);
+  }, [session]);
 
   const append = useCallback(
     (input: SessionAppendInput) =>

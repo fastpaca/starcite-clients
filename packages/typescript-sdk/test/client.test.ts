@@ -901,7 +901,7 @@ describe("Starcite", () => {
     sessionStore.write(
       "ses_reconciled_outbox",
       encodeSessionStoreValue({
-        history: {
+        timeline: {
           cursor: 1,
           lastSeq: 1,
         },

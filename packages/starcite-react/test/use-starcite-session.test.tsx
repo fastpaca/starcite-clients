@@ -136,6 +136,33 @@ describe("useStarciteSession", () => {
     });
   });
 
+  it("subscribes to session errors even when onError is added later", () => {
+    const session = new FakeSession("ses_late_error_listener");
+    const errors: string[] = [];
+    const { rerender } = renderHook(
+      ({ onError }: { onError?: (error: Error) => void }) =>
+        useStarciteSession({
+          session,
+          onError,
+        }),
+      {
+        initialProps: {},
+      }
+    );
+
+    rerender({
+      onError: (error: Error) => {
+        errors.push(error.message);
+      },
+    });
+
+    act(() => {
+      session.emitError(new Error("late listener attached"));
+    });
+
+    expect(errors).toEqual(["late listener attached"]);
+  });
+
   it("resets retained events when the session key changes", async () => {
     const firstSession = new FakeSession("ses_first");
     const secondSession = new FakeSession("ses_second");

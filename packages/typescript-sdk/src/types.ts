@@ -252,7 +252,7 @@ export interface SessionSnapshot {
   /**
    * Ordered events currently materialized in memory.
    *
-   * This can be a sparse subset of the full session history.
+   * This can be a sparse subset of the full session timeline.
    */
   events: readonly TailEvent[];
   /**

@@ -2,6 +2,7 @@
 export type { ChatPayloadEnvelope } from "./chat-protocol";
 export {
   appendAssistantChunkEvent,
+  appendAssistantTextMessage,
   appendUserMessageEvent,
   chatAssistantChunkEventType,
   chatUserMessageEventType,

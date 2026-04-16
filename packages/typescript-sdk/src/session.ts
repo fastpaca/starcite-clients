@@ -933,7 +933,7 @@ export class StarciteSession implements SessionHandle {
       this.sessionStore.write(
         this.id,
         encodeSessionStoreValue({
-          history: this.history.snapshot(),
+          timeline: this.history.snapshot(),
           outbox: this.outbox.serializeState(),
         })
       );

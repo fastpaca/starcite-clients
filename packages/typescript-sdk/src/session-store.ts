@@ -46,21 +46,21 @@ export function decodeSessionStoreValue(
 }
 
 export function encodeSessionStoreValue(input: {
-  history?: SessionHistoryStoreSnapshot;
+  timeline?: SessionHistoryStoreSnapshot;
   outbox?: z.infer<typeof SessionAppendStoreStateSchema>;
 }): string {
-  if (input.history?.events?.length && input.history.coverage === undefined) {
+  if (input.timeline?.events?.length && input.timeline.coverage === undefined) {
     throw new StarciteError(
-      "Stored session history with events must include coverage."
+      "Stored session timeline with events must include coverage."
     );
   }
 
   return JSON.stringify({
     version: SESSION_STORE_VERSION,
-    lastSeq: input.history?.lastSeq ?? 0,
-    cursor: input.history?.cursor,
-    events: input.history?.events,
-    coverage: input.history?.coverage,
+    lastSeq: input.timeline?.lastSeq ?? 0,
+    cursor: input.timeline?.cursor,
+    events: input.timeline?.events,
+    coverage: input.timeline?.coverage,
     outbox: input.outbox,
   } satisfies StoredSessionState);
 }

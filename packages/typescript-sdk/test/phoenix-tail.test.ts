@@ -774,7 +774,7 @@ describe("Phoenix Tail Transport", () => {
     sessionStore.write(
       "ses_beta",
       encodeSessionStoreValue({
-        history: {
+        timeline: {
           cursor: 6,
           lastSeq: 6,
         },
@@ -1448,7 +1448,7 @@ describe("Phoenix Tail Transport", () => {
     sessionStore.write(
       "ses_replay",
       encodeSessionStoreValue({
-        history: {
+        timeline: {
           cursor: 4,
           lastSeq: 4,
         },
@@ -1504,7 +1504,7 @@ describe("Phoenix Tail Transport", () => {
     sessionStore.write(
       "ses_updates",
       encodeSessionStoreValue({
-        history: {
+        timeline: {
           cursor: 6,
           lastSeq: 6,
         },

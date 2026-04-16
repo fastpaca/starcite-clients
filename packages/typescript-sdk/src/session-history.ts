@@ -99,9 +99,9 @@ function toCheckpointRange(range: SessionHistoryRange): SessionHistoryCoverage {
 }
 
 /**
- * Canonical sparse in-memory history for one session.
+ * Canonical sparse in-memory timeline state for one session.
  *
- * The history owns all materialized events and exact seq coverage. Reads should
+ * The timeline owns all materialized events and exact seq coverage. Reads should
  * ask it for a seq range directly rather than "ensure, then slice" in two
  * separate phases.
  */
@@ -132,7 +132,7 @@ export class SessionHistory {
 
     if (events.length > 0 && snapshot.coverage === undefined) {
       throw new StarciteError(
-        "Stored session history with events must include coverage."
+        "Stored session timeline with events must include coverage."
       );
     }
 
@@ -253,7 +253,7 @@ export class SessionHistory {
     assertValidRange(fromSeq, toSeq);
     if (!this.findCoveringRange(fromSeq, toSeq)) {
       throw new StarciteError(
-        `Session history does not cover seq range ${fromSeq}-${toSeq}.`
+        `Session timeline does not cover seq range ${fromSeq}-${toSeq}.`
       );
     }
 
@@ -262,7 +262,7 @@ export class SessionHistory {
       const event = this.eventBySeq.get(seq);
       if (!event) {
         throw new StarciteError(
-          `Session history is missing materialized seq ${seq} inside covered range ${fromSeq}-${toSeq}.`
+          `Session timeline is missing materialized seq ${seq} inside covered range ${fromSeq}-${toSeq}.`
         );
       }
       events.push(event);
