@@ -10,7 +10,7 @@ import {
 import type { StarciteIdentity } from "./identity";
 import {
   SessionHistory,
-  type SessionHistorySubscriptionContext,
+  type SessionHistoryEventContext,
 } from "./session-history";
 import {
   decodeSessionStoreValue,
@@ -75,6 +75,10 @@ interface SessionLifecycleEvents {
   gap: (gap: TailGap) => void;
 }
 
+type SessionLifecycleListenerName = keyof SessionLifecycleEvents;
+type SessionLifecycleListener =
+  SessionLifecycleEvents[SessionLifecycleListenerName];
+
 interface SessionRangeBackfillJob {
   fromSeq: number;
   toSeq: number;
@@ -103,9 +107,9 @@ export class StarciteSession implements SessionHandle {
   private readonly history: SessionHistory;
   private readonly sessionStore: SessionStore | undefined;
   private readonly lifecycle = new EventEmitter<SessionLifecycleEvents>();
-  private readonly eventSubscriptions = new Map<
+  private readonly eventDispatchers = new Map<
     SessionEventListener,
-    () => void
+    (event: TailEvent, context: SessionHistoryEventContext) => void
   >();
   private readonly backfillJobs: SessionRangeBackfillJob[] = [];
   private keepTailAttached = false;
@@ -235,13 +239,19 @@ export class StarciteSession implements SessionHandle {
       }
 
       case "gap":
-        return this.onGap(listener as SessionGapListener);
+        return this.addLifecycleListener("gap", listener as SessionGapListener);
 
       case "append":
-        return this.onAppend(listener as SessionAppendListener);
+        return this.addLifecycleListener(
+          "append",
+          listener as SessionAppendListener
+        );
 
       case "error":
-        return this.onError(listener as (error: Error) => void);
+        return this.addLifecycleListener(
+          "error",
+          listener as (error: Error) => void
+        );
 
       default:
         throw new StarciteError(`Unsupported event name '${eventName}'`);
@@ -270,15 +280,21 @@ export class StarciteSession implements SessionHandle {
       }
 
       case "gap":
-        this.offGap(listener as SessionGapListener);
+        this.removeLifecycleListener("gap", listener as SessionGapListener);
         return;
 
       case "append":
-        this.lifecycle.off("append", listener as SessionAppendListener);
+        this.removeLifecycleListener(
+          "append",
+          listener as SessionAppendListener
+        );
         return;
 
       case "error":
-        this.lifecycle.off("error", listener as (error: Error) => void);
+        this.removeLifecycleListener(
+          "error",
+          listener as (error: Error) => void
+        );
         return;
 
       default:
@@ -290,12 +306,12 @@ export class StarciteSession implements SessionHandle {
     listener: SessionEventListener,
     options: SessionOnEventOptions | undefined
   ): () => void {
-    if (!this.eventSubscriptions.has(listener)) {
+    if (!this.eventDispatchers.has(listener)) {
       const replay = options?.replay ?? false;
 
       const dispatch = (
         event: TailEvent,
-        historyContext: SessionHistorySubscriptionContext
+        historyContext: SessionHistoryEventContext
       ): void => {
         const parsedEvent = this.parseOnEvent(event, options);
         if (!parsedEvent) {
@@ -313,10 +329,8 @@ export class StarciteSession implements SessionHandle {
         }
       };
 
-      this.eventSubscriptions.set(
-        listener,
-        this.history.subscribe(dispatch, { replay })
-      );
+      this.eventDispatchers.set(listener, dispatch);
+      this.history.on("event", dispatch, { replay });
     }
 
     this.ensureChannelAttached();
@@ -325,41 +339,38 @@ export class StarciteSession implements SessionHandle {
     };
   }
 
-  private onGap(listener: SessionGapListener): () => void {
-    this.ensureChannelAttached();
-    this.lifecycle.on("gap", listener);
+  private addLifecycleListener(
+    eventName: SessionLifecycleListenerName,
+    listener: SessionLifecycleListener
+  ): () => void {
+    if (eventName === "gap") {
+      this.ensureChannelAttached();
+    }
+
+    this.lifecycle.on(eventName, listener as never);
     return () => {
-      this.offGap(listener);
+      this.removeLifecycleListener(eventName, listener);
     };
   }
 
-  private onAppend(listener: SessionAppendListener): () => void {
-    this.lifecycle.on("append", listener);
-    return () => {
-      this.lifecycle.off("append", listener);
-    };
-  }
-
-  private onError(listener: (error: Error) => void): () => void {
-    this.lifecycle.on("error", listener);
-    return () => {
-      this.lifecycle.off("error", listener);
-    };
+  private removeLifecycleListener(
+    eventName: SessionLifecycleListenerName,
+    listener: SessionLifecycleListener
+  ): void {
+    this.lifecycle.off(eventName, listener as never);
+    if (eventName === "gap") {
+      this.detachTailChannelIfIdle();
+    }
   }
 
   private offEvent(listener: SessionEventListener): void {
-    const unsubscribe = this.eventSubscriptions.get(listener);
-    if (!unsubscribe) {
+    const dispatch = this.eventDispatchers.get(listener);
+    if (!dispatch) {
       return;
     }
 
-    this.eventSubscriptions.delete(listener);
-    unsubscribe();
-    this.detachTailChannelIfIdle();
-  }
-
-  private offGap(listener: SessionGapListener): void {
-    this.lifecycle.off("gap", listener);
+    this.eventDispatchers.delete(listener);
+    this.history.off("event", dispatch);
     this.detachTailChannelIfIdle();
   }
 
@@ -369,10 +380,10 @@ export class StarciteSession implements SessionHandle {
   disconnect(): void {
     this.keepTailAttached = false;
     this.outbox.stop();
-    for (const unsubscribe of this.eventSubscriptions.values()) {
-      unsubscribe();
+    for (const dispatch of this.eventDispatchers.values()) {
+      this.history.off("event", dispatch);
     }
-    this.eventSubscriptions.clear();
+    this.eventDispatchers.clear();
     this.detachTailChannel();
     this.lifecycle.removeAllListeners();
   }
@@ -506,7 +517,7 @@ export class StarciteSession implements SessionHandle {
     return (
       this.keepTailAttached ||
       this.outbox.pendingCount > 0 ||
-      this.eventSubscriptions.size > 0 ||
+      this.eventDispatchers.size > 0 ||
       this.lifecycle.listenerCount("gap") > 0
     );
   }

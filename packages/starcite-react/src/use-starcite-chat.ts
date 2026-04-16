@@ -138,14 +138,17 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     const chatEvents = events.filter((e) => isChatEventType(e.type));
     toUIMessagesFromEvents<TMessage>(chatEvents)
       .then((msgs) => {
-        if (versionRef.current === version) {
+        if (
+          versionRef.current === version &&
+          sessionKeyRef.current === sessionKey
+        ) {
           setMessages(msgs);
         }
       })
       .catch(() => {
         /* intentionally swallowed */
       });
-  }, [events]);
+  }, [events, sessionKey]);
 
   const sendMessage = useCallback(
     async (message: SendMessageInput<TMessage>): Promise<void> => {

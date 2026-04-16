@@ -829,7 +829,7 @@ describe("Phoenix Tail Transport", () => {
 
     const alphaChannel = await waitForChannel("tail:ses_alpha");
     const betaChannel = await waitForChannel("tail:ses_beta");
-    expect(alphaChannel.joinCalls[0]).toEqual({ live_only: true });
+    expect(alphaChannel.joinCalls[0]).toEqual({ cursor: 0 });
     expect(betaChannel.joinCalls[0]).toEqual({ cursor: 6 });
 
     alphaSocket?.emitOpen();
@@ -979,6 +979,45 @@ describe("Phoenix Tail Transport", () => {
     stopResponder?.();
     responderSession?.disconnect();
     stopCreated();
+  });
+
+  it("replays directly created sessions from cursor zero on first attach", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(makeSessionRecord("ses_direct_create"))
+      .mockResolvedValueOnce(makeTokenResponse("ses_direct_create", "planner"));
+
+    const client = new Starcite({
+      apiKey: makeApiKey(),
+      baseUrl: "http://localhost:4000",
+      fetch: fetchMock,
+    });
+    const session = await client.session({
+      identity: client.agent({ id: "planner" }),
+      id: "ses_direct_create",
+    });
+
+    const seen: number[] = [];
+    const stopEvents = session.on("event", (event) => {
+      seen.push(event.seq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_direct_create");
+    expect(channel.joinCalls[0]).toEqual({ cursor: 0 });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "user:alice", 1)],
+    });
+    await flush();
+
+    expect(seen).toEqual([1]);
+
+    stopEvents();
+    session.disconnect();
   });
 
   it("backfills exact seq windows on demand through the tail transport", async () => {
@@ -1199,8 +1238,8 @@ describe("Phoenix Tail Transport", () => {
       "tail:ses_shared",
       2
     );
-    expect(plannerChannel.joinCalls[0]).toEqual({ live_only: true });
-    expect(reviewerChannel.joinCalls[0]).toEqual({ live_only: true });
+    expect(plannerChannel.joinCalls[0]).toEqual({ cursor: 0 });
+    expect(reviewerChannel.joinCalls[0]).toEqual({ cursor: 0 });
 
     plannerSocket?.emitOpen();
     reviewerSocket?.emitOpen();

@@ -46,6 +46,9 @@ export function useStarciteSession(
     }
 
     const syncEvents = (): void => {
+      if (resetKeyRef.current !== resetKey) {
+        return;
+      }
       setEvents(session.state().events);
     };
 
@@ -58,9 +61,7 @@ export function useStarciteSession(
       { replay: false }
     );
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      onErrorRef.current?.(error);
     });
 
     return () => {

@@ -3,7 +3,7 @@ import { StarciteError } from "./errors";
 import type { SessionSnapshot, TailCursor, TailEvent } from "./types";
 
 interface SessionHistoryEvents {
-  event: (event: TailEvent, context: SessionHistorySubscriptionContext) => void;
+  event: (event: TailEvent, context: SessionHistoryEventContext) => void;
 }
 
 type SessionHistorySnapshot = Pick<
@@ -11,7 +11,7 @@ type SessionHistorySnapshot = Pick<
   "cursor" | "events" | "lastSeq" | "syncing"
 >;
 
-export interface SessionHistorySubscriptionContext {
+export interface SessionHistoryEventContext {
   replayed: boolean;
 }
 
@@ -154,13 +154,17 @@ export class SessionHistory {
     };
   }
 
-  subscribe(
-    listener: (
-      event: TailEvent,
-      context: SessionHistorySubscriptionContext
-    ) => void,
+  on(
+    eventName: "event",
+    listener: (event: TailEvent, context: SessionHistoryEventContext) => void,
     options: { replay?: boolean } = {}
   ): () => void {
+    if (eventName !== "event") {
+      throw new StarciteError(
+        `Unsupported session history event '${eventName}'.`
+      );
+    }
+
     if (options.replay ?? false) {
       for (const event of this.events) {
         listener(event, { replayed: true });
@@ -171,6 +175,19 @@ export class SessionHistory {
     return () => {
       this.emitter.off("event", listener);
     };
+  }
+
+  off(
+    eventName: "event",
+    listener: (event: TailEvent, context: SessionHistoryEventContext) => void
+  ): void {
+    if (eventName !== "event") {
+      throw new StarciteError(
+        `Unsupported session history event '${eventName}'.`
+      );
+    }
+
+    this.emitter.off("event", listener);
   }
 
   state(syncing: boolean): SessionHistorySnapshot {
