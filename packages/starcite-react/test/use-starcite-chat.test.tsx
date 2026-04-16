@@ -47,6 +47,10 @@ class FakeSession implements StarciteChatSession {
     );
   }
 
+  events(): readonly TailEvent[] {
+    return [...this.eventLog];
+  }
+
   state(): SessionSnapshot {
     return {
       append: undefined,

@@ -1,9 +1,4 @@
-import {
-  type SessionCache,
-  type SessionCacheEntry,
-  type TailEvent,
-  WebStorageSessionCache,
-} from "@starcite/sdk";
+import { type SessionStore, WebStorageSessionStore } from "@starcite/sdk";
 import Conf from "conf";
 
 const STATE_FILENAME = "state";
@@ -28,7 +23,7 @@ function normalizeCacheBaseUrl(baseUrl: string): string {
   return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
 }
 
-export class StarciteCliCache implements SessionCache<TailEvent> {
+export class StarciteCliCache implements SessionStore {
   private readonly storage: Conf<Record<string, string>>;
 
   constructor(directory: string) {
@@ -43,27 +38,27 @@ export class StarciteCliCache implements SessionCache<TailEvent> {
     this.resetOnCacheVersionMismatch();
   }
 
-  sessionCache(baseUrl: string): SessionCache<TailEvent> {
-    return new WebStorageSessionCache<TailEvent>(this.storageAdapter(), {
-      keyForSession: (sessionId) =>
+  sessionStore(baseUrl: string): SessionStore {
+    return new WebStorageSessionStore(this.storageAdapter(), {
+      keyForSession: (sessionId: string) =>
         buildSessionCacheContextKey(normalizeCacheBaseUrl(baseUrl), sessionId),
     });
   }
 
-  read(sessionId: string): SessionCacheEntry<TailEvent> | undefined {
-    return this.sessionCache("").read(sessionId);
+  read(sessionId: string): string | undefined {
+    return this.sessionStore("").read(sessionId);
   }
 
-  write(sessionId: string, entry: SessionCacheEntry<TailEvent>): void {
-    this.sessionCache("").write(sessionId, entry);
+  write(sessionId: string, value: string): void {
+    this.sessionStore("").write(sessionId, value);
   }
 
   clear(sessionId: string): void {
-    this.sessionCache("").clear?.(sessionId);
+    this.sessionStore("").clear?.(sessionId);
   }
 
   clearSession(baseUrl: string, sessionId: string): void {
-    this.sessionCache(baseUrl).clear?.(sessionId);
+    this.sessionStore(baseUrl).clear?.(sessionId);
   }
 
   private storageAdapter() {

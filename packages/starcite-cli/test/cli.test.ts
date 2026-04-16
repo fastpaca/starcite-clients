@@ -654,9 +654,9 @@ describe("starcite CLI", () => {
     const createClient = vi.fn(
       (_baseUrl: string, _apiKey?: string, cache?: StarciteCliCache) => {
         expect(cache).toBeDefined();
-        const sessionCache = cache?.sessionCache("http://localhost:45187/v1");
-        expect(typeof sessionCache?.read).toBe("function");
-        expect(typeof sessionCache?.write).toBe("function");
+        const sessionStore = cache?.sessionStore("http://localhost:45187/v1");
+        expect(typeof sessionStore?.read).toBe("function");
+        expect(typeof sessionStore?.write).toBe("function");
         return createFakeClient();
       }
     );
@@ -1445,10 +1445,12 @@ describe("starcite CLI", () => {
       logger,
       createClient: (_baseUrl, _apiKey, cache) => {
         capturedCache = cache;
-        cache.sessionCache("http://localhost:45187").write("ses_123", {
-          log: {
-            cursor: 1,
+        cache.sessionStore("http://localhost:45187").write(
+          "ses_123",
+          JSON.stringify({
+            version: 2,
             lastSeq: 1,
+            cursor: 1,
             events: [
               {
                 seq: 1,
@@ -1459,12 +1461,9 @@ describe("starcite CLI", () => {
                 producer_seq: 1,
               },
             ],
-          },
-          metadata: {
-            schemaVersion: 5,
-            cachedAtMs: Date.now(),
-          },
-        });
+            coverage: [{ fromSeq: 1, toSeq: 1, afterCursor: 1 }],
+          })
+        );
 
         return {
           agent,
@@ -1489,11 +1488,12 @@ describe("starcite CLI", () => {
     expect(info).toEqual([]);
     expect(error).toEqual([]);
     expect(
-      capturedCache?.sessionCache("http://localhost:45187").read("ses_123")
-    ).toEqual({
-      log: {
-        cursor: 1,
+      capturedCache?.sessionStore("http://localhost:45187").read("ses_123")
+    ).toBe(
+      JSON.stringify({
+        version: 2,
         lastSeq: 1,
+        cursor: 1,
         events: [
           {
             seq: 1,
@@ -1504,11 +1504,9 @@ describe("starcite CLI", () => {
             producer_seq: 1,
           },
         ],
-      },
-      metadata: expect.objectContaining({
-        schemaVersion: 5,
-      }),
-    });
+        coverage: [{ fromSeq: 1, toSeq: 1, afterCursor: 1 }],
+      })
+    );
   });
 
   it("tail ignores gap notifications from the session and continues streaming events", async () => {

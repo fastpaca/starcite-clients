@@ -219,6 +219,12 @@ export interface SessionHandle {
     toSeq: number,
     requestOptions?: RequestOptions
   ): Promise<readonly TailEvent[]>;
+  /**
+   * Returns the currently materialized local event slice.
+   *
+   * Prefer `state().events` when you also need cursor/sync/append metadata.
+   */
+  events(): readonly TailEvent[];
   state(): SessionSnapshot;
   on(
     eventName: "event",

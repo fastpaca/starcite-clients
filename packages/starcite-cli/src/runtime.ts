@@ -233,7 +233,7 @@ export class CliRuntime {
       new Starcite({
         baseUrl,
         apiKey,
-        cache: cache.sessionCache(baseUrl),
+        sessionStore: cache.sessionStore(baseUrl),
       });
 
     return {

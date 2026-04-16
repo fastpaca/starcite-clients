@@ -48,6 +48,10 @@ class FakeSession {
     );
   }
 
+  events(): readonly TailEvent[] {
+    return this.orderedEvents();
+  }
+
   state(): SessionSnapshot {
     return {
       append: undefined,

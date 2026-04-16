@@ -440,6 +440,13 @@ export class StarciteSession implements SessionHandle {
   /**
    * Returns a stable view of the current canonical in-memory event state.
    */
+  events(): readonly TailEvent[] {
+    return this.history.events;
+  }
+
+  /**
+   * Returns a stable view of the current canonical in-memory event state.
+   */
   state(): SessionSnapshot {
     return {
       ...this.history.state(this.closeTailChannel !== undefined),

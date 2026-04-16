@@ -11,7 +11,6 @@ export async function POST(request: Request): Promise<Response> {
   const session = await starcite.session({
     identity: user,
     id: sessionId?.trim() || undefined,
-    title: "Next.js demo chat",
   });
 
   return NextResponse.json({ token: session.token, sessionId: session.id });
