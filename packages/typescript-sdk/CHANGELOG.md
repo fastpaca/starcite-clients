@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- BREAKING: session stores now default to the `starcite:v2` key prefix and do not read prior `starcite:v1:*` entries automatically
+- Sessions now retain sparse event coverage plus append outbox state in the version 2 store format, and expose `session.on("state", ...)` for canonical local snapshot changes
+
 ## [0.0.15] - 2026-04-08
 
 ### Added

@@ -6,6 +6,7 @@ import {
   encodeSessionStoreValue,
   MemorySessionStore,
 } from "../src/session-store";
+import type { SessionSnapshot } from "../src/types";
 
 const phoenixMock = vi.hoisted(() => {
   class MockPush {
@@ -905,6 +906,102 @@ describe("Phoenix Tail Transport", () => {
     session.disconnect();
   });
 
+  it("treats state listeners as live observers for attach and detach", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_state_attach") });
+
+    const snapshots: number[] = [];
+    const stopState = session.on("state", (snapshot) => {
+      snapshots.push(snapshot.lastSeq);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_state_attach");
+    expect(channel.joinCalls[0]).toEqual({ live_only: true });
+
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    expect(snapshots).toEqual([1]);
+
+    stopState();
+    await flush();
+    expect(channel.leaveCalls).toBe(1);
+    expect(socket?.disconnectCalls).toHaveLength(1);
+
+    session.disconnect();
+  });
+
+  it("emits state snapshots for explicit range backfills", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_state_backfill") });
+
+    const snapshots: SessionSnapshot[] = [];
+    const stopState = session.on("state", (snapshot) => {
+      snapshots.push(snapshot);
+    });
+
+    const rangePromise = session.range(3, 4);
+
+    await waitForSocketCount(2);
+    const liveSocket = phoenixMock.MockPhoenixSocket.instances[0];
+    const backfillSocket = phoenixMock.MockPhoenixSocket.instances[1];
+    const [liveChannel, backfillChannel] = await waitForChannels(
+      "tail:ses_state_backfill",
+      2
+    );
+    expect(liveChannel?.joinCalls[0]).toEqual({ live_only: true });
+    expect(backfillChannel?.joinCalls[0]).toEqual({ cursor: 0 });
+
+    liveSocket?.emitOpen();
+    backfillSocket?.emitOpen();
+    liveChannel.emitJoinOk({});
+    backfillChannel.emitJoinOk({});
+    backfillChannel.emit("events", {
+      events: [
+        makeEvent(1, "agent:planner", 1),
+        makeEvent(2, "agent:planner", 2),
+      ],
+    });
+    await flush();
+    backfillChannel.emit("events", {
+      events: [
+        makeEvent(3, "agent:planner", 3),
+        makeEvent(4, "agent:planner", 4),
+      ],
+    });
+
+    await expect(rangePromise).resolves.toEqual([
+      makeEvent(3, "agent:planner", 3),
+      makeEvent(4, "agent:planner", 4),
+    ]);
+
+    expect(snapshots.at(-1)).toMatchObject({
+      cursor: 4,
+      lastSeq: 4,
+      syncing: true,
+      append: expect.objectContaining({
+        pending: [],
+        status: "idle",
+      }),
+    });
+    expect(snapshots.at(-1)?.events.map((event) => event.seq)).toEqual([
+      1, 2, 3, 4,
+    ]);
+
+    stopState();
+    session.disconnect();
+  });
+
   it("replays fresh lifecycle-created sessions from cursor zero without changing app usage", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -1644,6 +1741,45 @@ describe("Phoenix Tail Transport", () => {
 
     stopGap();
     stopEvents();
+    session.disconnect();
+  });
+
+  it("does not emit state for gaps that do not advance the cursor", async () => {
+    const session = new Starcite({
+      baseUrl: "http://localhost:4000",
+      fetch: vi.fn<typeof fetch>(),
+    }).session({ token: makeSessionToken("ses_gap_noop_state") });
+
+    const snapshots: number[] = [];
+    const stopState = session.on("state", (snapshot) => {
+      snapshots.push(snapshot.cursor ?? -1);
+    });
+
+    await waitForSocketCount(1);
+    const socket = phoenixMock.MockPhoenixSocket.instances[0];
+    const channel = await waitForChannel("tail:ses_gap_noop_state");
+    socket?.emitOpen();
+    channel.emitJoinOk({});
+    channel.emit("events", {
+      events: [makeEvent(1, "agent:planner", 1)],
+    });
+    await flush();
+
+    expect(snapshots).toEqual([1]);
+
+    channel.emit("gap", {
+      committed_cursor: 1,
+      earliest_available_cursor: 1,
+      from_cursor: 1,
+      next_cursor: 1,
+      reason: "resume_invalidated",
+      type: "gap",
+    });
+    await flush();
+
+    expect(snapshots).toEqual([1]);
+
+    stopState();
     session.disconnect();
   });
 

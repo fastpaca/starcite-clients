@@ -5,7 +5,7 @@ import { z } from "zod";
 import { starcite } from "./starcite";
 
 type AgentBootstrapState = typeof globalThis & {
-  __starciteMultiAgentViewerStarted?: boolean;
+  __starciteMultiAgentViewerStartedClients?: WeakSet<object>;
 };
 type AgentDescriptor = { agent: string; name: string };
 type WorkerFinding = { name: string; text: string };
@@ -29,10 +29,15 @@ const coordinatorAgent = {
 } as const;
 const coordinatorIdentity = starcite.agent({ id: "coordinator" });
 const bootstrapState = globalThis as AgentBootstrapState;
+const startedClients =
+  bootstrapState.__starciteMultiAgentViewerStartedClients ??
+  (bootstrapState.__starciteMultiAgentViewerStartedClients =
+    new WeakSet<object>());
 
-if (!bootstrapState.__starciteMultiAgentViewerStarted) {
-  bootstrapState.__starciteMultiAgentViewerStarted = true;
-
+// Deduplicate bootstrap per SDK client instance so HMR can replace the client
+// without permanently blocking re-registration.
+if (!startedClients.has(starcite)) {
+  startedClients.add(starcite);
   starcite.on("session.created", (event) => {
     void attachCoordinator(event.session_id);
   });

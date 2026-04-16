@@ -4,6 +4,7 @@ import type {
   SessionEventListener,
   SessionOnEventOptions,
   SessionSnapshot,
+  SessionStateListener,
   TailEvent,
 } from "@starcite/sdk";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -25,6 +26,7 @@ class FakeSession implements StarciteChatSession {
   readonly id: string;
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
+  private readonly stateListeners = new Set<SessionStateListener>();
   private readonly eventLog: TailEvent[];
   private nextSeq: number;
 
@@ -75,16 +77,28 @@ class FakeSession implements StarciteChatSession {
     listener: SessionEventListener,
     _options?: SessionOnEventOptions<TailEvent>
   ): () => void;
+  on(eventName: "state", listener: SessionStateListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "event" | "error",
-    listener: SessionEventListener | ((error: Error) => void)
+    eventName: "event" | "state" | "error",
+    listener:
+      | SessionEventListener
+      | SessionStateListener
+      | ((error: Error) => void)
   ): () => void {
     if (eventName === "event") {
       const eventListener = listener as SessionEventListener;
       this.eventListeners.add(eventListener);
       return () => {
         this.eventListeners.delete(eventListener);
+      };
+    }
+
+    if (eventName === "state") {
+      const stateListener = listener as SessionStateListener;
+      this.stateListeners.add(stateListener);
+      return () => {
+        this.stateListeners.delete(stateListener);
       };
     }
 
@@ -113,6 +127,7 @@ class FakeSession implements StarciteChatSession {
     } as TailEvent;
 
     this.eventLog.push(event);
+    this.emitState();
     for (const listener of this.eventListeners) {
       listener(event, context);
     }
@@ -129,6 +144,13 @@ class FakeSession implements StarciteChatSession {
   emitError(error: Error): void {
     for (const listener of this.errorListeners) {
       listener(error);
+    }
+  }
+
+  private emitState(): void {
+    const snapshot = this.state();
+    for (const listener of this.stateListeners) {
+      listener(snapshot);
     }
   }
 }

@@ -347,6 +347,11 @@ const unsub = session.on("event", (event, context) => {
   console.log(context.phase); // "replay" | "live"
 });
 
+const unsubState = session.on("state", (snapshot) => {
+  console.log(snapshot.events.length);
+  console.log(snapshot.append?.status);
+});
+
 // Opt into replaying the locally materialized sparse state.
 const stopWithReplay = session.on(
   "event",
@@ -368,6 +373,7 @@ session.on("gap", (gap) => {
 });
 
 unsub();
+unsubState();
 stopWithReplay();
 unsubErr();
 
@@ -380,6 +386,7 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 - `session.range(fromSeq, toSeq)` returns the exact committed interval `fromSeq..toSeq` inclusive.
 - Range reads are powered by the same sparse local event state used for live subscriptions. Missing gaps are replayed on demand through the tail transport and merged into the canonical local state.
+- `session.on("state", ...)` fires when that local session state changes, including explicit `session.range(...)` backfills and append-queue state transitions.
 - Callers must provide a concrete upper bound. In practice this usually comes from an event you already have in hand, such as the current user event's `seq`.
 - `session.on("event", listener)` starts the tail stream lazily on first use and is live-only by default.
 - The second callback argument is `{ phase: "replay" | "live" }`.

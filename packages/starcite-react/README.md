@@ -70,9 +70,12 @@ export function Timeline({ token }: { token: string }) {
 }
 ```
 
-`useStarciteSession` mirrors the session's current local event state and merges
-future `session.on("event")` updates into the same view. It does not issue any
-implicit durable range reads.
+`useStarciteSession` mirrors the session's current local event state and tracks
+future `session.on("state")` updates in the same view. That includes explicit
+`session.range(...)` materialization without any implicit durable range reads.
+If you reuse the same session handle behind a new `id`, the hook starts a fresh
+local view from that reset point instead of replaying already materialized
+events from the previous view.
 
 ## `useStarciteChat`
 
@@ -147,7 +150,8 @@ after the session is bound.
 
 ## Behavior
 
-- `useStarciteSession` treats `session.state().events` as the source of truth and re-syncs from it on each live event.
+- `useStarciteSession` treats `session.state().events` as the source of truth and re-syncs from `session.on("state", ...)`.
+- Changing `id` on the same session handle resets the hook to a fresh local view from that point forward.
 - `useStarciteChat` projects from that same local session state and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`

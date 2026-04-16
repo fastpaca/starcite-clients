@@ -1,4 +1,5 @@
 const DEFAULT_NEW_SESSION_CURSOR_GRACE_MS = 30_000;
+const NEW_SESSION_REPLAY_CURSOR = 0;
 
 /**
  * Tracks just-created session ids for a short grace window so the first tail
@@ -13,20 +14,26 @@ export class NewSessionCursorRegistry {
   }
 
   remember(sessionId: string): void {
-    this.expiresAtBySessionId.set(sessionId, Date.now() + this.graceMs);
+    const now = Date.now();
+    this.pruneExpired(now);
+    this.expiresAtBySessionId.set(sessionId, now + this.graceMs);
   }
 
   initialCursorFor(sessionId: string): 0 | undefined {
+    this.pruneExpired(Date.now());
     const expiresAt = this.expiresAtBySessionId.get(sessionId);
     if (expiresAt === undefined) {
       return undefined;
     }
 
-    if (expiresAt <= Date.now()) {
-      this.expiresAtBySessionId.delete(sessionId);
-      return undefined;
-    }
+    return NEW_SESSION_REPLAY_CURSOR;
+  }
 
-    return 0;
+  private pruneExpired(now: number): void {
+    for (const [sessionId, expiresAt] of this.expiresAtBySessionId) {
+      if (expiresAt <= now) {
+        this.expiresAtBySessionId.delete(sessionId);
+      }
+    }
   }
 }

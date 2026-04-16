@@ -38,6 +38,7 @@ import {
   type SessionOnEventOptions,
   type SessionRecord,
   type SessionSnapshot,
+  type SessionStateListener,
   type SessionStore,
   type SessionTokenRefreshHandler,
   type SessionTokenRefreshReason,
@@ -73,6 +74,7 @@ interface SessionLifecycleEvents {
   error: (error: Error) => void;
   append: (event: SessionAppendLifecycleEvent) => void;
   gap: (gap: TailGap) => void;
+  state: SessionStateListener;
 }
 
 type SessionLifecycleListenerName = keyof SessionLifecycleEvents;
@@ -145,8 +147,9 @@ export class StarciteSession implements SessionHandle {
         });
       },
       onStateChange: () => {
-        this.persistStoredState();
         this.reconcileChannelAttachment();
+        this.persistStoredState();
+        this.emitStateChange();
       },
       onError: (error) => this.emitStreamError(error),
       onLifecycle: (event) => {
@@ -222,13 +225,15 @@ export class StarciteSession implements SessionHandle {
   ): () => void;
   on(eventName: "append", listener: SessionAppendListener): () => void;
   on(eventName: "gap", listener: SessionGapListener): () => void;
+  on(eventName: "state", listener: SessionStateListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "event" | "append" | "gap" | "error",
+    eventName: "event" | "append" | "gap" | "state" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
       | SessionGapListener
+      | SessionStateListener
       | ((error: Error) => void),
     options?: SessionOnEventOptions
   ): () => void {
@@ -249,6 +254,12 @@ export class StarciteSession implements SessionHandle {
           listener as SessionAppendListener
         );
 
+      case "state":
+        return this.addLifecycleListener(
+          "state",
+          listener as SessionStateListener
+        );
+
       case "error":
         return this.addLifecycleListener(
           "error",
@@ -266,13 +277,15 @@ export class StarciteSession implements SessionHandle {
   off(eventName: "event", listener: SessionEventListener): void;
   off(eventName: "append", listener: SessionAppendListener): void;
   off(eventName: "gap", listener: SessionGapListener): void;
+  off(eventName: "state", listener: SessionStateListener): void;
   off(eventName: "error", listener: (error: Error) => void): void;
   off(
-    eventName: "event" | "append" | "gap" | "error",
+    eventName: "event" | "append" | "gap" | "state" | "error",
     listener:
       | SessionEventListener
       | SessionAppendListener
       | SessionGapListener
+      | SessionStateListener
       | ((error: Error) => void)
   ): void {
     switch (eventName) {
@@ -290,6 +303,10 @@ export class StarciteSession implements SessionHandle {
           "append",
           listener as SessionAppendListener
         );
+        return;
+
+      case "state":
+        this.removeLifecycleListener("state", listener as SessionStateListener);
         return;
 
       case "error":
@@ -345,11 +362,11 @@ export class StarciteSession implements SessionHandle {
     eventName: SessionLifecycleListenerName,
     listener: SessionLifecycleListener
   ): () => void {
-    if (eventName === "gap") {
+    this.lifecycle.on(eventName, listener as never);
+    if (eventName === "gap" || eventName === "state") {
       this.ensureChannelAttached();
     }
 
-    this.lifecycle.on(eventName, listener as never);
     return () => {
       this.removeLifecycleListener(eventName, listener);
     };
@@ -360,7 +377,7 @@ export class StarciteSession implements SessionHandle {
     listener: SessionLifecycleListener
   ): void {
     this.lifecycle.off(eventName, listener as never);
-    if (eventName === "gap") {
+    if (eventName === "gap" || eventName === "state") {
       this.detachTailChannelIfIdle();
     }
   }
@@ -515,12 +532,31 @@ export class StarciteSession implements SessionHandle {
     });
   }
 
+  private emitStateChange(): void {
+    const listeners = this.lifecycle.listeners(
+      "state"
+    ) as SessionStateListener[];
+    if (listeners.length === 0) {
+      return;
+    }
+
+    const snapshot = this.state();
+    for (const listener of listeners) {
+      try {
+        this.observeListenerResult(listener(snapshot));
+      } catch (error) {
+        this.emitStreamError(error);
+      }
+    }
+  }
+
   private shouldKeepChannelAttached(): boolean {
     return (
       this.keepTailAttached ||
       this.outbox.pendingCount > 0 ||
       this.eventDispatchers.size > 0 ||
-      this.lifecycle.listenerCount("gap") > 0
+      this.lifecycle.listenerCount("gap") > 0 ||
+      this.lifecycle.listenerCount("state") > 0
     );
   }
 
@@ -562,14 +598,17 @@ export class StarciteSession implements SessionHandle {
               this.history.lastSeq
             );
             this.persistStoredState();
+            this.emitStateChange();
           }
         } catch (error) {
           this.emitStreamError(error);
         }
       },
       onGap: (gap) => {
-        this.history.markObservedCursor(gap.next_cursor);
-        this.persistStoredState();
+        if (this.history.markObservedCursor(gap.next_cursor)) {
+          this.persistStoredState();
+          this.emitStateChange();
+        }
 
         if (this.lifecycle.listenerCount("gap") > 0) {
           this.lifecycle.emit("gap", gap);
@@ -662,63 +701,7 @@ export class StarciteSession implements SessionHandle {
     let observedSeq = anchor.seq;
     let pendingGapAfterSeq: number | undefined;
     let finished = false;
-    let resolveBackfill: () => void = () => undefined;
-    let failBackfill: (error: Error) => void = () => undefined;
-    const unbind = this.bindTailChannel(channel, {
-      onEvents: (batch) => {
-        if (batch.length === 0) {
-          return;
-        }
-
-        const mergedBatch = this.mergeRangeBackfillBatch(
-          batch,
-          currentCursor,
-          observedSeq
-        );
-        if (mergedBatch instanceof Error) {
-          failBackfill(mergedBatch);
-          return;
-        }
-
-        currentCursor = mergedBatch.currentCursor;
-        observedSeq = mergedBatch.observedSeq;
-
-        if (
-          this.rangeBackfillHasUnrecoverableGap(
-            pendingGapAfterSeq,
-            batch,
-            fromSeq,
-            toSeq
-          )
-        ) {
-          failBackfill(this.rangeBackfillGapError(fromSeq, toSeq));
-          return;
-        }
-
-        pendingGapAfterSeq = undefined;
-        if (this.history.isRangeCovered(fromSeq, toSeq)) {
-          finish(resolveBackfill);
-        }
-      },
-      onGap: (gap) => {
-        this.history.markObservedCursor(gap.next_cursor);
-        this.persistStoredState();
-        pendingGapAfterSeq = observedSeq;
-        currentCursor = gap.next_cursor;
-        channel.rejoin();
-      },
-      onTokenExpired: () => {
-        failBackfill(
-          new StarciteTokenExpiredError(
-            `Tail replay token expired for session '${this.id}'.`,
-            {
-              closeReason: "token_expired",
-              sessionId: this.id,
-            }
-          )
-        );
-      },
-    });
+    let unbind: (() => void) | undefined;
 
     const finish = (callback: () => void): void => {
       if (finished) {
@@ -726,18 +709,78 @@ export class StarciteSession implements SessionHandle {
       }
 
       finished = true;
-      unbind();
+      unbind?.();
       managedChannel.close();
       callback();
     };
 
     const promise = new Promise<void>((resolve, reject) => {
-      resolveBackfill = resolve;
-      failBackfill = (error: Error): void => {
+      const resolveBackfill = (): void => {
+        finish(resolve);
+      };
+      const failBackfill = (error: Error): void => {
         finish(() => {
           reject(error);
         });
       };
+
+      unbind = this.bindTailChannel(channel, {
+        onEvents: (batch) => {
+          if (batch.length === 0) {
+            return;
+          }
+
+          const mergedBatch = this.mergeRangeBackfillBatch(
+            batch,
+            currentCursor,
+            observedSeq
+          );
+          if (mergedBatch instanceof Error) {
+            failBackfill(mergedBatch);
+            return;
+          }
+
+          currentCursor = mergedBatch.currentCursor;
+          observedSeq = mergedBatch.observedSeq;
+
+          if (
+            this.rangeBackfillHasUnrecoverableGap(
+              pendingGapAfterSeq,
+              batch,
+              fromSeq,
+              toSeq
+            )
+          ) {
+            failBackfill(this.rangeBackfillGapError(fromSeq, toSeq));
+            return;
+          }
+
+          pendingGapAfterSeq = undefined;
+          if (this.history.isRangeCovered(fromSeq, toSeq)) {
+            resolveBackfill();
+          }
+        },
+        onGap: (gap) => {
+          if (this.history.markObservedCursor(gap.next_cursor)) {
+            this.persistStoredState();
+            this.emitStateChange();
+          }
+          pendingGapAfterSeq = observedSeq;
+          currentCursor = gap.next_cursor;
+          channel.rejoin();
+        },
+        onTokenExpired: () => {
+          failBackfill(
+            new StarciteTokenExpiredError(
+              `Tail replay token expired for session '${this.id}'.`,
+              {
+                closeReason: "token_expired",
+                sessionId: this.id,
+              }
+            )
+          );
+        },
+      });
 
       channel.join().receive("error", (payload) => {
         failBackfill(
@@ -967,6 +1010,7 @@ export class StarciteSession implements SessionHandle {
       const nextObservedSeq = batch.at(-1)?.seq ?? observedSeq;
       this.history.markObservedCursor(nextCursor);
       this.persistStoredState();
+      this.emitStateChange();
       return {
         currentCursor: nextCursor,
         observedSeq: nextObservedSeq,

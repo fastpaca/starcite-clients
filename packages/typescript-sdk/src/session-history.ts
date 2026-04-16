@@ -109,6 +109,8 @@ export class SessionHistory {
   private readonly listeners = new Set<SessionHistoryListener>();
   private readonly eventBySeq = new Map<number, TailEvent>();
   private ranges: SessionHistoryRange[] = [];
+  private orderedEventsCache: TailEvent[] = [];
+  private orderedEventsDirty = false;
   private observedLastSeq = 0;
   private observedCursor: TailCursor | undefined;
 
@@ -122,12 +124,18 @@ export class SessionHistory {
 
     this.eventBySeq.clear();
     this.ranges = [];
+    this.orderedEventsCache = [];
+    this.orderedEventsDirty = false;
     this.observedLastSeq = lastSeq;
     this.observedCursor = snapshot.cursor;
 
     const events = snapshot.events ?? [];
     for (const event of normalizeBatch(events)) {
       this.eventBySeq.set(event.seq, event);
+    }
+
+    if (this.eventBySeq.size > 0) {
+      this.orderedEventsDirty = true;
     }
 
     if (events.length > 0 && snapshot.coverage === undefined) {
@@ -209,11 +217,17 @@ export class SessionHistory {
     });
   }
 
-  markObservedCursor(cursor: TailCursor): void {
-    this.observedCursor =
+  markObservedCursor(cursor: TailCursor): boolean {
+    const nextCursor =
       this.observedCursor === undefined
         ? cursor
         : Math.max(this.observedCursor, cursor);
+    if (nextCursor === this.observedCursor) {
+      return false;
+    }
+
+    this.observedCursor = nextCursor;
+    return true;
   }
 
   isRangeCovered(fromSeq: number, toSeq: number): boolean {
@@ -272,7 +286,13 @@ export class SessionHistory {
   }
 
   get events(): TailEvent[] {
-    return toOrderedEvents(this.eventBySeq);
+    if (!this.orderedEventsDirty) {
+      return this.orderedEventsCache;
+    }
+
+    this.orderedEventsCache = toOrderedEvents(this.eventBySeq);
+    this.orderedEventsDirty = false;
+    return this.orderedEventsCache;
   }
 
   get cursor(): TailCursor | undefined {
@@ -331,6 +351,7 @@ export class SessionHistory {
     const previousLastSeq = this.observedLastSeq;
     let currentGroup: TailEvent[] = [];
     let currentBeforeCursor = options.beforeCursor;
+    this.orderedEventsDirty = true;
 
     const flushGroup = (): void => {
       if (currentGroup.length === 0) {

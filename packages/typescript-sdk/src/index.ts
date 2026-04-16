@@ -57,6 +57,7 @@ export type {
   SessionOnEventOptions,
   SessionRecord,
   SessionSnapshot,
+  SessionStateListener,
   SessionStore,
   SessionStoredAppend,
   SessionTokenRefreshContext,

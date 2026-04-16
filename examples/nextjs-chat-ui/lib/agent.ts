@@ -10,17 +10,21 @@ import type { StarciteSession, TailEvent } from "@starcite/sdk";
 import { starcite } from "./starcite";
 
 type AgentBootstrapState = typeof globalThis & {
-  __starciteNextjsChatUiAgentStarted?: boolean;
+  __starciteNextjsChatUiStartedClients?: WeakSet<object>;
 };
 
 const agentIdentity = starcite.agent({
   id: process.env.STARCITE_AGENT_ID ?? "nextjs-demo-agent",
 });
 const bootstrapState = globalThis as AgentBootstrapState;
+const startedClients =
+  bootstrapState.__starciteNextjsChatUiStartedClients ??
+  (bootstrapState.__starciteNextjsChatUiStartedClients = new WeakSet<object>());
 
-if (!bootstrapState.__starciteNextjsChatUiAgentStarted) {
-  bootstrapState.__starciteNextjsChatUiAgentStarted = true;
-
+// Deduplicate bootstrap per SDK client instance so HMR can replace the client
+// without permanently blocking re-registration.
+if (!startedClients.has(starcite)) {
+  startedClients.add(starcite);
   starcite.on("session.created", (event) => {
     void attachChatResponder(event.session_id);
   });

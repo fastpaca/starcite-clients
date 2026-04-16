@@ -210,6 +210,22 @@ describe("SessionHistory", () => {
     expect(history.anchorBeforeSeq(11)).toEqual({ cursor: 10, seq: 10 });
   });
 
+  it("reuses the same ordered event array when only the cursor changes", () => {
+    const history = new SessionHistory();
+    history.applyLiveBatch([makeEvent(1, "frame-1", 1)]);
+
+    const before = history.state(false).events;
+    history.markObservedCursor(5);
+    const after = history.state(false).events;
+
+    expect(after).toBe(before);
+    expect(history.state(false)).toMatchObject({
+      cursor: 5,
+      lastSeq: 1,
+      syncing: false,
+    });
+  });
+
   it("exports a single stored snapshot for durable state and warm events", () => {
     const history = new SessionHistory();
     history.applyBackfillBatch([makeEvent(5, "frame-5", 5)], 4);

@@ -197,6 +197,15 @@ export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
 }
 
 /**
+ * Listener signature for session snapshot changes.
+ *
+ * Fires for local event/cursor updates plus append-queue state transitions.
+ */
+export type SessionStateListener = (
+  snapshot: SessionSnapshot
+) => void | Promise<void>;
+
+/**
  * Narrow public session surface for direct consumers and integrations.
  */
 export interface SessionHandle {
@@ -216,6 +225,7 @@ export interface SessionHandle {
     listener: SessionEventListener,
     options?: SessionOnEventOptions<TailEvent>
   ): () => void;
+  on(eventName: "state", listener: SessionStateListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
@@ -252,7 +262,8 @@ export interface SessionSnapshot {
   /**
    * Ordered events currently materialized in memory.
    *
-   * This can be a sparse subset of the full session timeline.
+   * This can be a sparse subset of the full session timeline. The array
+   * reference stays stable until the materialized event set actually changes.
    */
   events: readonly TailEvent[];
   /**
