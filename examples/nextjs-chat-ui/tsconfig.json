@@ -19,6 +19,9 @@
       "@starcite/react/chat-protocol": [
         "../../packages/starcite-react/src/chat-protocol.ts"
       ],
+      "@starcite/session-supervisor": [
+        "../../packages/starcite-session-supervisor/src/index.ts"
+      ],
       "@starcite/sdk": ["../../packages/typescript-sdk/src/index.ts"]
     },
     "plugins": [{ "name": "next" }]

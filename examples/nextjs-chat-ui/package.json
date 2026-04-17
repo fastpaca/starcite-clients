@@ -15,6 +15,7 @@
     "@rive-app/react-webgl2": "^4.27.0",
     "@starcite/react": "workspace:*",
     "@starcite/sdk": "workspace:*",
+    "@starcite/session-supervisor": "workspace:*",
     "@streamdown/cjk": "^1.0.2",
     "@streamdown/code": "^1.0.3",
     "@streamdown/math": "^1.0.2",

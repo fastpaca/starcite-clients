@@ -27,9 +27,9 @@
     "starcite": "bun run --cwd packages/starcite-cli dev",
     "starcite:compile": "bun run --cwd packages/starcite-cli compile",
     "lint:root": "ultracite check biome.jsonc package.json README.md scripts",
-    "lint:workspaces": "bun run --cwd packages/typescript-sdk lint && bun run --cwd packages/starcite-cli lint && bun run --cwd packages/starcite-react lint",
+    "lint:workspaces": "bun run --cwd packages/typescript-sdk lint && bun run --cwd packages/starcite-cli lint && bun run --cwd packages/starcite-react lint && bun run --cwd packages/starcite-session-supervisor lint",
     "format:root": "ultracite fix biome.jsonc package.json README.md scripts",
-    "format:workspaces": "bun run --cwd packages/typescript-sdk format && bun run --cwd packages/starcite-cli format && bun run --cwd packages/starcite-react format"
+    "format:workspaces": "bun run --cwd packages/typescript-sdk format && bun run --cwd packages/starcite-cli format && bun run --cwd packages/starcite-react format && bun run --cwd packages/starcite-session-supervisor format"
   },
   "devDependencies": {
     "ultracite": "^7.1.5"
@@ -38,6 +38,7 @@
     "packages/typescript-sdk",
     "packages/starcite-cli",
     "packages/starcite-react",
+    "packages/starcite-session-supervisor",
     "examples/nextjs-chat-ui",
     "examples/multi-agent-viewer"
   ]

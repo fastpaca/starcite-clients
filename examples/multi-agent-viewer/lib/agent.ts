@@ -1,4 +1,8 @@
 import { openai } from "@ai-sdk/openai";
+import {
+  SessionAgent,
+  SessionAgentSupervisor,
+} from "@starcite/session-supervisor";
 import { streamText, tool } from "ai";
 import { type TailEvent, type StarciteSession } from "@starcite/sdk";
 import { z } from "zod";
@@ -24,178 +28,155 @@ const coordinatorAgent = {
 type WorkerAssignment = z.infer<typeof startAgentInput> & { id: string };
 type WorkerFinding = { name: string; text: string };
 
-starcite.on("session.created", (event) => {
-  void (async () => {
+class CoordinatorSessionAgent extends SessionAgent<StarciteSession> {
+  async receive(event: TailEvent): Promise<void> {
+    if (event.type !== "message.user") {
+      return;
+    }
+
+    const question = messageText(event);
+    if (!question) {
+      return;
+    }
+
+    await this.runCoordinatorTurn(question);
+  }
+
+  private async runCoordinatorTurn(question: string): Promise<void> {
+    const launched: Promise<WorkerFinding>[] = [];
+
+    await this.appendCoordinatorDelta(
+      "I'll look at this from a few angles, then synthesize a final answer."
+    );
+    await this.appendCoordinatorDone();
+
+    const result = streamText({
+      model: coordinatorModel,
+      system: [
+        "You are a research coordinator.",
+        "You must use start_agent two to four times for every user question.",
+        "Each specialist should investigate one distinct angle.",
+        "A separate synthesis pass will run after the specialists finish, so do not give the final answer yet.",
+      ].join(" "),
+      prompt: question,
+      tools: {
+        start_agent: tool({
+          description: "Launch a specialist agent for one research angle.",
+          inputSchema: startAgentInput,
+          execute: async ({ name, prompt }) => {
+            launched.push(
+              this.runWorker({
+                id: workerId(name, launched.length + 1),
+                name,
+                prompt,
+              })
+            );
+            return { ok: true };
+          },
+        }),
+      },
+    });
+
+    for await (const delta of result.textStream) {
+      await this.appendCoordinatorDelta(delta);
+    }
+
+    await this.appendCoordinatorDone();
+
+    const findings = await Promise.all(launched);
+    if (findings.length === 0) {
+      return;
+    }
+
+    const summary = streamText({
+      model: coordinatorModel,
+      system: [
+        "You are a research coordinator.",
+        "Synthesize the specialist findings into one direct answer.",
+        "Be decisive and concise.",
+        "Do not ask follow-up questions.",
+      ].join(" "),
+      prompt: summaryPrompt(question, findings),
+    });
+
+    for await (const delta of summary.textStream) {
+      await this.appendCoordinatorDelta(delta);
+    }
+
+    await this.appendCoordinatorDone();
+  }
+
+  private async runWorker(
+    assignment: WorkerAssignment
+  ): Promise<WorkerFinding> {
     const session = await starcite.session({
-      identity: starcite.agent({ id: "coordinator" }),
-      id: event.session_id,
-      title: "Research Swarm",
+      identity: starcite.agent({ id: assignment.id }),
+      id: this.sessionId,
     });
 
-    let running = false;
+    const result = streamText({
+      model: workerModel,
+      system: `You are ${assignment.name}. Focus on your specialty and be concise, concrete, and useful.`,
+      prompt: assignment.prompt,
+    });
 
-    session.on("event", async (nextEvent) => {
-        if (nextEvent.type !== "message.user" || running) {
-          return;
-        }
+    let text = "";
 
-        const question = messageText(nextEvent);
-        if (!question) {
-          return;
-        }
-
-        running = true;
-        try {
-          await runCoordinatorTurn(session, question);
-        } finally {
-          running = false;
-        }
-      });
-  })();
-});
-
-async function runCoordinatorTurn(
-  session: StarciteSession,
-  question: string
-): Promise<void> {
-  const launched: Promise<WorkerFinding>[] = [];
-
-  await session.append({
-    type: "agent.streaming.chunk",
-    source: "agent",
-    payload: {
-      ...coordinatorAgent,
-      delta: "I'll look at this from a few angles, then synthesize a final answer.",
-    },
-  });
-
-  await session.append({
-    type: "agent.done",
-    source: "agent",
-    payload: coordinatorAgent,
-  });
-
-  const result = streamText({
-    model: coordinatorModel,
-    system: [
-      "You are a research coordinator.",
-      "You must use start_agent two to four times for every user question.",
-      "Each specialist should investigate one distinct angle.",
-      "A separate synthesis pass will run after the specialists finish, so do not give the final answer yet.",
-    ].join(" "),
-    prompt: question,
-    tools: {
-      start_agent: tool({
-        description: "Launch a specialist agent for one research angle.",
-        inputSchema: startAgentInput,
-        execute: async ({ name, prompt }) => {
-          launched.push(
-            runWorker(session.id, {
-              id: workerId(name, launched.length + 1),
-              name,
-              prompt,
-            })
-          );
-          return { ok: true };
+    for await (const delta of result.textStream) {
+      text += delta;
+      await session.append({
+        type: "agent.streaming.chunk",
+        source: "agent",
+        payload: {
+          agent: assignment.id,
+          name: assignment.name,
+          delta,
         },
-      }),
-    },
-  });
+      });
+    }
 
-  for await (const delta of result.textStream) {
     await session.append({
-      type: "agent.streaming.chunk",
-      source: "agent",
-      payload: {
-        ...coordinatorAgent,
-        delta,
-      },
-    });
-  }
-
-  await session.append({
-    type: "agent.done",
-    source: "agent",
-    payload: coordinatorAgent,
-  });
-
-  const findings = await Promise.all(launched);
-  if (findings.length === 0) {
-    return;
-  }
-
-  const summary = streamText({
-    model: coordinatorModel,
-    system: [
-      "You are a research coordinator.",
-      "Synthesize the specialist findings into one direct answer.",
-      "Be decisive and concise.",
-      "Do not ask follow-up questions.",
-    ].join(" "),
-    prompt: summaryPrompt(question, findings),
-  });
-
-  for await (const delta of summary.textStream) {
-    await session.append({
-      type: "agent.streaming.chunk",
-      source: "agent",
-      payload: {
-        ...coordinatorAgent,
-        delta,
-      },
-    });
-  }
-
-  await session.append({
-    type: "agent.done",
-    source: "agent",
-    payload: coordinatorAgent,
-  });
-}
-
-async function runWorker(
-  sessionId: string,
-  assignment: WorkerAssignment
-): Promise<WorkerFinding> {
-  const session = await starcite.session({
-    identity: starcite.agent({ id: assignment.id }),
-    id: sessionId,
-  });
-
-  const result = streamText({
-    model: workerModel,
-    system: `You are ${assignment.name}. Focus on your specialty and be concise, concrete, and useful.`,
-    prompt: assignment.prompt,
-  });
-
-  let text = "";
-
-  for await (const delta of result.textStream) {
-    text += delta;
-    await session.append({
-      type: "agent.streaming.chunk",
+      type: "agent.done",
       source: "agent",
       payload: {
         agent: assignment.id,
         name: assignment.name,
+      },
+    });
+
+    return { name: assignment.name, text: text.trim() };
+  }
+
+  private async appendCoordinatorDelta(delta: string): Promise<void> {
+    await this.session.append({
+      type: "agent.streaming.chunk",
+      source: "agent",
+      payload: {
+        ...coordinatorAgent,
         delta,
       },
     });
   }
 
-  await session.append({
-    type: "agent.done",
-    source: "agent",
-    payload: {
-      agent: assignment.id,
-      name: assignment.name,
-    },
-  });
-
-  return { name: assignment.name, text: text.trim() };
+  private async appendCoordinatorDone(): Promise<void> {
+    await this.session.append({
+      type: "agent.done",
+      source: "agent",
+      payload: coordinatorAgent,
+    });
+  }
 }
 
-function summaryPrompt(question: string, findings: readonly WorkerFinding[]): string {
+const supervisor = new SessionAgentSupervisor({
+  Agent: CoordinatorSessionAgent,
+  agent: starcite.agent({ id: "coordinator" }),
+  starcite,
+});
+
+function summaryPrompt(
+  question: string,
+  findings: readonly WorkerFinding[]
+): string {
   return [
     `User question: ${question}`,
     "",
@@ -227,3 +208,7 @@ function messageText(event: TailEvent): string {
 
   return typeof payload.text === "string" ? payload.text.trim() : "";
 }
+
+void supervisor.start().catch((error: unknown) => {
+  console.error("[multi-agent-viewer] failed to start session supervisor", error);
+});
