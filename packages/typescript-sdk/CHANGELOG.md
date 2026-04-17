@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- BREAKING: session stores now default to the `starcite:v2` key prefix and do not read prior `starcite:v1:*` entries automatically
+- Sessions now retain sparse event coverage plus append outbox state in the version 2 store format, and expose `session.on("state", ...)` for canonical local snapshot changes
+
 ## [0.0.15] - 2026-04-08
 
 ### Added
@@ -25,7 +30,7 @@
 - Type exports for session listing payloads/options
 - First-class auth input via `apiKey` in `Starcite` constructor options
 - Automatic bearer auth header on HTTP API requests
-- Built-in session caches: `MemorySessionCache`, `WebStorageSessionCache`, and `LocalStorageSessionCache`
+- Built-in session stores: `MemorySessionStore`, `WebStorageSessionStore`, and `LocalStorageSessionStore`
 - `StarciteTailError` with structured tail failure context (`stage`, `sessionId`, `attempts`, close metadata)
 - Explicit `session.on("gap", ...)` support for server gap payloads
 

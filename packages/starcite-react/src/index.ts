@@ -2,6 +2,7 @@
 export type { ChatPayloadEnvelope } from "./chat-protocol";
 export {
   appendAssistantChunkEvent,
+  appendAssistantTextMessage,
   appendUserMessageEvent,
   chatAssistantChunkEventType,
   chatUserMessageEventType,
@@ -19,7 +20,6 @@ export type {
 } from "./use-starcite-chat";
 export { useStarciteChat } from "./use-starcite-chat";
 export type {
-  StarciteSessionLike,
   UseStarciteSessionOptions,
   UseStarciteSessionResult,
 } from "./use-starcite-session";

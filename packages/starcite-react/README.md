@@ -70,9 +70,12 @@ export function Timeline({ token }: { token: string }) {
 }
 ```
 
-`useStarciteSession` reads from `session.events()` and refreshes from
-`session.on("event", ..., { replay: false })`, so the retained session log
-stays the source of truth.
+`useStarciteSession` mirrors the session's current local event state and tracks
+future `session.on("state")` updates in the same view. That includes explicit
+`session.range(...)` materialization without any implicit durable range reads.
+If you reuse the same session handle behind a new `id`, the hook starts a fresh
+local view from that reset point instead of replaying already materialized
+events from the previous view.
 
 ## `useStarciteChat`
 
@@ -142,20 +145,22 @@ after the session is bound.
 - `session` (required): session scoped to the active session token
 - `id` (optional): reset key for when you swap sessions; defaults to `session.id`
 - `userMessageSource` (optional, default `"use-chat"`): source string for user append events
-- `onError` (optional): callback for append, projection, or surfaced session `error` events
+- `onError` (optional): callback for append or surfaced session `error` events
 - Returns `{ messages, sendMessage, status }`
 
 ## Behavior
 
-- Uses `session.events()` as the durable source of truth for chat state.
-- Refreshes from live `session.on("event", ..., { replay: false })` updates and only consumes:
+- `useStarciteSession` treats `session.state().events` as the source of truth and re-syncs from `session.on("state", ...)`.
+- Changing `id` on the same session handle resets the hook to a fresh local view from that point forward.
+- `useStarciteChat` projects from that same local session state and only consumes:
   - `chat.user.message`
   - `chat.assistant.chunk`
+- `useStarciteChat` does not perform implicit durable range reads. If you need prior events on a fresh attach, materialize them into the session through the SDK session store or an explicit server-side `session.range(...)` flow.
 - Appends outgoing user messages as strict chat envelopes.
 - `sendMessage(...)` performs the durable append and expects backend `.on(...)` handlers to react.
 - When backed by `StarciteSession`, transient append transport failures are retried in-order instead of failing fast.
 - Terminal append failures pause the SDK outbox by default; inspect `session.appendState()` and use `session.resumeAppendQueue()` or `session.resetAppendQueue()` for operational recovery.
-- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and retained events remain the source of truth.
+- When the underlying `StarciteSession` is configured with `refreshToken`, session-token renewal stays internal to the SDK and the local sparse view continues from the refreshed cursor.
 - Rebuilds `UIMessage[]` from durable events whenever new chat events arrive.
 
 ## Exports
@@ -163,7 +168,6 @@ after the session is bound.
 - `useStarciteSession`
 - `UseStarciteSessionOptions`
 - `UseStarciteSessionResult`
-- `StarciteSessionLike`
 - `useStarciteChat`
 - `UseStarciteChatOptions`
 - `UseStarciteChatResult`
@@ -182,3 +186,4 @@ for server agents or custom transports:
 - `parseChatPayloadEnvelope(...)`
 - `appendUserMessageEvent(...)`
 - `appendAssistantChunkEvent(...)`
+- `appendAssistantTextMessage(...)`

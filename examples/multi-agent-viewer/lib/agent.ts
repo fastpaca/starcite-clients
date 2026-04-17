@@ -35,22 +35,22 @@ starcite.on("session.created", (event) => {
     let running = false;
 
     session.on("event", async (nextEvent) => {
-        if (nextEvent.type !== "message.user" || running) {
-          return;
-        }
+      if (nextEvent.type !== "message.user" || running) {
+        return;
+      }
 
-        const question = messageText(nextEvent);
-        if (!question) {
-          return;
-        }
+      const question = messageText(nextEvent);
+      if (!question) {
+        return;
+      }
 
-        running = true;
-        try {
-          await runCoordinatorTurn(session, question);
-        } finally {
-          running = false;
-        }
-      });
+      running = true;
+      try {
+        await runCoordinatorTurn(session, question);
+      } finally {
+        running = false;
+      }
+    });
   })();
 });
 
@@ -195,7 +195,10 @@ async function runWorker(
   return { name: assignment.name, text: text.trim() };
 }
 
-function summaryPrompt(question: string, findings: readonly WorkerFinding[]): string {
+function summaryPrompt(
+  question: string,
+  findings: readonly WorkerFinding[]
+): string {
   return [
     `User question: ${question}`,
     "",

@@ -179,9 +179,9 @@ export type SessionEventListener<TEvent extends TailEvent = TailEvent> = (
  */
 export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
   /**
-   * Whether retained in-memory events should be replayed to this listener.
+   * Whether locally materialized in-memory events should be replayed to this listener.
    *
-   * Defaults to `true`.
+   * Defaults to `false`.
    */
   replay?: boolean;
   /**
@@ -194,6 +194,45 @@ export interface SessionOnEventOptions<TEvent extends TailEvent = TailEvent> {
    * Optional filter for `agent:<name>` events.
    */
   agent?: string;
+}
+
+/**
+ * Listener signature for session snapshot changes.
+ *
+ * Fires for local event/cursor updates plus append-queue state transitions.
+ */
+export type SessionStateListener = (
+  snapshot: SessionSnapshot
+) => void | Promise<void>;
+
+/**
+ * Narrow public session surface for direct consumers and integrations.
+ */
+export interface SessionHandle {
+  readonly id: string;
+  append(
+    input: SessionAppendInput,
+    options?: RequestOptions
+  ): Promise<AppendResult>;
+  range(
+    fromSeq: number,
+    toSeq: number,
+    requestOptions?: RequestOptions
+  ): Promise<readonly TailEvent[]>;
+  /**
+   * Returns the currently materialized local event slice.
+   *
+   * Prefer `state().events` when you also need cursor/sync/append metadata.
+   */
+  events(): readonly TailEvent[];
+  state(): SessionSnapshot;
+  on(
+    eventName: "event",
+    listener: SessionEventListener,
+    options?: SessionOnEventOptions<TailEvent>
+  ): () => void;
+  on(eventName: "state", listener: SessionStateListener): () => void;
+  on(eventName: "error", listener: (error: Error) => void): () => void;
 }
 
 /**
@@ -220,14 +259,19 @@ export const TailTokenExpiredPayloadSchema = z.object({
   reason: z.literal("token_expired"),
 });
 
+export type SessionAttachMode = "on-demand" | "eager";
+
 /**
- * Snapshot of a session's canonical in-memory log state.
+ * Snapshot of a session's canonical in-memory event state.
  */
 export interface SessionSnapshot {
   /**
-   * Ordered events currently retained in memory.
+   * Ordered events currently materialized in memory.
+   *
+   * This can be a sparse subset of the full session timeline. The array
+   * reference stays stable until the materialized event set actually changes.
    */
-  events: TailEvent[];
+  events: readonly TailEvent[];
   /**
    * Highest committed sequence observed for this session.
    */
@@ -325,9 +369,9 @@ export interface SessionAppendOptions {
    */
   retryPolicy?: SessionAppendRetryPolicy;
   /**
-   * Whether queued appends should be persisted through the configured session cache.
+   * Whether queued appends should be persisted through the configured session store.
    *
-   * Defaults to `true` when a cache is configured.
+   * Defaults to `true` when a session store is configured.
    */
   persist?: boolean;
   /**
@@ -472,61 +516,14 @@ export type SessionAppendStoreState = z.infer<
 >;
 
 /**
- * Serializable checkpoint for one materialized session log.
+ * Opaque persistence interface for durable session state.
+ *
+ * The SDK owns the serialized format. Consumers should treat stored values as
+ * opaque strings.
  */
-export interface SessionLogCheckpoint<TEvent extends TailEvent = TailEvent> {
-  /**
-   * Highest committed sequence observed for this session.
-   */
-  lastSeq: number;
-  /**
-   * Exact tail resume cursor for continuing replay.
-   */
-  cursor?: TailCursor;
-  /**
-   * Retained committed events snapshot used for immediate replay.
-   */
-  events: TEvent[];
-}
-
-/**
- * Operational metadata for one persisted cache entry.
- */
-export interface SessionCacheMetadata {
-  /**
-   * Cache entry schema version.
-   */
-  schemaVersion: 5;
-  /**
-   * Unix epoch milliseconds when this entry was written.
-   */
-  cachedAtMs: number;
-}
-
-/**
- * Persisted cache entry for one session.
- */
-export interface SessionCacheEntry<TEvent extends TailEvent = TailEvent> {
-  /**
-   * Optional warm-start checkpoint for the session log.
-   */
-  log?: SessionLogCheckpoint<TEvent>;
-  /**
-   * Optional persisted append outbox + producer state.
-   */
-  outbox?: SessionAppendStoreState;
-  /**
-   * Optional metadata for versioning and operational introspection.
-   */
-  metadata?: SessionCacheMetadata;
-}
-
-/**
- * Persistence interface for session resume cache + retained events.
- */
-export interface SessionCache<TEvent extends TailEvent = TailEvent> {
-  read(sessionId: string): SessionCacheEntry<TEvent> | undefined;
-  write(sessionId: string, entry: SessionCacheEntry<TEvent>): void;
+export interface SessionStore {
+  read(sessionId: string): string | undefined;
+  write(sessionId: string, value: string): void;
   clear?(sessionId: string): void;
 }
 
@@ -598,11 +595,18 @@ export interface StarciteOptions {
    */
   authUrl?: string;
   /**
-   * Optional session cache used for resume state + retained event persistence.
+   * Optional session store used for durable resume state + append outbox persistence.
    *
-   * When omitted, fresh attaches replay from the start of the server tail.
+   * When omitted, sessions start without a durable local cursor.
    */
-  cache?: SessionCache;
+  sessionStore?: SessionStore;
+  /**
+   * Whether sessions should attach the tail channel immediately on construction.
+   *
+   * Defaults to `"on-demand"`, which waits until listeners or pending appends
+   * need live sync.
+   */
+  sessionAttachMode?: SessionAttachMode;
   /**
    * Default append queue behavior for sessions created by this client.
    */

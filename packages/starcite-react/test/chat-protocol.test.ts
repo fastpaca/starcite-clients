@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   appendAssistantChunkEvent,
+  appendAssistantTextMessage,
   appendUserMessageEvent,
   chatAssistantChunkEventType,
   chatUserMessageEventType,
@@ -93,6 +94,87 @@ describe("chat protocol", () => {
         },
       },
     });
+  });
+
+  it("appends a complete assistant text message as chunk events", async () => {
+    const append = vi.fn().mockResolvedValue({ deduped: false, seq: 13 });
+
+    await expect(
+      appendAssistantTextMessage({ append }, "hello from the assistant", {
+        messageId: "assistant_1",
+        partId: "part_1",
+        source: "agent",
+      })
+    ).resolves.toBeUndefined();
+
+    expect(append.mock.calls).toEqual([
+      [
+        {
+          type: chatAssistantChunkEventType,
+          source: "agent",
+          payload: {
+            kind: chatAssistantChunkEventType,
+            chunk: {
+              type: "start",
+              messageId: "assistant_1",
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: chatAssistantChunkEventType,
+          source: "agent",
+          payload: {
+            kind: chatAssistantChunkEventType,
+            chunk: {
+              type: "text-start",
+              id: "part_1",
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: chatAssistantChunkEventType,
+          source: "agent",
+          payload: {
+            kind: chatAssistantChunkEventType,
+            chunk: {
+              type: "text-delta",
+              id: "part_1",
+              delta: "hello from the assistant",
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: chatAssistantChunkEventType,
+          source: "agent",
+          payload: {
+            kind: chatAssistantChunkEventType,
+            chunk: {
+              type: "text-end",
+              id: "part_1",
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: chatAssistantChunkEventType,
+          source: "agent",
+          payload: {
+            kind: chatAssistantChunkEventType,
+            chunk: {
+              type: "finish",
+              finishReason: "stop",
+            },
+          },
+        },
+      ],
+    ]);
   });
 
   it("projects best-effort messages when assistant chunks are malformed", async () => {

@@ -46,14 +46,14 @@ This is the practical shape teams end up using in production.
 Use the identity flow. This creates or binds a session and mints a session token.
 
 ```ts
-import { MemorySessionCache, Starcite } from "@starcite/sdk";
+import { MemorySessionStore, Starcite } from "@starcite/sdk";
 
 const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL,
   apiKey: process.env.STARCITE_API_KEY,
   authUrl: process.env.STARCITE_AUTH_URL, // optional if the API key JWT already has iss
-  // Use a durable SessionCache in production.
-  cache: new MemorySessionCache(),
+  // Use a durable SessionStore in production.
+  sessionStore: new MemorySessionStore(),
 });
 
 export async function runPlanner(prompt: string, sessionId?: string) {
@@ -116,7 +116,7 @@ const session = starcite.session({
 });
 
 const stopEvents = session.on("event", (event) => {
-  // Replay + live events from canonical ordered session log.
+  // Replay + live events from the canonical ordered session stream.
   renderEvent(event);
 });
 
@@ -231,10 +231,10 @@ export async function inspectSession(sessionId: string) {
 
 ```ts
 import {
-  MemorySessionCache,
+  MemorySessionStore,
   Starcite,
   type AppendResult,
-  type SessionCache,
+  type SessionStore,
   type SessionSnapshot,
   type TailEvent,
 } from "@starcite/sdk";
@@ -246,7 +246,7 @@ const starcite = new Starcite({
   baseUrl: process.env.STARCITE_BASE_URL, // default: STARCITE_BASE_URL or http://localhost:4000
   authUrl: process.env.STARCITE_AUTH_URL, // optional if STARCITE_AUTH_URL or the API key JWT iss already resolves the issuer
   fetch: globalThis.fetch,
-  cache: new MemorySessionCache(), // retained events + numeric tail cursor + append outbox persistence
+  sessionStore: new MemorySessionStore(), // opaque durable session state owned by the SDK
 });
 
 // ── Identities (server-side, require apiKey) ───────────────────────────────
@@ -311,13 +311,10 @@ const session = starcite.session({
 session.id; // string
 session.token; // string
 session.identity; // StarciteIdentity
-session.log; // SessionLog — best-effort committed mirror of backend state
+session.state(); // SessionSnapshot — best-effort local snapshot
 
-// ── Session log ─────────────────────────────────────────────────────────────
-
-session.log.events; // readonly TailEvent[] — ordered committed events retained for replay
-session.log.cursor; // TailCursor | undefined — numeric resume cursor from the backend
-session.log.lastSeq; // number
+// Exact seq-bounded read
+await session.range(1, 125); // committed events 1..125 inclusive
 
 // ── Append ──────────────────────────────────────────────────────────────────
 
@@ -344,22 +341,27 @@ await session.refreshAuth(); // manually retry the configured refreshToken callb
 
 // ── Subscribe ───────────────────────────────────────────────────────────────
 
-// Late subscribers get synchronous replay of retained committed state, then live updates.
+// By default listeners are live-only and attach the background tail lazily on first subscription.
 const unsub = session.on("event", (event, context) => {
   console.log(event.seq);
   console.log(context.phase); // "replay" | "live"
 });
 
-// Skip retained replay and only receive future live events.
-const stopLiveOnly = session.on(
+const unsubState = session.on("state", (snapshot) => {
+  console.log(snapshot.events.length);
+  console.log(snapshot.append?.status);
+});
+
+// Opt into replaying the locally materialized sparse state.
+const stopWithReplay = session.on(
   "event",
   (event) => {
     console.log(event.type);
   },
-  { replay: false }
+  { replay: true }
 );
 
-// Stream, append, schema, and cache errors are surfaced here.
+// Stream, append, schema, and session-store errors are surfaced here.
 const unsubErr = session.on("error", (error) => {
   console.error(error.message);
 });
@@ -371,7 +373,8 @@ session.on("gap", (gap) => {
 });
 
 unsub();
-stopLiveOnly();
+unsubState();
+stopWithReplay();
 unsubErr();
 
 // ── Teardown ────────────────────────────────────────────────────────────────
@@ -381,28 +384,36 @@ session.disconnect(); // stops WS immediately, removes all listeners
 
 ## Session Event Semantics
 
-- `session.on("event", listener)` replays retained `session.events()` synchronously by default, then continues with live events from the `tail:<sessionId>` channel.
+- `session.range(fromSeq, toSeq)` returns the exact committed interval `fromSeq..toSeq` inclusive.
+- Range reads are powered by the same sparse local event state used for live subscriptions. Missing gaps are replayed on demand through the tail transport and merged into the canonical local state.
+- `session.on("state", ...)` fires when that local session state changes, including explicit `session.range(...)` backfills and append-queue state transitions.
+- Callers must provide a concrete upper bound. In practice this usually comes from an event you already have in hand, such as the current user event's `seq`.
+- `session.on("event", listener)` starts the tail stream lazily on first use and is live-only by default.
 - The second callback argument is `{ phase: "replay" | "live" }`.
-- Pass `{ replay: false }` to skip retained replay and only receive future live events.
+- Pass `{ replay: true }` to replay the locally materialized sparse state before continuing with live events.
 - Pass `{ agent: "planner" }` to filter for `actor === "agent:planner"`.
 - Pass `{ schema }` to validate and narrow events before dispatch. Schema failures are surfaced through `session.on("error", ...)`.
 - `session.on("gap", ...)` lets you observe server-reported gaps. The SDK still advances the numeric cursor and rejoins the channel internally.
-- When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event log.
+- When `refreshToken` is configured, token expiry and append `401` / `403` responses trigger an in-place refresh, reconnect from the retained cursor, and preserve the current in-memory event state.
 - If refresh still fails, the failure is surfaced through `session.on("error", ...)`. You can retry the same session in place with `session.refreshAuth()`.
 
-## Session Caches
+## Session Stores
 
-`new Starcite({ cache })` accepts a `SessionCache` for cursor, retained events,
-and the append outbox across session rebinds.
+`new Starcite({ sessionStore })` accepts a `SessionStore` for durable session
+resume state across session rebinds.
 
-- No default cache is configured. When omitted, startup catch-up replays from
-  channel cursor `0`.
+- No default session store is configured. When omitted, fresh sessions start
+  without a durable cursor and live subscriptions join in live-only mode.
 - Bring your own by implementing:
   - `read(sessionId)`
-  - `write(sessionId, { log?, outbox?, metadata? })`
+  - `write(sessionId, value)`
   - optional `clear(sessionId)`
-- `MemorySessionCache`, `WebStorageSessionCache`, and `LocalStorageSessionCache`
-  support the same contract.
+- `MemorySessionStore`, `WebStorageSessionStore`, `LocalStorageSessionStore`,
+  and `SessionStorageSessionStore` support the same contract.
+- The stored value is an opaque SDK-owned string. Consumers should not inspect
+  or construct it directly.
+- The SDK may retain warm local event state inside that opaque value, but that
+  is an internal implementation detail rather than part of the public contract.
 - Paused terminal failures are persisted, so a restarted session does not
   auto-replay a poisoned head append until you explicitly resume or reset it.
 

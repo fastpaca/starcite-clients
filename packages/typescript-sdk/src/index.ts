@@ -12,16 +12,16 @@ export type { PrincipalType } from "./identity";
 export { StarciteIdentity } from "./identity";
 export { StarciteSession } from "./session";
 export type {
-  SessionCacheOptions,
+  SessionStoreOptions,
   StarciteWebStorage,
-  WebStorageSessionCacheOptions,
-} from "./session-cache";
+  WebStorageSessionStoreOptions,
+} from "./session-store";
 export {
-  LocalStorageSessionCache,
-  MemorySessionCache,
-  SessionStorageSessionCache,
-  WebStorageSessionCache,
-} from "./session-cache";
+  LocalStorageSessionStore,
+  MemorySessionStore,
+  SessionStorageSessionStore,
+  WebStorageSessionStore,
+} from "./session-store";
 export type {
   AppendEventRequest,
   AppendEventResponse,
@@ -39,9 +39,7 @@ export type {
   SessionAppendRetryPolicy,
   SessionArchivedFilter,
   SessionArchivedLifecycleEvent,
-  SessionCache,
-  SessionCacheEntry,
-  SessionCacheMetadata,
+  SessionAttachMode,
   SessionCreatedLifecycleEvent,
   SessionEventContext,
   SessionEventListener,
@@ -49,16 +47,18 @@ export type {
   SessionFreezingLifecycleEvent,
   SessionFrozenLifecycleEvent,
   SessionGapListener,
+  SessionHandle,
   SessionHydratingLifecycleEvent,
   SessionLifecycleEvent,
   SessionLifecycleEventName,
   SessionListItem,
   SessionListOptions,
   SessionListPage,
-  SessionLogCheckpoint,
   SessionOnEventOptions,
   SessionRecord,
   SessionSnapshot,
+  SessionStateListener,
+  SessionStore,
   SessionStoredAppend,
   SessionTokenRefreshContext,
   SessionTokenRefreshHandler,

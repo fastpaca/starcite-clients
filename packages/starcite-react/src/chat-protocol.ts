@@ -91,6 +91,59 @@ export function appendAssistantChunkEvent(
   });
 }
 
+export async function appendAssistantTextMessage(
+  session: SessionAppender,
+  text: string,
+  options: { source?: string; messageId?: string; partId?: string } = {}
+): Promise<void> {
+  const messageId = options.messageId ?? crypto.randomUUID();
+  const partId = options.partId ?? crypto.randomUUID();
+
+  await appendAssistantChunkEvent(
+    session,
+    {
+      type: "start",
+      messageId,
+    },
+    options
+  );
+  await appendAssistantChunkEvent(
+    session,
+    {
+      type: "text-start",
+      id: partId,
+    },
+    options
+  );
+  if (text.length > 0) {
+    await appendAssistantChunkEvent(
+      session,
+      {
+        type: "text-delta",
+        id: partId,
+        delta: text,
+      },
+      options
+    );
+  }
+  await appendAssistantChunkEvent(
+    session,
+    {
+      type: "text-end",
+      id: partId,
+    },
+    options
+  );
+  await appendAssistantChunkEvent(
+    session,
+    {
+      type: "finish",
+      finishReason: "stop",
+    },
+    options
+  );
+}
+
 async function buildChunkMessages<TMessage extends UIMessage = UIMessage>(
   chunks: readonly UIMessageChunk[]
 ): Promise<TMessage[]> {

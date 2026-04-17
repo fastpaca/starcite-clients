@@ -2,6 +2,7 @@ import EventEmitter from "eventemitter3";
 import { decodeApiKeyContext, decodeSessionToken } from "./auth";
 import { StarciteApiError, StarciteError } from "./errors";
 import { StarciteIdentity } from "./identity";
+import { NewSessionCursorRegistry } from "./new-session-cursor-registry";
 import { StarciteSession } from "./session";
 import {
   type RejoinableChannel,
@@ -25,7 +26,7 @@ import {
   type RequestOptions,
   type SessionAppendOptions,
   type SessionArchivedFilter,
-  type SessionCache,
+  type SessionAttachMode,
   type SessionLifecycleEventListeners,
   type SessionLifecycleEventName,
   SessionLifecycleEventNameSchema,
@@ -36,6 +37,7 @@ import {
   SessionListPageSchema,
   type SessionRecord,
   SessionRecordSchema,
+  type SessionStore,
   type SessionTokenRefreshHandler,
   type SessionUpdateInput,
   type StarciteOptions,
@@ -87,6 +89,25 @@ interface StarciteLifecycleEvents extends SessionLifecycleEventListeners {
   error: (error: Error) => void;
 }
 
+type StarciteLifecycleListenerName = keyof StarciteLifecycleEvents;
+type StarciteLifecycleListener =
+  StarciteLifecycleEvents[StarciteLifecycleListenerName];
+
+const LifecycleChannelEventNames: readonly (
+  | "lifecycle"
+  | SessionLifecycleEventName
+)[] = ["lifecycle", ...SessionLifecycleEventNames];
+
+function isSupportedLifecycleEventName(
+  eventName: string
+): eventName is keyof StarciteLifecycleEvents {
+  return (
+    eventName === "lifecycle" ||
+    eventName === "error" ||
+    SessionLifecycleEventNames.some((candidate) => candidate === eventName)
+  );
+}
+
 /**
  * Tenant-scoped Starcite client.
  *
@@ -102,9 +123,11 @@ export class Starcite {
   private readonly inferredTenantId?: string;
   private readonly apiKey: string | undefined;
   private readonly socketUrl: string;
-  private readonly cache: SessionCache | undefined;
+  private readonly sessionStore: SessionStore | undefined;
+  private readonly sessionAttachMode: SessionAttachMode;
   private readonly appendOptions: SessionAppendOptions | undefined;
   private readonly lifecycle = new EventEmitter<StarciteLifecycleEvents>();
+  private readonly newSessionCursors = new NewSessionCursorRegistry();
   private lifecycleChannel: RejoinableChannel | undefined;
   private closeLifecycleChannel: (() => void) | undefined;
   private lifecycleBindingRef = 0;
@@ -131,7 +154,8 @@ export class Starcite {
 
     this.authBaseUrl = resolveAuthBaseUrl(options.authUrl, issuerAuthority);
     this.apiKey = apiKey;
-    this.cache = options.cache;
+    this.sessionStore = options.sessionStore;
+    this.sessionAttachMode = options.sessionAttachMode ?? "on-demand";
     this.appendOptions = options.appendOptions;
     this.socketUrl = `${toWebSocketBaseUrl(baseUrl)}/socket`;
     this.transport = {
@@ -175,16 +199,11 @@ export class Starcite {
       );
     }
 
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    this.lifecycle.on(eventName, listener as any);
-    if (eventName !== "error") {
-      this.ensureLifecycleChannelAttached();
+    if (!isSupportedLifecycleEventName(eventName)) {
+      throw new StarciteError(`Unsupported lifecycle event '${eventName}'`);
     }
 
-    return () => {
-      // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-      this.off(eventName as any, listener as any);
-    };
+    return this.addLifecycleListener(eventName, listener);
   }
 
   off<K extends SessionLifecycleEventName>(
@@ -203,8 +222,32 @@ export class Starcite {
       | StarciteLifecycleEvents[SessionLifecycleEventName]
       | ((error: Error) => void)
   ): void {
-    // biome-ignore lint/suspicious/noExplicitAny: overload signatures guarantee type safety
-    this.lifecycle.off(eventName, listener as any);
+    if (!isSupportedLifecycleEventName(eventName)) {
+      throw new StarciteError(`Unsupported lifecycle event '${eventName}'`);
+    }
+
+    this.removeLifecycleListener(eventName, listener);
+  }
+
+  private addLifecycleListener(
+    eventName: StarciteLifecycleListenerName,
+    listener: StarciteLifecycleListener
+  ): () => void {
+    this.lifecycle.on(eventName, listener as never);
+    if (eventName !== "error") {
+      this.ensureLifecycleChannelAttached();
+    }
+
+    return () => {
+      this.removeLifecycleListener(eventName, listener);
+    };
+  }
+
+  private removeLifecycleListener(
+    eventName: StarciteLifecycleListenerName,
+    listener: StarciteLifecycleListener
+  ): void {
+    this.lifecycle.off(eventName, listener as never);
     if (eventName !== "error") {
       this.detachLifecycleChannelIfIdle();
     }
@@ -245,6 +288,7 @@ export class Starcite {
     token: string;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): StarciteSession;
   session(input: {
     identity: StarciteIdentity;
@@ -253,6 +297,7 @@ export class Starcite {
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): Promise<StarciteSession>;
   session(
     input:
@@ -260,6 +305,7 @@ export class Starcite {
           token: string;
           appendOptions?: SessionAppendOptions;
           refreshToken?: SessionTokenRefreshHandler;
+          attachMode?: SessionAttachMode;
         }
       | {
           identity: StarciteIdentity;
@@ -268,13 +314,15 @@ export class Starcite {
           metadata?: Record<string, unknown>;
           appendOptions?: SessionAppendOptions;
           refreshToken?: SessionTokenRefreshHandler;
+          attachMode?: SessionAttachMode;
         }
   ): StarciteSession | Promise<StarciteSession> {
     if ("token" in input) {
       return this.sessionFromToken(
         input.token,
         input.appendOptions,
-        input.refreshToken
+        input.refreshToken,
+        input.attachMode
       );
     }
 
@@ -408,6 +456,7 @@ export class Starcite {
     metadata?: Record<string, unknown>;
     appendOptions?: SessionAppendOptions;
     refreshToken?: SessionTokenRefreshHandler;
+    attachMode?: SessionAttachMode;
   }): Promise<StarciteSession> {
     let sessionId = input.id;
     let record: SessionRecord | undefined;
@@ -434,6 +483,10 @@ export class Starcite {
       sessionId = record.id;
     }
 
+    if (record) {
+      this.newSessionCursors.remember(record.id);
+    }
+
     const tokenResponse = await this.issueSessionToken({
       session_id: sessionId,
       principal: input.identity.toTokenPrincipal(),
@@ -445,8 +498,10 @@ export class Starcite {
       token: tokenResponse.token,
       identity: input.identity,
       transport: this.buildSessionTransport(tokenResponse.token),
-      cache: this.cache,
+      sessionStore: this.sessionStore,
       record,
+      initialTailCursor: this.newSessionCursors.initialCursorFor(sessionId),
+      attachMode: input.attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(
         this.appendOptions,
         input.appendOptions
@@ -465,7 +520,8 @@ export class Starcite {
   private sessionFromToken(
     token: string,
     appendOptions?: SessionAppendOptions,
-    refreshToken?: SessionTokenRefreshHandler
+    refreshToken?: SessionTokenRefreshHandler,
+    attachMode?: SessionAttachMode
   ): StarciteSession {
     const decoded = decodeSessionToken(token);
     const sessionId = decoded.sessionId;
@@ -481,7 +537,8 @@ export class Starcite {
       token,
       identity: decoded.identity,
       transport: this.buildSessionTransport(token),
-      cache: this.cache,
+      sessionStore: this.sessionStore,
+      attachMode: attachMode ?? this.sessionAttachMode,
       appendOptions: mergeAppendOptions(this.appendOptions, appendOptions),
       refreshToken,
     });
@@ -603,8 +660,11 @@ export class Starcite {
 
     const parsed = SessionLifecycleEventSchema.safeParse(envelope.data);
     if (parsed.success) {
-      // biome-ignore lint/suspicious/noExplicitAny: parsed lifecycle union matches the event-specific listener type
-      this.lifecycle.emit(parsed.data.kind, parsed.data as any);
+      if (parsed.data.kind === "session.created") {
+        this.newSessionCursors.remember(parsed.data.session_id);
+      }
+
+      this.lifecycle.emit(parsed.data.kind, parsed.data as never);
       return;
     }
 
@@ -624,8 +684,7 @@ export class Starcite {
 
   private detachLifecycleChannelIfIdle(): void {
     if (
-      this.lifecycle.listenerCount("lifecycle") > 0 ||
-      SessionLifecycleEventNames.some((eventName) => {
+      LifecycleChannelEventNames.some((eventName) => {
         return this.lifecycle.listenerCount(eventName) > 0;
       })
     ) {

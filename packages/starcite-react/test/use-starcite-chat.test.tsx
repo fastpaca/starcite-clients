@@ -3,6 +3,8 @@ import type {
   SessionEventContext,
   SessionEventListener,
   SessionOnEventOptions,
+  SessionSnapshot,
+  SessionStateListener,
   TailEvent,
 } from "@starcite/sdk";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -24,6 +26,7 @@ class FakeSession implements StarciteChatSession {
   readonly id: string;
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly errorListeners = new Set<(error: Error) => void>();
+  private readonly stateListeners = new Set<SessionStateListener>();
   private readonly eventLog: TailEvent[];
   private nextSeq: number;
 
@@ -36,8 +39,26 @@ class FakeSession implements StarciteChatSession {
     this.nextSeq = (seedEvents.at(-1)?.seq ?? 0) + 1;
   }
 
+  range(fromSeq: number, toSeq: number): Promise<readonly TailEvent[]> {
+    return Promise.resolve(
+      this.eventLog.filter(
+        (event) => event.seq >= fromSeq && event.seq <= toSeq
+      )
+    );
+  }
+
   events(): readonly TailEvent[] {
     return [...this.eventLog];
+  }
+
+  state(): SessionSnapshot {
+    return {
+      append: undefined,
+      cursor: this.eventLog.at(-1)?.cursor,
+      events: [...this.eventLog],
+      lastSeq: this.eventLog.at(-1)?.seq ?? 0,
+      syncing: false,
+    };
   }
 
   append(
@@ -60,16 +81,28 @@ class FakeSession implements StarciteChatSession {
     listener: SessionEventListener,
     _options?: SessionOnEventOptions<TailEvent>
   ): () => void;
+  on(eventName: "state", listener: SessionStateListener): () => void;
   on(eventName: "error", listener: (error: Error) => void): () => void;
   on(
-    eventName: "event" | "error",
-    listener: SessionEventListener | ((error: Error) => void)
+    eventName: "event" | "state" | "error",
+    listener:
+      | SessionEventListener
+      | SessionStateListener
+      | ((error: Error) => void)
   ): () => void {
     if (eventName === "event") {
       const eventListener = listener as SessionEventListener;
       this.eventListeners.add(eventListener);
       return () => {
         this.eventListeners.delete(eventListener);
+      };
+    }
+
+    if (eventName === "state") {
+      const stateListener = listener as SessionStateListener;
+      this.stateListeners.add(stateListener);
+      return () => {
+        this.stateListeners.delete(stateListener);
       };
     }
 
@@ -98,6 +131,7 @@ class FakeSession implements StarciteChatSession {
     } as TailEvent;
 
     this.eventLog.push(event);
+    this.emitState();
     for (const listener of this.eventListeners) {
       listener(event, context);
     }
@@ -114,6 +148,13 @@ class FakeSession implements StarciteChatSession {
   emitError(error: Error): void {
     for (const listener of this.errorListeners) {
       listener(error);
+    }
+  }
+
+  private emitState(): void {
+    const snapshot = this.state();
+    for (const listener of this.stateListeners) {
+      listener(snapshot);
     }
   }
 }
@@ -301,6 +342,32 @@ describe("useStarciteChat", () => {
     });
 
     expect(result.current.status).toBe("error");
+  });
+
+  it("resets submitted status when switching to a different session", async () => {
+    const firstSession = new FakeSession("ses_old");
+    const secondSession = new FakeSession("ses_new");
+    const { result, rerender } = renderHook(
+      ({ session }) => useStarciteChat({ session }),
+      {
+        initialProps: { session: firstSession },
+      }
+    );
+
+    await act(async () => {
+      await result.current.sendMessage({ text: "hello" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("submitted");
+    });
+
+    rerender({ session: secondSession });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("ready");
+    });
+    expect(result.current.messages).toEqual([]);
   });
 
   it("rejects non-user sendMessage payloads before appending", async () => {
@@ -525,7 +592,7 @@ describe("useStarciteChat", () => {
     expect(result.current.status).toBe("streaming");
 
     const refreshedSession = new FakeSession("ses_refresh", [
-      ...firstSession.events(),
+      ...firstSession.state().events,
     ]);
     rerender({ session: refreshedSession });
 

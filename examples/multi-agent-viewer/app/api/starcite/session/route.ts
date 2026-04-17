@@ -3,7 +3,6 @@ import { starcite } from "@/lib/starcite";
 
 export async function POST(request: Request): Promise<Response> {
   const { sessionId } = (await request.json()) as { sessionId?: string };
-
   const session = await starcite.session({
     identity: starcite.user({ id: "demo-user" }),
     id: sessionId?.trim() || undefined,

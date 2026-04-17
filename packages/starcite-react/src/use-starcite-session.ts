@@ -1,31 +1,15 @@
 import type {
   AppendResult,
   SessionAppendInput,
-  SessionEventListener,
-  SessionOnEventOptions,
+  SessionHandle,
+  SessionSnapshot,
   TailEvent,
 } from "@starcite/sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-/**
- * Minimal session surface consumed by the hook.
- * Any object satisfying this interface works — including a real `StarciteSession`.
- */
-export interface StarciteSessionLike {
-  readonly id: string;
-  append(input: SessionAppendInput): Promise<AppendResult>;
-  events(): readonly TailEvent[];
-  on(
-    eventName: "event",
-    listener: SessionEventListener,
-    options?: SessionOnEventOptions<TailEvent>
-  ): () => void;
-  on(eventName: "error", listener: (error: Error) => void): () => void;
-}
-
 export interface UseStarciteSessionOptions {
   /** Pass `null` / `undefined` before the session is available — the hook is inert until connected. */
-  session: StarciteSessionLike | null | undefined;
+  session: SessionHandle | null | undefined;
   /** Reset key — changing this resets state. Defaults to `session.id`. */
   id?: string;
   onError?: (error: Error) => void;
@@ -40,6 +24,16 @@ const NOOP_APPEND = (): Promise<AppendResult> =>
   Promise.resolve({ seq: -1, deduped: false });
 const EMPTY_EVENTS: readonly TailEvent[] = [];
 
+function sameEventSlice(
+  left: readonly TailEvent[],
+  right: readonly TailEvent[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((event, index) => event === right[index])
+  );
+}
+
 export function useStarciteSession(
   options: UseStarciteSessionOptions
 ): UseStarciteSessionResult {
@@ -47,101 +41,64 @@ export function useStarciteSession(
   const resetKey = id ?? session?.id ?? "__none__";
 
   const [events, setEvents] = useState<readonly TailEvent[]>([]);
-
-  const refreshVersionRef = useRef(0);
-  const sessionKeyRef = useRef(resetKey);
   const onErrorRef = useRef(onError);
-  const liveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const replayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousBindingRef = useRef<{
+    readonly session: SessionHandle | null | undefined;
+    readonly resetKey: string;
+  } | null>(null);
 
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
 
-  const refresh = useCallback(() => {
-    if (!session || sessionKeyRef.current !== resetKey) {
-      return;
-    }
-    const version = ++refreshVersionRef.current;
-    const snapshot = [...session.events()];
-    if (
-      refreshVersionRef.current !== version ||
-      sessionKeyRef.current !== resetKey
-    ) {
-      return;
-    }
-    setEvents(snapshot);
-  }, [session, resetKey]);
-
-  const scheduleLive = useCallback(() => {
-    if (liveTimeoutRef.current !== null) {
-      return;
-    }
-    const key = resetKey;
-    liveTimeoutRef.current = setTimeout(() => {
-      liveTimeoutRef.current = null;
-      if (sessionKeyRef.current === key) {
-        refresh();
-      }
-    }, 16);
-  }, [refresh, resetKey]);
-
-  const scheduleReplay = useCallback(() => {
-    if (replayTimeoutRef.current !== null) {
-      clearTimeout(replayTimeoutRef.current);
-    }
-    const key = resetKey;
-    replayTimeoutRef.current = setTimeout(() => {
-      replayTimeoutRef.current = null;
-      if (sessionKeyRef.current === key) {
-        refresh();
-      }
-    }, 120);
-  }, [refresh, resetKey]);
-
-  const onEvent = useCallback(
-    (_event: TailEvent, context?: { phase: string }) => {
-      if (context?.phase === "replay") {
-        scheduleReplay();
-      } else {
-        scheduleLive();
-      }
-    },
-    [scheduleLive, scheduleReplay]
-  );
-
   useEffect(() => {
-    sessionKeyRef.current = resetKey;
-    refreshVersionRef.current += 1;
-    setEvents([]);
-
     if (!session) {
+      previousBindingRef.current = { session, resetKey };
+      setEvents(EMPTY_EVENTS);
       return;
     }
 
-    refresh();
+    const previousBinding = previousBindingRef.current;
+    const baselineSeq =
+      previousBinding?.session === session &&
+      previousBinding.resetKey !== resetKey
+        ? session.state().lastSeq
+        : 0;
+    previousBindingRef.current = { session, resetKey };
 
-    const offEvent = session.on("event", onEvent, { replay: false });
+    let cancelled = false;
+    const syncEvents = (snapshot: SessionSnapshot = session.state()): void => {
+      if (cancelled) {
+        return;
+      }
+      const nextEvents =
+        baselineSeq === 0
+          ? snapshot.events
+          : snapshot.events.filter((event) => event.seq > baselineSeq);
+      setEvents((previousEvents) => {
+        return sameEventSlice(previousEvents, nextEvents)
+          ? previousEvents
+          : nextEvents;
+      });
+    };
+
+    setEvents(EMPTY_EVENTS);
+    syncEvents();
+    const offState = session.on("state", (snapshot) => {
+      syncEvents(snapshot);
+    });
     const offError = session.on("error", (error: Error) => {
-      onErrorRef.current?.(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      if (!cancelled) {
+        onErrorRef.current?.(error);
+      }
     });
 
     return () => {
-      refreshVersionRef.current += 1;
-      if (liveTimeoutRef.current !== null) {
-        clearTimeout(liveTimeoutRef.current);
-        liveTimeoutRef.current = null;
-      }
-      if (replayTimeoutRef.current !== null) {
-        clearTimeout(replayTimeoutRef.current);
-        replayTimeoutRef.current = null;
-      }
-      offEvent();
+      cancelled = true;
+      offState();
       offError();
     };
-  }, [onEvent, refresh, session, resetKey]);
+  }, [session, resetKey]);
 
   const append = useCallback(
     (input: SessionAppendInput) =>

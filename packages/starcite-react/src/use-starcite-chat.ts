@@ -1,6 +1,6 @@
-import type { TailEvent } from "@starcite/sdk";
+import type { SessionHandle, TailEvent } from "@starcite/sdk";
 import type { ChatStatus, UIMessage } from "ai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import {
   chatAssistantChunkEventType,
@@ -9,12 +9,9 @@ import {
   isChatEventType,
   toUIMessagesFromEvents,
 } from "./chat-protocol";
-import {
-  type StarciteSessionLike,
-  useStarciteSession,
-} from "./use-starcite-session";
+import { useStarciteSession } from "./use-starcite-session";
 
-export type { StarciteSessionLike as StarciteChatSession } from "./use-starcite-session";
+export type { SessionHandle as StarciteChatSession } from "@starcite/sdk";
 
 type SendUserMessageInput<TMessage extends UIMessage = UIMessage> = Omit<
   TMessage,
@@ -31,7 +28,7 @@ export type SendMessageInput<TMessage extends UIMessage = UIMessage> =
   | SendUserMessageInput<TMessage>;
 
 export interface UseStarciteChatOptions {
-  session: StarciteSessionLike | null | undefined;
+  session: SessionHandle | null | undefined;
   id?: string;
   userMessageSource?: string;
   onError?: (error: Error) => void;
@@ -101,16 +98,35 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
   options: UseStarciteChatOptions
 ): UseStarciteChatResult<TMessage> {
   const { session, id, userMessageSource = "use-chat", onError } = options;
+  const sessionKey = id ?? session?.id ?? "__none__";
 
-  const { events, append } = useStarciteSession({ session, id, onError });
+  const { events, append } = useStarciteSession({
+    session,
+    id,
+    onError,
+  });
 
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
-  const versionRef = useRef(0);
+
+  useEffect(() => {
+    setMessages([]);
+    setStatus("ready");
+
+    if (sessionKey === "__none__") {
+      return;
+    }
+  }, [sessionKey]);
 
   // Project events → UIMessage[] (async because of readUIMessageStream)
   useEffect(() => {
-    const version = ++versionRef.current;
+    let cancelled = false;
+
+    if (sessionKey === "__none__") {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     // Eagerly set streaming status from latest chunk
     const open = isAssistantOpen(events);
@@ -128,14 +144,18 @@ export function useStarciteChat<TMessage extends UIMessage = UIMessage>(
     const chatEvents = events.filter((e) => isChatEventType(e.type));
     toUIMessagesFromEvents<TMessage>(chatEvents)
       .then((msgs) => {
-        if (versionRef.current === version) {
+        if (!cancelled) {
           setMessages(msgs);
         }
       })
       .catch(() => {
         /* intentionally swallowed */
       });
-  }, [events]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [events, sessionKey]);
 
   const sendMessage = useCallback(
     async (message: SendMessageInput<TMessage>): Promise<void> => {
